@@ -265,6 +265,7 @@
     let sampEntries = [];
     let descBlockData = null;
     let pattBlockData = null;
+    let patternRecords = [];
     const presets = [];
     for (const blk of blocks) {
       if (blk.type === 'samp') {
@@ -274,7 +275,10 @@
           sampEntries = sampEntries.concat(parseSampBlock(blk.data, version, subversion));
         }
       } else if (blk.type === 'patt') {
-        if (blk.data && blk.data.length) pattBlockData = blk.data;
+        if (blk.data && blk.data.length) {
+          pattBlockData = blk.data;
+          patternRecords = splitPatternBlock(blk.data);
+        }
       } else if (blk.type === 'desc') {
         try {
           descBlockData = blk.data;
@@ -403,6 +407,7 @@
         textureDepth: texDepth === undefined ? undefined : texDepth / 100,
         textureScale: texScale === undefined ? undefined : texScale / 100,
         textureName: txtrRef && desc.getItem(txtrRef, 'Nm  ') ? String(desc.getItem(txtrRef, 'Nm  ')).replace(/^.*=/, '') : undefined,
+        textureId: txtrRef && desc.getItem(txtrRef, 'Idnt') ? String(desc.getItem(txtrRef, 'Idnt')) : undefined,
         dualBrush: dualInfo,
         scatterOn: useScatter === true,
         scatterCount: typeof cntRaw === 'number' ? cntRaw : 1,
@@ -426,7 +431,8 @@
           (uuid2 && typeof uuid2 === 'string' ? uuid2 : (uuidVal && uuidVal.items && uuidVal.items[0]) || null);
         // 多支预设可能共享同一个采样（源文件里 uuid 重复出现），按出现顺序消费
         let tipEntry = uuid ? tipByUuid.get(uuid.toLowerCase()) : null;
-        if (!tipEntry) tipEntry = null;
+        // PS 有时描述符里的 sampledData uuid 与采样头里的 uuid 不一致，按“第 n 个预设 ↔ 第 n 个采样”兜底
+        if (!tipEntry && sampEntries[pi] && sampEntries[pi].tip) tipEntry = sampEntries[pi];
         const tipUuid = (tipEntry && tipEntry.uuid) || uuid;
         if (!tipEntry) {
           // computed (parametric) brush: no sampled bitmap -> keep it and let the
@@ -451,8 +457,26 @@
             brush._rawPreset = descBlockData.subarray(preset._span[0], preset._span[1]);
           }
           if (tipEntry && tipEntry.body) brush._rawSample = tipEntry.body;
+          // 双笔刷：保留 dualBrush 对象原始字节，重建描述符时也能原样写回
+          if (descBlockData) {
+            const dualItem = preset && preset.items && preset.items.find(function (x) { return x.key === 'dualBrush'; });
+            const dspan = dualItem && dualItem.value && dualItem.value._span;
+            if (dspan) brush._rawDualObjc = descBlockData.subarray(dspan[0], dspan[1]);
+          }
         } catch (e) { /* 保留失败不影响正常转换 */ }
         if (pattBlockData) brush._pattBlock = pattBlockData;
+        if (brush.textureId || brush.textureName) {
+          brush._patternRecord = patternRecords.find(function (r) { return (brush.textureId && r.id === brush.textureId) || (brush.textureName && r.name === brush.textureName); }) || null;
+          if (brush._patternRecord) {
+            const rr = brush._patternRecord;
+            const bpp = rr.mode === 3 ? 3 : 1;
+            const pixelLen = rr.w * rr.h * bpp;
+            const start = rr.data.length - pixelLen;
+            if (start > 0 && pixelLen > 0) {
+              brush._patternPixels = { w: rr.w, h: rr.h, mode: rr.mode, data: rr.data.subarray(start, start + pixelLen) };
+            }
+          }
+        }
         brushes.push(brush);
       }
       // presets missing but tips have names? synthesize
@@ -462,7 +486,11 @@
     }
     // 供“部分导出”使用：保留源文件全部采样，避免 dualBrush 的第二个采样引用悬空
     const allRawSamples = sampEntries.map(function (en) { return en.body; }).filter(Boolean);
-    brushes.forEach(function (b) { b._allRawSamples = allRawSamples; });
+    const sampleMap = new Map();
+    sampEntries.forEach(function (en) {
+      if (en.uuid && en.body) sampleMap.set(en.uuid.toLowerCase(), en.body);
+    });
+    brushes.forEach(function (b) { b._allRawSamples = allRawSamples; b._sampleMap = sampleMap; });
     if (!brushes.length) {
       for (const en of sampEntries) {
         if (!en.tip) continue;
@@ -689,6 +717,37 @@
   }
 
   /* 生成一张 256×256 的 RGB 颗粒图案记录（复用 PS 导出的记录前缀，只换像素） */
+  /* 把源 ABR 的 patt 块拆成单独图案记录（记录按 4 字节对齐） */
+  function splitPatternBlock(data) {
+    const records = [];
+    if (!data) return records;
+    let at = 0;
+    while (at + 16 <= data.length) {
+      const len = util.u32(data, at);
+      if (!len || at + 4 + len > data.length) break;
+      const total = (4 + len + 3) & ~3;
+      if (at + total > data.length) break;
+      const mode = util.u32(data, at + 8);
+      const h = util.u16(data, at + 12), w = util.u16(data, at + 14);
+      let p2 = at + 16;
+      let name = '', id = '';
+      try {
+        const nl = util.u32(data, p2); p2 += 4;
+        const chars = [];
+        for (let i = 0; i < nl; i++) { chars.push(String.fromCharCode(util.u16(data, p2))); p2 += 2; }
+        name = chars.join('').replace(/ +$/, '');
+        const idl = data[p2]; p2 += 1;
+        let s2 = '';
+        for (let i = 0; i < idl; i++) s2 += String.fromCharCode(data[p2 + i]);
+        p2 += idl;
+        id = s2;
+      } catch (e) { /* header variant */ }
+      records.push({ offset: at, total: total, len: len, mode: mode, w: w, h: h, name: name, id: id, data: data.subarray(at, at + total) });
+      at += total;
+    }
+    return records;
+  }
+
   function buildPatternRecord(seed) {
     if (!patternTpl) return null;
     const w = patternTpl.width, h = patternTpl.height;
@@ -793,27 +852,25 @@
       sampParts.push(util.concat([_u32be(entryLen), body, new Uint8Array(padLen)]));
       presets.push({ it, uuid });
     }
-    // 需要时补齐源文件里的其它采样（保证 dualBrush 等内部引用不悬空）
-    const keepAll = valid.some(function (it) { return it.keepAllSamples && it.allRawSamples; });
-    if (keepAll) {
-      const seen = {};
-      for (const it of valid) {
-        const b = it.rawSample;
-        if (b) { const u = String.fromCharCode.apply(null, b.subarray(1, 37)); seen[u] = true; }
-      }
-      const src = (valid.find(function (it) { return it.keepAllSamples && it.allRawSamples; }) || {}).allRawSamples || [];
-      const extra = [];
-      for (const body of src) {
+    // 需要时补齐源文件里"被引用到的"其它采样（dualBrush 的第二个笔尖等）
+    const seenUuid = {};
+    for (const it of valid) {
+      const b = it.rawSample;
+      if (b && b.length >= 37) seenUuid[String.fromCharCode.apply(null, b.subarray(1, 37)).toLowerCase()] = true;
+    }
+    for (const it of valid) {
+      const uuids = it.keepSampleUuids || [];
+      const map = it.sampleMap || null;
+      for (const u of uuids) {
+        if (!u || !map) continue;
+        const key = String(u).toLowerCase();
+        if (seenUuid[key]) continue;
+        const body = map.get(key);
         if (!body || body.length < 320) continue;
-        const u = String.fromCharCode.apply(null, body.subarray(1, 37));
-        if (seen[u]) continue;
-        seen[u] = true;
+        seenUuid[key] = true;
         const copy = new Uint8Array(body);
-        const pad2 = ((copy.length + 3) & ~3) - copy.length;
-        extra.push(util.concat([_u32be(copy.length), copy, new Uint8Array(pad2)]));
-      }
-      if (extra.length) {
-        for (const e of extra) sampParts.push(e);
+        const pad3 = ((copy.length + 3) & ~3) - copy.length;
+        sampParts.push(util.concat([_u32be(copy.length), copy, new Uint8Array(pad3)]));
       }
     }
     const sampData = util.concat(sampParts);
@@ -886,7 +943,20 @@
           _descItem('Mnm ', 'UntF', _descUntF('#Prc', Math.round((it.minOpacityRatio === undefined ? 0.25 : it.minOpacityRatio) * 100)))
         ])));
       }
-      if (it.psTexture && patternTpl) {
+      const pref = (it.patternRef && it.psTexture) ? it.patternRef : null;
+      if (pref) {
+        presetItems.push(_descItem('useTexture', 'bool', _descBool(true)));
+        presetItems.push(_descItem('TxtC', 'bool', _descBool(true)));
+        presetItems.push(_descItem('interpretation', 'bool', _descBool(true)));
+        presetItems.push(_descItem('textureBlendMode', 'enum', _descEnum('BlnM', 'hght')));
+        presetItems.push(_descItem('textureDepth', 'UntF', _descUntF('#Prc', Math.round(Math.max(0, Math.min(1, it.textureDepth === undefined ? 0.5 : it.textureDepth)) * 100))));
+        presetItems.push(_descItem('minimumDepth', 'UntF', _descUntF('#Prc', 0)));
+        presetItems.push(_descItem('Txtr', 'Objc', _descObjc('', 'Ptrn', [
+          _descItem('Nm  ', 'TEXT', _descText('$$$/Presets/Patterns/' + pref.name + '=' + pref.name)),
+          _descItem('Idnt', 'TEXT', _descText(pref.id))
+        ])));
+        presetItems.push(_descItem('textureScale', 'UntF', _descUntF('#Prc', Math.round(Math.max(1, Math.min(1000, (it.textureScale === undefined ? 1 : it.textureScale) * 100))))));
+      } else if (it.psTexture && patternTpl) {
         presetItems.push(_descItem('useTexture', 'bool', _descBool(true)));
         presetItems.push(_descItem('TxtC', 'bool', _descBool(true)));
         presetItems.push(_descItem('interpretation', 'bool', _descBool(true)));
@@ -902,9 +972,8 @@
         presetItems.push(_descItem('useTexture', 'bool', _descBool(false)));
       }
       presetItems.push(
-        _descItem('dualBrush', 'Objc', _descObjc('', 'dualBrush', [
-          _descItem('useDualBrush', 'bool', _descBool(false))
-        ])),
+        _descItem('dualBrush', 'Objc', (it.rawDualObjc && it.dualOn) ? it.rawDualObjc :
+          _descObjc('', 'dualBrush', [_descItem('useDualBrush', 'bool', _descBool(false))])),
         _descItem('brushGroup', 'Objc', _descObjc('', 'brushGroup', [
           _descItem('useBrushGroup', 'bool', _descBool(false))
         ])),
@@ -943,12 +1012,21 @@
     ]);
     const descBlock = _block8('desc', descData);
     // 源 ABR 有纹理图案时，原样带上 patt 块（否则描述符里的 Txtr 引用会悬空）
-    const wantTex = valid.some(function (it) { return it.psTexture; });
+    const refOnly = valid.some(function (it) { return it.psTexture && it.patternRef; });
+    const wantTex = !refOnly && valid.some(function (it) { return it.psTexture; });
     // 优先级：源文件自带的图案块（描述符里的 Txtr 引用能对得上）> 自己生成的 256×256 颗粒图案
     let pattData = null;
     const srcPatt = (optsFromArgs && optsFromArgs.patternBlock) ||
       (valid[0] && valid[0]._pattBlock) || null;
-    if (srcPatt) pattData = new Uint8Array(srcPatt);
+    const recList = (optsFromArgs && optsFromArgs.patternRecords) || null;
+    if (recList && recList.length) {
+      let total2 = 0;
+      for (const r of recList) total2 += r.data.length;
+      const merged = new Uint8Array(total2);
+      let off = 0;
+      for (const r of recList) { merged.set(r.data, off); off += r.data.length; }
+      pattData = merged;
+    } else if (srcPatt) pattData = new Uint8Array(srcPatt);
     if (!pattData && wantTex) {
       const rec = buildPatternRecord(11);
       if (rec) pattData = rec;
@@ -988,7 +1066,7 @@
     return new Uint8Array(rec);
   }
 
-  const api = { isAbr, parse, parseAsync, writeAbr, writeAbrV6, buildPatternFile, maskFromRGBA };
+  const api = { isAbr, parse, parseAsync, writeAbr, writeAbrV6, buildPatternFile, splitPatternBlock, maskFromRGBA };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { abr: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

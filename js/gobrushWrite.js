@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 /* Huawei 天生会画 / GoPaint .gobrush writer.
    Built by CLONING a real export so record order, resource names, dimensions and the property
    block are exactly what the app writes. Only PNG payloads, uuid, name and brush parameters change. */
@@ -201,10 +201,18 @@
     const propBytes = patchUuid(b64ToBytes(T.propPayload), T.templateUuid, uuid);
     setPropField(propBytes, 'strokeSpacing', spacing);
     setPropField(propBytes, 'propertiesMaxSize', size);
-    setPropField(propBytes, 'propertiesMinSize', Math.max(1, Math.round(size * 0.1)));
+    // 按原笔刷输出：最小尺寸/最小不透明度/流量/纹理深度都用源笔刷的真实值
+    const minSizeRatio = (EXTRA && EXTRA.minSizeRatio) ? Math.max(0, Math.min(1, EXTRA.minSizeRatio)) : 0.1;
+    const minAlphaRatio = (EXTRA && EXTRA.minOpacityRatio) ? Math.max(0, Math.min(1, EXTRA.minOpacityRatio)) : 1;
+    const flow = (EXTRA && EXTRA.flowPct !== undefined) ? Math.round(EXTRA.flowPct * 100) : 100;
+    setPropField(propBytes, 'propertiesMinSize', Math.max(1, Math.round(size * minSizeRatio)));
     setPropField(propBytes, 'propertiesMaxAlpha', opacity);
-    setPropField(propBytes, 'propertiesMinAlpha', opacity);
-    setPropField(propBytes, 'renderingFlow', 100);
+    setPropField(propBytes, 'propertiesMinAlpha', Math.max(1, Math.round(opacity * minAlphaRatio)));
+    setPropField(propBytes, 'renderingFlow', Math.max(1, Math.min(100, flow)));
+    if (EXTRA && EXTRA.hasTexture) {
+      const depth = Math.round(((EXTRA.textureDepth === undefined ? 0.5 : EXTRA.textureDepth)) * 100);
+      if (!setPropField(propBytes, 'grainDepth', Math.max(0, Math.min(100, depth)))) { /* 模板没有该属性则跳过 */ }
+    }
     const scatter = (EXTRA && EXTRA.scatter !== undefined && EXTRA.scatter !== null)
       ? Math.max(0, Math.min(100, Math.round(EXTRA.scatter)))
       : (EXTRA && EXTRA.hasTexture ? 30 : 0);
@@ -225,6 +233,10 @@
     EXTRA = Object.assign({}, opts);
     if (EXTRA.scatter === undefined) EXTRA.scatter = brush.hasTexture ? 30 : 0;
     EXTRA.hasTexture = !!brush.hasTexture;
+    if (EXTRA.textureDepth === undefined) EXTRA.textureDepth = brush.textureDepth;
+    if (EXTRA.minSizeRatio === undefined) EXTRA.minSizeRatio = brush.minSizeRatio;
+    if (EXTRA.minOpacityRatio === undefined) EXTRA.minOpacityRatio = brush.minOpacityRatio;
+    if (EXTRA.flowPct === undefined) EXTRA.flowPct = brush.flowPct;
     const uuid = makeUuid();
     const name = String(brush.name || 'brush').slice(0, 40) || 'brush';
     const size = Math.max(1, Math.min(1000, Math.round(brush.sizePx || 40)));

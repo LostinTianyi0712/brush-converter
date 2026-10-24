@@ -58,6 +58,13 @@
     const tipFromShape = decodeShape(shapeEntry);
     const tipFromGrain = shapeEntry ? null : decodeShape(grainEntry);
     const tip = tipFromShape || tipFromGrain;
+    let grainRgba = null;
+    if (grainEntry) {
+      try {
+        const im = png.decode(grainEntry.data());
+        grainRgba = { w: im.width, h: im.height, rgba: png.toMaskRgba(im.rgba) };
+      } catch (e) { grainRgba = null; }
+    }
     const tipSource = tipFromShape ? 'shape' : (tipFromGrain ? 'grain' : 'none');
     const maxSize = toRatio(params.maxSize, 1);
     const minSize = toRatio(params.minSize, 0.01);
@@ -80,6 +87,7 @@
       _rawArchive: arcEntry.data(),
       _rawShape: shapeEntry ? shapeEntry.data() : null,
       _rawGrain: grainEntry ? grainEntry.data() : null,
+      _grainRgba: grainRgba,
       sizePx,
       spacingPct: Math.max(0.5, Math.min(1000, spacing * 100)),
       opacity,
@@ -234,6 +242,49 @@
     return png.encode(W, H, bg);
   }
 
+  /* 圆头笔尖（给没有 Shape 的默认圆头笔刷做缩略图） */
+  function roundTip(sizePx) {
+    const n = Math.max(32, Math.min(256, Math.round(sizePx || 128)));
+    const rgba = new Uint8Array(n * n * 4);
+    const r = n / 2;
+    for (let y = 0; y < n; y++) {
+      for (let x = 0; x < n; x++) {
+        const d = Math.sqrt((x - r + 0.5) * (x - r + 0.5) + (y - r + 0.5) * (y - r + 0.5)) / r;
+        const a = Math.max(0, Math.min(1, 1 - d)) * 255;
+        const o = (y * n + x) * 4;
+        rgba[o] = 255; rgba[o + 1] = 255; rgba[o + 2] = 255; rgba[o + 3] = Math.round(a);
+      }
+    }
+    return { w: n, h: n, rgba: rgba };
+  }
+
+  /* Grain.png：优先用源笔刷真实纹理（Procreate Grain / ABR 图案），否则程序化噪声 */
+  function grainPng(brush) {
+    if (brush._grainRgba && brush._grainRgba.w > 0) {
+      const g = brush._grainRgba;
+      return png.encode(g.w, g.h, g.rgba);
+    }
+    if (brush._patternPixels && brush._patternPixels.w > 0) {
+      const pp = brush._patternPixels, w = pp.w, h = pp.h;
+      const out = new Uint8Array(w * h * 4);
+      for (let i = 0; i < w * h; i++) {
+        let v;
+        if (pp.mode === 3) { const o = i * 3; v = Math.round((pp.data[o] + pp.data[o + 1] + pp.data[o + 2]) / 3); }
+        else v = pp.data[i];
+        out[i * 4] = v; out[i * 4 + 1] = v; out[i * 4 + 2] = v; out[i * 4 + 3] = 255;
+      }
+      return png.encode(w, h, out);
+    }
+    const gw = 512, gh = 512;
+    const noise = convGrainNoise(gw, gh, 5, 4);
+    const grainRgba = new Uint8Array(gw * gh * 4);
+    for (let i = 0; i < gw * gh; i++) {
+      const v = Math.round(255 * (0.55 + 0.45 * noise[i]));
+      grainRgba[i * 4] = v; grainRgba[i * 4 + 1] = v; grainRgba[i * 4 + 2] = v; grainRgba[i * 4 + 3] = 255;
+    }
+    return png.encode(gw, gh, grainRgba);
+  }
+
   function buildArchive(brush, opts) {
     const D = defaultsApi.defaults();
     const params = Object.assign(D, {
@@ -285,10 +336,9 @@
       const entries = [{ name: 'Brush.archive', data: new Uint8Array(brush._rawArchive) }];
       if (brush._rawShape) entries.push({ name: 'Shape.png', data: new Uint8Array(brush._rawShape) });
       if (brush._rawGrain) entries.push({ name: 'Grain.png', data: new Uint8Array(brush._rawGrain) });
-      const tipRaw = brush._rawShape ? decodeShape({ data: () => new Uint8Array(brush._rawShape) }) : null;
-      if (tipRaw) {
-        entries.push({ name: 'QuickLook/Thumbnail.png', data: thumbPng(tipRaw, { spacingPct: brush.spacingPct, opacity: brush.opacity }) });
-      }
+      let tipRaw = brush._rawShape ? decodeShape({ data: () => new Uint8Array(brush._rawShape) }) : null;
+      if (!tipRaw) tipRaw = roundTip(brush.sizePx || 128);
+      entries.push({ name: 'QuickLook/Thumbnail.png', data: thumbPng(tipRaw, { spacingPct: brush.spacingPct, opacity: brush.opacity }) });
       return zip.write(entries);
     }
     const tip = tipRGBA(brush, opts);
@@ -302,15 +352,7 @@
       { name: 'QuickLook/Thumbnail.png', data: thumb }
     ];
     if (brush.hasTexture && !opts.noTextureBake) {
-      // 颗粒纹理：用确定性噪声生成 Grain.png（Procreate 会把它当 grain 贴图）
-      const gw = 512, gh = 512;
-      const noise = convGrainNoise(gw, gh, 5, 4);
-      const grainRgba = new Uint8Array(gw * gh * 4);
-      for (let i = 0; i < gw * gh; i++) {
-        const v = Math.round(255 * (0.55 + 0.45 * noise[i]));
-        grainRgba[i * 4] = v; grainRgba[i * 4 + 1] = v; grainRgba[i * 4 + 2] = v; grainRgba[i * 4 + 3] = 255;
-      }
-      entries.push({ name: 'Grain.png', data: png.encode(gw, gh, grainRgba) });
+      entries.push({ name: 'Grain.png', data: grainPng(brush) });
     }
     return zip.write(entries);
   }
@@ -325,8 +367,9 @@
         files.push({ name: folder + 'Brush.archive', data: new Uint8Array(brush._rawArchive) });
         if (brush._rawShape) files.push({ name: folder + 'Shape.png', data: new Uint8Array(brush._rawShape) });
         if (brush._rawGrain) files.push({ name: folder + 'Grain.png', data: new Uint8Array(brush._rawGrain) });
-        const tp = brush._rawShape ? decodeShape({ data: () => new Uint8Array(brush._rawShape) }) : null;
-        if (tp) files.push({ name: folder + 'QuickLook/Thumbnail.png', data: thumbPng(tp, { spacingPct: brush.spacingPct, opacity: brush.opacity }) });
+        let tp = brush._rawShape ? decodeShape({ data: () => new Uint8Array(brush._rawShape) }) : null;
+        if (!tp) tp = roundTip(brush.sizePx || 128);
+        files.push({ name: folder + 'QuickLook/Thumbnail.png', data: thumbPng(tp, { spacingPct: brush.spacingPct, opacity: brush.opacity }) });
         return;
       }
       const tip = tipRGBA(brush);
@@ -338,14 +381,7 @@
       files.push({ name: folder + 'Shape.png', data: shape.png });
       files.push({ name: folder + 'QuickLook/Thumbnail.png', data: thumb });
       if (brush.hasTexture && !opts.noTextureBake) {
-        const gw = 512, gh = 512;
-        const noise = convGrainNoise(gw, gh, 5, 4);
-        const grainRgba = new Uint8Array(gw * gh * 4);
-        for (let gi = 0; gi < gw * gh; gi++) {
-          const v = Math.round(255 * (0.55 + 0.45 * noise[gi]));
-          grainRgba[gi * 4] = v; grainRgba[gi * 4 + 1] = v; grainRgba[gi * 4 + 2] = v; grainRgba[gi * 4 + 3] = 255;
-        }
-        files.push({ name: folder + 'Grain.png', data: png.encode(gw, gh, grainRgba) });
+        files.push({ name: folder + 'Grain.png', data: grainPng(brush) });
       }
     });
     if (!files.length) throw new Error('没有可写入 Procreate 的笔刷（都缺少笔尖图像）');

@@ -108,7 +108,7 @@
     };
   }
 
-  function parseKpp(bytes, fileName) {
+  function parseKpp(bytes, fileName, resourceMap) {
     const warnings = [];
     const chunks = png.readTextChunks(bytes);
     const xml = chunks.preset || '';
@@ -192,6 +192,29 @@
           tip = { w: img.width, h: img.height, rgba: png.toMaskRgba(img.rgba) };
           break;
         } catch (e) { /* try next */ }
+      }
+    }
+    if (!tip && resourceMap) {
+      // 资源包（.bundle）：按 requiredBrushFile 从包内其它条目找笔尖
+      const wanted = [];
+      const nameRe = /name="requiredBrushFiles?(?:List)?"[^>]*>\s*<!\[CDATA\[([^\]]*)\]\]/g;
+      let mm;
+      while ((mm = nameRe.exec(xml))) {
+        String(mm[1] || '').split(/[,;]/).forEach(function (n) { n = n.trim(); if (n) wanted.push(n); });
+      }
+      for (const name2 of wanted) {
+        const raw = resourceMap[name2] || resourceMap[name2.replace(/^.*\//, '')];
+        if (!raw) continue;
+        try {
+          if (gimp.isGbr(raw)) {
+            const parsed2 = gimp.parseGbr(raw, name2);
+            if (parsed2.brushes[0] && parsed2.brushes[0].tip) { tip = parsed2.brushes[0].tip; break; }
+          } else if (png.isPng(raw)) {
+            const img = png.decode(raw);
+            tip = { w: img.width, h: img.height, rgba: png.toMaskRgba(img.rgba) };
+            break;
+          }
+        } catch (e) { /* next */ }
       }
     }
     if (!tip) {

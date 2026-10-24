@@ -25,6 +25,7 @@
   </div>
   <div class="actions">
     <button id="btnSelectAll" class="btn ghost" title="全选/取消全选所有笔刷">全选笔刷</button>
+    <button id="btnLog" class="btn ghost" title="导出本次运行日志">导出日志</button>
     <button id="btnClear" class="btn ghost" title="清空列表">清空</button>
     <button id="btnConvert" class="btn primary" disabled>转换并下载 ZIP</button>
   </div>
@@ -73,6 +74,25 @@
         <option value="off">关闭（输出纯净笔尖）</option>
       </select>
     </div>
+    <details class="advanced-opts">
+      <summary>高级设置</summary>
+      <div class="opt-row">
+        <div class="opt">
+          <label>还原优先</label>
+          <select id="optFidelity">
+            <option value="on" selected>开启（默认，同格式字节级保留）</option>
+            <option value="off">关闭（强制重建笔刷）</option>
+          </select>
+        </div>
+        <div class="opt">
+          <label>纹理处理</label>
+          <select id="optTextureMode">
+            <option value="bake" selected>烘焙进笔尖（默认）</option>
+            <option value="pattern">图案文件（.pat + ABR 引用，可调纹理）</option>
+          </select>
+        </div>
+      </div>
+    </details>
     <div class="opt">
       <label>压感</label>
       <select id="optPressure">
@@ -165,6 +185,7 @@
 <script src="./js/genericbrush.js"></script>
 <script src="./js/abrUuidPool.js"></script>
 <script src="./js/abrPatternTemplate.js"></script>
+<script src="./js/pat.js"></script>
 <script src="./js/abr.js"></script>
 <script src="./js/procreate.js"></script>
 <script src="./js/bru.js"></script>

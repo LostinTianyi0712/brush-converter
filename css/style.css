@@ -360,3 +360,22 @@ main {
 
 .badge.parsing { background: #eef1f6; color: #64748b; }
 .badge.abr { background: #e8f0ff; color: #2563eb; }
+
+/* 高级设置折叠面板 */
+.advanced-opts {
+  width: 100%;
+  margin: 6px 0 2px;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 10px;
+  padding: 4px 10px 8px;
+  background: rgba(255,255,255,.02);
+}
+.advanced-opts summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: #9aa4b2;
+  padding: 4px 0;
+  user-select: none;
+}
+.advanced-opts[open] summary { color: #cfd6e4; margin-bottom: 6px; }
+.advanced-opts .opt-row { display: flex; flex-wrap: wrap; gap: 10px 18px; }

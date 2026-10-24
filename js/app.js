@@ -281,6 +281,11 @@
         render();
         continue;
       }
+      if (bytes.length > 150 * 1024 * 1024) {
+        window.__brushLogs = window.__brushLogs || [];
+        window.__brushLogs.push(new Date().toISOString() + ' 大文件 ' + f.name + ' ' + Math.round(bytes.length / 1048576) + 'MB');
+        toast('文件较大（' + Math.round(bytes.length / 1048576) + 'MB），解析可能占用较多内存', 5000);
+      }
       const kind = BC.convert.detect(f.name, bytes);
       let opts = null;
       if (kind === 'sut' && f.path && window.BrushDesktop && window.BrushDesktop.sutDecrypted) {
@@ -326,7 +331,9 @@
     const packOut = $('#optPack') ? $('#optPack').value !== 'files' : true;
     const goScatter = $('#optGoScatter') ? $('#optGoScatter').value : 'auto';
     const grainBake = $('#optGrainBake') ? $('#optGrainBake').value !== 'off' : true;
-    return { tipSize, sizeScale, spacingOverride, pressureMode, prefix, groupBySource, mode, target, packOut, goScatter, grainBake };
+    const fidelity = $('#optFidelity') ? $('#optFidelity').value !== 'off' : true;
+    const textureMode = $('#optTextureMode') ? $('#optTextureMode').value : 'bake';
+    return { tipSize, sizeScale, spacingOverride, pressureMode, prefix, groupBySource, mode, target, packOut, goScatter, grainBake, fidelity, textureMode };
   }
 
   function toast(msg, ms) {
@@ -375,6 +382,48 @@
     const outFiles = [];
     const failed = [];
     const warnings = [];
+    // ABR 目标：把源笔刷的真实纹理导出为 PNG，用户可在 PS「编辑→定义图案」后手动指定（可调纹理）
+    if (opts.target === 'abr' || opts.target === 'all') {
+      try {
+        const seenTex = {};
+        let texIndex = 0;
+        for (const rec of records) {
+          const list = rec.brushes || [];
+          for (const b of list) {
+            if (!b || !b.hasTexture) continue;
+            const tex = BC.convert.makeTexturePng(b);
+            if (!tex) continue;
+            const key = tex.w + 'x' + tex.h + ':' + BC.util.md5(tex.bytes);
+            if (seenTex[key]) continue;
+            seenTex[key] = 1;
+            texIndex++;
+            outFiles.push({ name: '纹理_' + texIndex + '_' + tex.w + 'x' + tex.h + '.png', data: tex.bytes });
+          }
+        }
+        if (texIndex) warnings.push('已导出 ' + texIndex + ' 张纹理 PNG：在 PS 里「编辑→定义图案」后可手动指定给画笔纹理（可调深度/缩放）');
+      } catch (e) { warnings.push('纹理导出失败：' + e.message); }
+    }
+    let commonPat = null;
+    // 图案文件模式：用第一支有真实纹理的笔刷生成一份 .pat，ABR 里写 Txtr 引用它
+    if (opts.textureMode === 'pattern' && (opts.target === 'abr' || opts.target === 'all')) {
+      try {
+        let texBrush = null;
+        for (const rec of records) {
+          for (const b of rec.brushes) {
+            if (b && b.enabled !== false && b.hasTexture && (b._patternPixels || b._grainRgba)) { texBrush = b; break; }
+          }
+          if (texBrush) break;
+        }
+        if (!texBrush) {
+          warnings.push('本次没有带纹理的笔刷，未生成 .pat（普通笔刷只需 .abr）');
+        } else {
+          const pat = BC.convert.makePatternFile([texBrush], { size: 256 });
+          commonPat = { id: pat.ref.id, name: pat.ref.name };
+          outFiles.push({ name: '纹理图案_导入PS图案面板.pat', data: pat.bytes });
+          warnings.push('已生成 纹理图案_导入PS图案面板.pat：先在 PS 图案面板导入它，再导入 ABR，纹理才可调');
+        }
+      } catch (e) { warnings.push('图案生成失败：' + e.message); }
+    }
     const ALL_FORMATS = ['bru', 'abr', 'gopaint', 'gopaint_set', 'gopaint_abr', 'brushset', 'brush', 'gbr', 'gih',
       'myb', 'kbundle', 'sai2', 'png', 'painter', 'medibang'];
     const usedFileNames = new Set();
@@ -397,7 +446,10 @@
         pressure: pressureOpt(),
         pkgId: rec.pkgId,
         scatter: opts.goScatter === 'auto' ? undefined : Number(opts.goScatter),
-        noTextureBake: opts.grainBake === false
+        noTextureBake: opts.grainBake === false,
+        patternRef: commonPat,
+        fidelity: opts.fidelity === false ? false : undefined,
+        textureMode: opts.textureMode === 'pattern' ? 'pattern' : undefined
       };
     }
 
@@ -716,6 +768,21 @@
   dz.addEventListener('drop', e => {
     const dt = e.dataTransfer;
     if (dt && dt.files && dt.files.length) addFiles(dt.files);
+  });
+  // 本地日志（不联网）：记录错误/警告，便于反馈
+  window.__brushLogs = window.__brushLogs || [];
+  function pushLog(line) { window.__brushLogs.push(new Date().toISOString() + ' ' + line); }
+  window.addEventListener('error', function (e) { pushLog('ERROR ' + (e.message || e.type)); });
+  window.addEventListener('unhandledrejection', function (e) { pushLog('REJECT ' + (e.reason && e.reason.message ? e.reason.message : e.reason)); });
+  const btnLog = $('#btnLog');
+  if (btnLog) btnLog.addEventListener('click', function () {
+    const NL = String.fromCharCode(10);
+    const head = '笔刷转换器 ' + ($('#ver') ? $('#ver').textContent : '') + NL + 'UA: ' + navigator.userAgent + NL + '时间: ' + new Date().toISOString() + NL;
+    const body = (window.__brushLogs || []).join(NL) || '(无日志)';
+    const data = BC.util.utf8Encode(head + body);
+    const saver = window.BCSaver;
+    if (saver && saver.save) saver.save([{ name: '运行日志.txt', data: data }], {});
+    else toast('当前环境不支持保存日志');
   });
   btnConvert.addEventListener('click', convertAll);
   if ($('#optTarget')) $('#optTarget').addEventListener('change', function () { render(); });

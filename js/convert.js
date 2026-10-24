@@ -77,12 +77,22 @@
     const entries = zip.read(bytes);
     const brushes = [];
     const warnings = [];
+    const resourceMap = {};
+    for (const e of entries) {
+      try {
+        const d = e.data();
+        const buf = d instanceof Uint8Array ? d : new Uint8Array(d);
+        resourceMap[e.name] = buf;
+        const base = String(e.name).replace(/^.*\//, '');
+        if (!resourceMap[base]) resourceMap[base] = buf;
+      } catch (err) { /* skip */ }
+    }
     for (const entry of entries) {
       if (!/^paintoppresets\/[^/]+\.kpp$/i.test(entry.name)) continue;
       let data;
       try { data = entry.data(); } catch (e) { warnings.push(entry.name + ' 读取失败'); continue; }
       try {
-        const r = krita.parseKpp(data instanceof Uint8Array ? data : new Uint8Array(data), entry.name);
+        const r = krita.parseKpp(data instanceof Uint8Array ? data : new Uint8Array(data), entry.name, resourceMap);
         (r.brushes || []).forEach(function (b) {
           b.source = 'krita';
           b.bundle = name;
@@ -421,18 +431,57 @@
     return { bytes: bytes, count: 0, passthrough: true };
   }
 
-  /** 生成 .pat 图案文件（PS 图案面板可导入；ABR 里的 patt 块不会自动进 PS 图案库） */
+  /** 导出笔刷的真实纹理为 PNG（PS 里可「编辑→定义图案」手动指定，实现可调纹理） */
+  function makeTexturePng(brush) {
+    if (!brush) return null;
+    if (brush._grainRgba && brush._grainRgba.w > 0) {
+      return { bytes: png.encode(brush._grainRgba.w, brush._grainRgba.h, brush._grainRgba.rgba), w: brush._grainRgba.w, h: brush._grainRgba.h };
+    }
+    if (brush._patternPixels && brush._patternPixels.w > 0) {
+      const pp = brush._patternPixels, w = pp.w, h = pp.h;
+      const out = new Uint8Array(w * h * 4);
+      for (let i = 0; i < w * h; i++) {
+        let v;
+        if (pp.mode === 3) { const o = i * 3; v = Math.round((pp.data[o] + pp.data[o + 1] + pp.data[o + 2]) / 3); }
+        else v = pp.data[i];
+        out[i * 4] = v; out[i * 4 + 1] = v; out[i * 4 + 2] = v; out[i * 4 + 3] = 255;
+      }
+      return { bytes: png.encode(w, h, out), w: w, h: h };
+    }
+    return null;
+  }
+
+  /** 生成 .pat 图案文件（PS 图案面板导入后，ABR 里的纹理引用才能解析）
+      有真实纹理（ABR patt 像素 / Procreate Grain）时用真实纹理，否则用确定性噪声 */
   function makePatternFile(brushList, opts) {
     opts = opts || {};
-    const list = brushList || [];
-    const src = list.find(function (b) { return b && b._pattBlock && b._pattBlock.length; });
-    if (src && src._pattBlock.length <= 32 * 1024 * 1024) {
-      // 源 ABR 自带图案：原样导出（仍是合法的图案记录流）
-      return { bytes: new Uint8Array(src._pattBlock), count: 1 };
+    const patMod = isNode ? require('./pat.js') : root.BC.pat;
+    let gray = null, w = 0, h = 0;
+    for (const b of (brushList || [])) {
+      if (!b) continue;
+      if (b._patternPixels && b._patternPixels.w > 0) {
+        const pp = b._patternPixels;
+        w = pp.w; h = pp.h;
+        gray = new Uint8Array(w * h);
+        for (let i = 0; i < w * h; i++) {
+          if (pp.mode === 3) { const o = i * 3; gray[i] = Math.round((pp.data[o] + pp.data[o + 1] + pp.data[o + 2]) / 3); }
+          else gray[i] = pp.data[i];
+        }
+        break;
+      }
+      if (b._grainRgba && b._grainRgba.w > 0) {
+        w = b._grainRgba.w; h = b._grainRgba.h;
+        gray = new Uint8Array(w * h);
+        for (let i = 0; i < w * h; i++) gray[i] = b._grainRgba.rgba[i * 4 + 3];
+        break;
+      }
     }
-    const bytes = abr.buildPatternFile();
-    if (!bytes) throw new Error('无法生成图案');
-    return { bytes: bytes, count: 1 };
+    if (gray) {
+      const made = patMod.buildFromGray('brushconv-texture', w, h, gray, { uuid: opts.uuid });
+      return { bytes: made.bytes, count: 1, ref: { id: made.id, name: made.name }, width: w, height: h };
+    }
+    const made = patMod.buildGrainPat({ size: opts.size || 256, seed: opts.seed || 11 });
+    return { bytes: made.bytes, count: 1, ref: { id: made.id, name: made.name }, width: made.width, height: made.height };
   }
 
   function makeAbrPack(brushList, opts) {
@@ -460,9 +509,10 @@
       //  · 源有原始描述符（保留引用路径）→ 保留原纹理引用
       //  · 需要重建描述符（其他格式来源）→ 把纹理烘焙进笔尖（PS 不会从 ABR 导入图案，写图案引用会变空）
       const willUseRaw = opts.preserveRaw !== false && !!brush._rawPreset;
-      const usePsTexture = !!brush.hasTexture && opts.writePsTexture === true && willUseRaw;
-      if (brush.hasTexture && !usePsTexture && opts.noTextureBake !== true) {
-        rgba = bakeGrainIntoRGBA(rgba, w, h, brush.grainStrength === undefined ? 0.35 : brush.grainStrength, 3);
+      const textureMode = opts.textureMode === 'pattern';
+      const usePsTexture = !!brush.hasTexture && (textureMode || (opts.writePsTexture === true && willUseRaw));
+      if (brush.hasTexture && !usePsTexture && !textureMode && opts.noTextureBake !== true) {
+        rgba = bakeTextureIntoRGBA(rgba, w, h, brush, brush.textureDepth === undefined ? (brush.grainStrength === undefined ? 0.35 : brush.grainStrength) : brush.textureDepth);
       }
       items.push({
         name: name, w: w, h: h, gray: abr.maskFromRGBA(rgba),
@@ -485,13 +535,16 @@
         opacityPct: brush.opacity === undefined ? 1 : brush.opacity,
         hardness: brush.hardness,
         psTexture: usePsTexture,
+        patternRef: (usePsTexture && opts.patternRef) ? opts.patternRef : null,
         textureDepth: brush.textureDepth,
         textureScale: brush.textureScale,
         // 源就是 ABR 时，保留原始描述符/样本字节（部分导出也能保住 PS 原版特性）
         rawPreset: opts.preserveRaw !== false ? brush._rawPreset : undefined,
         rawSample: opts.preserveRaw !== false ? brush._rawSample : undefined,
-        keepAllSamples: opts.preserveRaw !== false && !!brush._allRawSamples,
-        allRawSamples: opts.preserveRaw !== false ? brush._allRawSamples : undefined,
+        keepSampleUuids: brush.dualBrush && brush.dualBrush.uuid ? [brush.dualBrush.uuid] : [],
+        sampleMap: brush._sampleMap,
+        rawDualObjc: brush._rawDualObjc,
+        dualOn: !!(brush.dualBrush && brush.dualBrush.enabled),
         rle: opts.abrRle !== false,
         uuid: (opts.abrUuids && opts.abrUuids[i]) || undefined
       });
@@ -506,17 +559,32 @@
       cur.count++;
     }
     const hasNamed = groups.some(function (g) { return !!g.name; });
-    // 源 ABR 的纹理图案块：只在不太大时原样带上（否则文件会暴涨）
+    // 源 ABR 的纹理图案：优先只带"被这些笔刷引用到的"图案记录（避免整块 143MB 全搬）
     let patternBlock = null;
+    let patternRecords = null;
     let patternWarning = null;
     if (opts.preserveRaw !== false) {
-      const withPatt = brushList.find(function (b) { return b && b._pattBlock && b._pattBlock.length; });
-      if (withPatt) {
-        if (withPatt._pattBlock.length <= 32 * 1024 * 1024) patternBlock = withPatt._pattBlock;
-        else patternWarning = '源文件的纹理图案块过大（' + Math.round(withPatt._pattBlock.length / 1048576) + 'MB），已跳过；描述符里的纹理引用会失效';
+      const seen = {};
+      const picked = [];
+      for (const b of brushList) {
+        const rec = b && b._patternRecord;
+        if (rec && !seen[rec.id + '|' + rec.name]) { seen[rec.id + '|' + rec.name] = 1; picked.push(rec); }
+      }
+      if (picked.length) {
+        let total = 0;
+        for (const r of picked) total += r.data.length;
+        if (total <= 32 * 1024 * 1024) {
+          patternRecords = picked;
+        } else {
+          patternWarning = '引用的纹理图案合计过大（' + Math.round(total / 1048576) + 'MB），已跳过';
+        }
+      }
+      if (!patternRecords) {
+        const withPatt = brushList.find(function (b) { return b && b._pattBlock && b._pattBlock.length; });
+        if (withPatt && withPatt._pattBlock.length <= 32 * 1024 * 1024) patternBlock = withPatt._pattBlock;
       }
     }
-    const bytes = abr.writeAbrV6(items, { groups: hasNamed ? groups : null, patternBlock: patternBlock });
+    const bytes = abr.writeAbrV6(items, { groups: hasNamed ? groups : null, patternBlock: patternBlock, patternRecords: patternRecords });
     if (patternWarning && !opts._patternWarned) { opts._patternWarned = true; console.warn(patternWarning); }
     return { bytes: bytes, count: items.length, meta: items };
   }
@@ -991,6 +1059,38 @@ Write-Host 'restart MediBang Paint Pro'
     return out;
   }
 
+  /* 用源笔刷的真实纹理（ABR 图案 / Procreate Grain）烘焙；没有时退回程序化噪声 */
+  function bakeTextureIntoRGBA(rgba, w, h, brush, strength) {
+    const k = Math.max(0, Math.min(1, strength === undefined ? 0.35 : strength));
+    let tex = null;
+    if (brush && brush._grainRgba && brush._grainRgba.w > 0) {
+      tex = { w: brush._grainRgba.w, h: brush._grainRgba.h, sample: function (x, y) { return brush._grainRgba.rgba[((y * brush._grainRgba.w) + x) * 4 + 3] / 255; } };
+    } else if (brush && brush._patternPixels && brush._patternPixels.w > 0) {
+      const pp = brush._patternPixels;
+      tex = {
+        w: pp.w, h: pp.h, sample: function (x, y) {
+          const o = (y * pp.w) + x;
+          if (pp.mode === 3) { const o3 = o * 3; return (pp.data[o3] + pp.data[o3 + 1] + pp.data[o3 + 2]) / 765; }
+          return pp.data[o] / 255;
+        }
+      };
+    }
+    if (!tex) return bakeGrainIntoRGBA(rgba, w, h, k, 3);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        const a = rgba[i * 4 + 3];
+        if (!a) continue;
+        const tx = Math.min(tex.w - 1, Math.floor(x * tex.w / Math.max(1, w)));
+        const ty = Math.min(tex.h - 1, Math.floor(y * tex.h / Math.max(1, h)));
+        const v = tex.sample(tx, ty);
+        const factor = 1 - k + k * (0.15 + 0.85 * v);
+        rgba[i * 4 + 3] = Math.max(0, Math.min(255, Math.round(a * factor)));
+      }
+    }
+    return rgba;
+  }
+
   function bakeGrainIntoRGBA(rgba, w, h, strength, seed) {
     const noise = grainNoise(w, h, seed || 1, 3);
     const k = Math.max(0, Math.min(1, strength === undefined ? 0.35 : strength));
@@ -1009,11 +1109,38 @@ Write-Host 'restart MediBang Paint Pro'
     const files = [];
     const mk = (name, text) => files.push({ name: name, data: util.utf8Encode(text) });
     if (target === 'abr') {
+      mk('安装到Photoshop.ps1', [
+        '$ErrorActionPreference = "SilentlyContinue"',
+        '# 自动把 .abr 放进 Brushes、把 .pat 放进 Patterns（PS 启动时自动加载，无需手动导入）',
+        '$roots = @()',
+        '$roots += Join-Path $env:APPDATA "Adobe"',
+        '$roots += "C:\Program Files\Adobe"',
+        '$roots += "D:\Program Files\Adobe"',
+        '$roots += "H:\ps"',
+        'foreach ($root in $roots) {',
+        '  if (-not (Test-Path $root)) { continue }',
+        '  $psDirs = Get-ChildItem $root -Directory -Recurse -Depth 2 -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "Adobe Photoshop*" }',
+        '  foreach ($ps in $psDirs) {',
+        '    $br = Join-Path $ps.FullName "Presets\Brushes"',
+        '    $pt = Join-Path $ps.FullName "Presets\Patterns"',
+        '    if (Test-Path $br) { Get-ChildItem $PSScriptRoot -Filter *.abr -File | Copy-Item -Destination $br -Force; Write-Host ("画笔 -> " + $br) }',
+        '    if (Test-Path $pt) { Get-ChildItem $PSScriptRoot -Filter *.pat -File | Copy-Item -Destination $pt -Force; Write-Host ("图案 -> " + $pt) }',
+        '  }',
+        '}',
+        'Write-Host "完成。请重启 Photoshop，画笔在「画笔」面板，纹理图案在「图案」面板。"',
+        'Write-Host "（若提示找不到目录，请手动把 .abr 拖进 Brushes、.pat 拖进 Patterns）"'
+      ].join(NL));
+      mk('安装到Photoshop.bat', ['@echo off', 'chcp 65001 >nul', 'powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0安装到Photoshop.ps1"', 'pause', ''].join(NL));
       mk('安装说明.txt', [
-        'Photoshop 笔刷安装说明',
-        '方法一（推荐）：Photoshop → 画笔面板右上 ☰ → 载入画笔 → 选择本目录的 .abr 文件',
-        '方法二：把 .abr 复制到 Photoshop 安装目录\Presets\Brushes\ 后重启 PS',
-        '提示：导入后整包会显示为一个画笔组；选中画笔回车可重命名。'
+        'Photoshop 安装说明（一键）',
+        '1）运行「安装到Photoshop.bat」：自动把 .abr 放入 Brushes、.pat 放入 Patterns',
+        '2）重启 Photoshop：画笔面板能看到笔刷，图案面板能看到纹理图案',
+        '3）画笔设置 → 纹理里选中该图案，深度/缩放可调',
+        '',
+        '手动方式：',
+        '· 画笔：画笔面板 ☰ → 载入画笔 → 选 .abr',
+        '· 图案：图案面板 ☰ → 导入图案 → 先导入 .pat（必须在画笔之前）',
+        '提示：.pat 是纹理图案，.abr 里的纹理引用需要它先存在。'
       ].join(NL));
     } else if (target === 'gbr' || target === 'gih') {
       mk('安装到GIMP.ps1', [
@@ -1198,7 +1325,7 @@ Write-Host 'restart MediBang Paint Pro'
     });
   }
 
-  const api = { detect, parseFile, expandArchive, synthTip, makeBru, makeBruPack, makeAbrPack, makeAbrPassthrough, makePatternFile, grainNoise, bakeGrainIntoRGBA, makeInstallScripts, brushLossReport, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makePainter, makeMdp, makeMediBangBrush, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, synthTip, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
+  const api = { detect, parseFile, expandArchive, synthTip, makeBru, makeBruPack, makeAbrPack, makeAbrPassthrough, makePatternFile, makeTexturePng, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makePainter, makeMdp, makeMediBangBrush, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, synthTip, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { convert: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);
