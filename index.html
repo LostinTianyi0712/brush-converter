@@ -1,0 +1,175 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>笔刷转换器 · ABR / Procreate → 画世界Pro .bru</title>
+<meta name="theme-color" content="#2563eb">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="笔刷转换器">
+<link rel="apple-touch-icon" sizes="180x180" href="img/icon-180.png">
+<link rel="icon" type="image/png" sizes="192x192" href="img/icon-192.png">
+<link rel="stylesheet" href="./css/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <div class="logo">笔</div>
+    <div>
+      <h1>笔刷转换器</h1>
+      <p class="sub">Photoshop <b>.abr</b> · Procreate <b>.brush / .brushset</b> · <b>.bru</b> → 画世界Pro <b>.bru</b></p>
+    </div>
+  </div>
+  <div class="actions">
+    <button id="btnSelectAll" class="btn ghost" title="全选/取消全选所有笔刷">全选笔刷</button>
+    <button id="btnClear" class="btn ghost" title="清空列表">清空</button>
+    <button id="btnConvert" class="btn primary" disabled>转换并下载 ZIP</button>
+  </div>
+</header>
+
+<main>
+  <section id="dropzone" class="dropzone">
+    <div class="dz-inner">
+      <div class="dz-icon">＋</div>
+      <p class="dz-title">拖入笔刷文件，或点击选择</p>
+      <p class="dz-sub">支持 .bru/.abr/.brush/.brushset/.gobrush/.gobrushes/.sut/.kpp/.bundle/.gbr/.gih/.myb/.brushcategory<br>也可以直接拖入 <b>ZIP 压缩包</b>，会自动解压并识别里面的笔刷文件<br>默认把一个笔刷包里的全部笔刷打成 <b>1 个文件</b>，整套保留<br>ABR 中“参数化笔刷”没有采样笔尖，无法转换；Procreate 无 Shape 图的笔刷会自动生成圆头笔尖。</p>
+      <input id="fileInput" type="file" multiple accept=".abr,.brush,.brushset,.bru,.zip,.myb,.gbr,.gih,.kpp,.bundle,.brushcategory,.brushlibrary,.sut,.gobrush,.gobrushes" hidden>
+    </div>
+  </section>
+
+  <section id="options" class="options card">
+    <div class="opt">
+      <label>笔尖最大边长</label>
+      <select id="optTipSize">
+        <option value="256">256 px（文件小）</option>
+        <option value="384">384 px</option>
+        <option value="512" selected>512 px（推荐）</option>
+        <option value="1024">1024 px（最清晰）</option>
+      </select>
+    </div>
+    <div class="opt">
+      <label>整体尺寸倍数</label>
+      <input id="optSizeScale" type="number" min="0.1" max="10" step="0.1" value="1">
+    </div>
+    <div class="opt">
+      <label>统一间距（%，留空保持原样）</label>
+      <input id="optSpacing" type="number" min="1" max="1000" step="1" placeholder="保持原样">
+        <label>天生会画·默认散布</label>
+        <select id="optGoScatter">
+          <option value="auto">自动（有纹理=30）</option>
+          <option value="0">0</option>
+          <option value="15">15</option>
+          <option value="30">30</option>
+          <option value="45">45</option>
+        </select>
+    </div>
+    <div class="opt">
+      <label>纹理烘焙（近似）</label>
+      <select id="optGrainBake">
+        <option value="on" selected>开启（纹理颗粒烘进笔尖）</option>
+        <option value="off">关闭（输出纯净笔尖）</option>
+      </select>
+    </div>
+    <div class="opt">
+      <label>压感</label>
+      <select id="optPressure">
+        <option value="auto" selected>跟随原笔刷</option>
+        <option value="on">全部开启</option>
+        <option value="off">全部关闭</option>
+      </select>
+    </div>
+    <div class="opt grow">
+      <label>笔刷名前缀（可选）</label>
+      <input id="optPrefix" type="text" placeholder="例如：我的笔刷-">
+    </div>
+    <div class="opt">
+      <label>输出方式</label>
+      <select id="optMode">
+        <option value="pack" selected>整包一个文件（推荐，保持成组）</option>
+        <option value="single">每支笔刷单独文件</option>
+      </select>
+    </div>
+    <div class="opt">
+      <label>输出形式</label>
+      <select id="optPack">
+        <option value="zip" selected>打包成 1 个 ZIP 下载</option>
+        <option value="files">直接输出文件（选文件夹/下载目录）</option>
+      </select>
+    </div>
+    <div class="opt">
+      <label>目标格式</label>
+      <select id="optTarget">
+        <option value="bru" selected>画世界Pro .bru</option>
+        <option value="abr">Photoshop .abr</option>
+        <option value="gopaint_abr">天生会画 .abr（GoPaint 导入格式）</option>
+        <option value="brushset">Procreate .brushset（整包一个）</option>
+        <option value="brush">Procreate .brush（每支一个）</option>
+        <option value="gbr">GIMP .gbr（每支一个）</option>
+        <option value="gih">GIMP .gih（整包一个）</option>
+        <option value="myb">MyPaint .myb（每支一个）</option>
+        <option value="kbundle">Krita .bundle（整包，含笔尖资源）</option>
+        <option value="sai2">SAI2 散布笔刷（.bmp + .ini 打包）</option>
+        <option value="png">笔尖/素材 PNG（MediBang / Infinite Painter）</option>
+        <option value="painter">Corel Painter .brushcategory（整包一个）</option>
+        <option value="gopaint">天生会画 .gobrush（原生，每支一个）</option>
+        <option value="gopaint_set">天生会画 .gobrushes（整套一个文件）</option>
+        <option value="gopaint_abr">天生会画（兼容模式：ABR）</option>
+        <option value="medibang">MediBang 笔刷包（PNG+ini，每支一个 zip）</option>
+        <option value="all">全部格式（一次生成所有可写格式，自动打包 ZIP）</option>
+      </select>
+    </div>
+
+    <div class="opt">
+      <label>ZIP 内按来源分文件夹（单独模式）</label>
+      <select id="optGroup">
+        <option value="0" selected>否（扁平，方便导入）</option>
+        <option value="1">是（ZIP 内按来源分文件夹）</option>
+      </select>
+    </div>
+  </section>
+
+  <section id="files" class="files"></section>
+  <section id="empty" class="empty">还没有加载文件</section>
+
+  <div id="progress" class="progress hidden"><div class="bar"></div><span class="ptext"></span></div>
+  <div id="outPath" class="outpath">输出位置：<span id="outPathText">转换后显示保存目录</span></div>
+</main>
+
+<footer class="footer">
+  <span>输出：.bru（画世界Pro）/ .abr（Photoshop）/ .brush/.brushset（Procreate）/ .gobrush/.gobrushes（天生会画）/ .bundle（Krita）/ .gbr/.gih（GIMP）/ .myb（MyPaint）/ .brushcategory（Painter）/ PNG 笔尖包；输入支持同格式 + ZIP。</span>
+  <span id="ver"></span>
+</footer>
+
+<script src="./js/pako.min.js"></script>
+<script src="./js/util.js"></script>
+<script src="./js/zlib.js"></script>
+<script src="./js/png.js"></script>
+<script src="./js/zip.js"></script>
+<script src="./js/plist.js"></script>
+<script src="./js/descriptor.js"></script>
+<script src="./js/bplist.js"></script>
+<script src="./js/procreateDefaults.js"></script>
+<script src="./js/sqlite.js"></script>
+<script src="./js/medibang.js"></script>
+<script src="./js/gobrush.js"></script>
+<script src="./js/gobrushWrite.js"></script>
+<script src="./js/infpainter.js"></script>
+<script src="./js/csp.js"></script>
+<script src="./js/gimp.js"></script>
+<script src="./js/mypaint.js"></script>
+<script src="./js/kritaPreview.js"></script>
+<script src="./js/krita.js"></script>
+<script src="./js/genericbrush.js"></script>
+<script src="./js/abrUuidPool.js"></script>
+<script src="./js/abrPatternTemplate.js"></script>
+<script src="./js/abr.js"></script>
+<script src="./js/procreate.js"></script>
+<script src="./js/bru.js"></script>
+<script src="./js/convert.js"></script>
+<script src="./js/save-legacy.js"></script>
+<script src="./js/app.js"></script>
+</body>
+</html>

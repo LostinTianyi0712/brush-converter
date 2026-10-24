@@ -1,0 +1,1205 @@
+﻿/* Conversion pipeline: detect -> parse -> normalize -> write .bru */
+(function (root) {
+  'use strict';
+  const isNode = typeof module !== 'undefined' && module.exports && typeof process !== 'undefined';
+  const nodePath = isNode ? require('path') : null;
+  const util = isNode ? require('./util.js') : root.BC.util;
+  const png = isNode ? require('./png.js') : root.BC.png;
+  const zip = isNode ? require('./zip.js') : root.BC.zip;
+  const abr = isNode ? require('./abr.js') : root.BC.abr;
+  const procreate = isNode ? require('./procreate.js') : root.BC.procreate;
+  const bru = isNode ? require('./bru.js') : root.BC.bru;
+  const gimp = isNode ? require('./gimp.js') : root.BC.gimp;
+  const mypaint = isNode ? require('./mypaint.js') : root.BC.mypaint;
+  const krita = isNode ? require('./krita.js') : root.BC.krita;
+  const genericBrush = isNode ? require('./genericbrush.js') : root.BC.genericBrush;
+  const csp = isNode ? require('./csp.js') : root.BC.csp;
+  const medibang = isNode ? require('./medibang.js') : root.BC.medibang;
+  const gobrush = isNode ? require('./gobrush.js') : root.BC.gobrush;
+  const gobrushWrite = isNode ? require('./gobrushWrite.js') : root.BC.gobrushWrite;
+  const sai2 = isNode ? require('./sai2.js') : root.BC.sai2;
+  const infpainter = isNode ? require('./infpainter.js') : root.BC.infpainter;
+
+  function detect(name, bytes) {
+    const lower = (name || '').toLowerCase();
+    if (/\.params\.json$/.test(lower)) return 'csp-decrypted';
+    if (bru.isBru(bytes)) return 'bru';
+    if (csp.isSut(bytes)) return 'sut';
+    if (gobrush.isGobrush(lower)) return 'gobrush';
+    if (zip.isZip(bytes)) {
+      let zentries = null;
+      try { zentries = zip.read(bytes); } catch (e) { /* ignore */ }
+      if (zentries) {
+        if (zentries.some(e => /Brush\.archive$/i.test(e.name))) return 'procreate';
+        if (zentries.some(e => /^paintoppresets\/[^/]+\.kpp$/i.test(e.name))) return 'kbundle';
+      }
+      return null;
+    }
+    if (abr.isAbr(bytes)) return 'abr';
+    if (krita.isKpp(bytes)) return 'kpp';
+    if (gimp.isGbr(bytes)) return /.gih$/i.test(lower) ? 'gih' : 'gbr';
+    if (mypaint.isMyb(bytes)) return 'myb';
+    if (genericBrush.isPainterXml(bytes)) return 'painter';
+    // extension fallbacks
+    if (lower.endsWith('.abr')) return 'abr';
+    if (lower.endsWith('.bru')) return 'bru';
+    if (lower.endsWith('.brush') || lower.endsWith('.brushset')) return 'procreate';
+    if (lower.endsWith('.kpp')) return 'kpp';
+    if (lower.endsWith('.gbr')) return 'gbr';
+    if (lower.endsWith('.gih')) return 'gih';
+    if (lower.endsWith('.myb')) return 'myb';
+    if (lower.endsWith('.brushcategory') || lower.endsWith('.brushlibrary')) return 'painter';
+    if (lower.endsWith('.sut')) return 'sut';
+    if (lower.endsWith('.gobrush') || lower.endsWith('.gobrushes')) return 'gobrush';
+    return null;
+  }
+
+  function extLabel(kind) {
+    return {
+      abr: 'Photoshop ABR',
+      procreate: 'Procreate 笔刷',
+      bru: '画世界Pro BRU',
+      kpp: 'Krita KPP',
+      gbr: 'GIMP GBR',
+      gih: 'GIMP GIH',
+      myb: 'MyPaint MYB',
+      painter: 'Corel Painter',
+      mdp: 'MediBang MDP',
+      sut: 'Clip Studio Paint SUT',
+      gobrush: '天生会画 GoBrush',
+      kbundle: 'Krita 资源包 BUNDLE',
+      'csp-decrypted': 'CSP 解密目录'
+    }[kind] || kind;
+  }
+
+  /** Krita resource bundle (.bundle): collect every paintoppresets/*.kpp. */
+  function parseKritaBundle(name, bytes) {
+    const entries = zip.read(bytes);
+    const brushes = [];
+    const warnings = [];
+    for (const entry of entries) {
+      if (!/^paintoppresets\/[^/]+\.kpp$/i.test(entry.name)) continue;
+      let data;
+      try { data = entry.data(); } catch (e) { warnings.push(entry.name + ' 读取失败'); continue; }
+      try {
+        const r = krita.parseKpp(data instanceof Uint8Array ? data : new Uint8Array(data), entry.name);
+        (r.brushes || []).forEach(function (b) {
+          b.source = 'krita';
+          b.bundle = name;
+          brushes.push(b);
+        });
+        (r.warnings || []).forEach(function (w) { warnings.push(w); });
+      } catch (e) {
+        warnings.push(entry.name + ': ' + e.message);
+      }
+    }
+    if (!brushes.length) throw new Error('Krita 资源包里没有可用预设');
+    return { brushes, warnings };
+  }
+
+  function b64ToBytes(s) {
+    if (typeof Buffer !== 'undefined') return new Uint8Array(Buffer.from(String(s), 'base64'));
+    const bin = atob(String(s));
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+
+  function parseFile(name, bytes, opts) {
+    const kind = detect(name, bytes);
+    if (!kind) throw new Error('无法识别的文件格式（支持 .bru/.abr/.brush/.brushset/.gobrush/.gobrushes/.sut/.kpp/.gbr/.gih/.myb/.brushcategory/.brushlibrary，或包含笔刷的 ZIP）');
+    let result;
+    if (kind === 'bru') {
+      result = bru.parseBru(bytes);
+      result.brushes = result.brushes.map(b => Object.assign({}, b, { source: 'bru' }));
+    } else if (kind === 'csp-decrypted') {
+      if (!(opts && opts.decrypted && opts.decrypted.json)) {
+        throw new Error('这是 CSP 解密目录里的参数文件；请把整个 _decrypted 目录（或包含它的压缩包）导入');
+      }
+      const dec = opts.decrypted;
+      const tips = (dec.tips || []).map(function (b64) {
+        if (!b64) return null;
+        try {
+          const img = png.decode(b64ToBytes(b64));
+          return { w: img.width, h: img.height, rgba: png.toMaskRgba(img.rgba) };
+        } catch (e) { return null; }
+      });
+      result = csp.parseDecryptedAssets(dec.json, tips, dec.name || name.replace(/\.params\.json$/i, ''));
+    } else if (kind === 'kbundle') {
+      result = parseKritaBundle(name, bytes);
+    } else if (kind === 'procreate') {
+      result = procreate.parse(bytes, name);
+    } else if (kind === 'kpp') {
+      result = krita.parseKpp(bytes, name);
+    } else if (kind === 'gbr') {
+      result = gimp.parseGbr(bytes, name);
+    } else if (kind === 'gih') {
+      result = gimp.parseGih(bytes, name);
+    } else if (kind === 'myb') {
+      result = mypaint.parseMyb(bytes, name);
+    } else if (kind === 'painter') {
+      result = genericBrush.parsePainter(bytes, name);
+    } else if (kind === 'gobrush') {
+      result = gobrush.parse(bytes, name);
+    } else if (kind === 'sut') {
+      // Prefer a decrypted companion dump when it exists next to the .sut:
+      // <dir>/_decrypted/<basename>/<name>.params.json + real material tips.
+      let decryptedDir = null;
+      if (isNode && opts && opts.path) decryptedDir = csp.findDecryptedFor(opts.path);
+      if (decryptedDir) {
+        result = csp.parseDecrypted(decryptedDir);
+      } else if (opts && opts.decrypted && opts.decrypted.json) {
+        // Desktop renderer sends the decrypted dump via IPC (params + base64 tips)
+        const dec = opts.decrypted;
+        const tips = (dec.tips || []).map(function (b64) {
+          if (!b64) return null;
+          try {
+            const img = png.decode(b64ToBytes(b64));
+            return { w: img.width, h: img.height, rgba: png.toMaskRgba(img.rgba) };
+          } catch (e) { return null; }
+        });
+        result = csp.parseDecryptedAssets(dec.json, tips, (dec.name || name).replace(/\.[^.]+$/, ''));
+      } else {
+        result = csp.parseSut(bytes, name);
+      }
+    } else {
+      result = abr.parse(bytes);
+    }
+    return { kind, kindLabel: extLabel(kind), brushes: result.brushes, warnings: result.warnings || [] };
+  }
+
+  /** 异步解析：ABR 大文件会分片让出主线程并回报进度 */
+  async function parseFileAsync(name, bytes, opts) {
+    opts = opts || {};
+    const kind = detect(name, bytes);
+    if (kind === 'abr') {
+      const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null;
+      const r = await abr.parseAsync(bytes, { onProgress: onProgress || undefined });
+      return { kind: 'abr', kindLabel: extLabel('abr'), brushes: r.brushes, warnings: r.warnings || [] };
+    }
+    return parseFile(name, bytes, opts);
+  }
+
+  function tipToRGBA(brush) {
+    const tip = brush.tip;
+    if (!tip) return null;
+    if (tip.rgba) return { w: tip.w, h: tip.h, rgba: tip.rgba };
+    if (tip.data) {
+      const w = tip.w, h = tip.h, data = tip.data;
+      const bpp = tip.bpp || 1;
+      const rgba = new Uint8Array(w * h * 4);
+      for (let i = 0; i < w * h; i++) {
+        let a;
+        if (bpp === 2) a = data[i * 2]; // 16-bit: take high byte
+        else a = data[i];
+        const o = i * 4;
+        rgba[o] = 255; rgba[o + 1] = 255; rgba[o + 2] = 255; rgba[o + 3] = a;
+      }
+      return { w, h, rgba };
+    }
+    return null;
+  }
+
+  /* Synthesize a round brush tip when the source brush has no bitmap tip */
+  /* Synthesize a simple round brush tip when the source brush has no bitmap tip.
+     Uses hardness (edge falloff) and roundness (ellipse) only — no style guessing. */
+  function synthTip(brush, n, opts) {
+    n = n || 256;
+    const hard = Math.max(0.05, Math.min(1, brush.hardness === undefined ? 0.75 : brush.hardness));
+    const round = Math.max(0.05, Math.min(1, (brush.roundness === undefined ? 100 : brush.roundness) / 100));
+    const rgba = new Uint8Array(n * n * 4);
+    const cx = (n - 1) / 2;
+    const angle = ((brush.angle || 0) * Math.PI) / 180;
+    const cos = Math.cos(angle), sin = Math.sin(angle);
+    for (let y = 0; y < n; y++) {
+      for (let x = 0; x < n; x++) {
+        const dx = (x - cx) / cx, dy = (y - cx) / cx;
+        const rx = dx * cos + dy * sin;
+        const ry = -dx * sin + dy * cos;
+        const d = Math.sqrt(rx * rx + (ry / round) * (ry / round));
+        let a;
+        if (d >= 1) a = 0;
+        else if (d <= hard) a = 1;
+        else a = (1 - d) / (1 - hard);
+        const o = (y * n + x) * 4;
+        rgba[o] = 255; rgba[o + 1] = 255; rgba[o + 2] = 255;
+        rgba[o + 3] = Math.max(0, Math.min(255, Math.round(a * 255)));
+      }
+    }
+    return { w: n, h: n, rgba: rgba };
+  }
+
+  /* Bilinear sample of RGBA image (returns 0 alpha outside) */
+  function sampleBilinear(rgba, w, h, x, y) {
+    if (x < 0 || y < 0 || x > w - 1 || y > h - 1) return [0, 0, 0, 0];
+    const x0 = Math.floor(x), y0 = Math.floor(y);
+    const x1 = Math.min(w - 1, x0 + 1), y1 = Math.min(h - 1, y0 + 1);
+    const fx = x - x0, fy = y - y0;
+    const out = [0, 0, 0, 0];
+    for (let c = 0; c < 4; c++) {
+      const p00 = rgba[(y0 * w + x0) * 4 + c], p10 = rgba[(y0 * w + x1) * 4 + c];
+      const p01 = rgba[(y1 * w + x0) * 4 + c], p11 = rgba[(y1 * w + x1) * 4 + c];
+      out[c] = p00 * (1 - fx) * (1 - fy) + p10 * fx * (1 - fy) + p01 * (1 - fx) * fy + p11 * fx * fy;
+    }
+    return out;
+  }
+
+  /* Apply Photoshop-style angle / roundness / flip to a sampled tip, so the
+     transformed appearance is baked into the pixels (画世界Pro does not apply a tip transform).
+     Uses an expanded canvas to avoid clipping, then crops to the alpha bounding box. */
+  function bakeTipTransform(img, brush) {
+    const angle = ((brush.angle || 0) % 360) * Math.PI / 180;
+    const round = brush.roundness === undefined ? 1 : Math.max(0.05, Math.min(1, brush.roundness / 100));
+    const flipX = !!brush.flipX, flipY = !!brush.flipY;
+    const rotNeeded = Math.abs(Math.sin(angle)) > 0.001;
+    if (!rotNeeded && round >= 0.995 && !flipX && !flipY) return img;
+    const w = img.w, h = img.h, src = img.rgba;
+    const cos = Math.cos(angle), sin = Math.sin(angle);
+    // required half extents after squash+rotation of the canvas rect
+    let maxX = 0, maxY = 0;
+    const cx0 = (w - 1) / 2, cy0 = (h - 1) / 2;
+    for (const sx of [-cx0, cx0]) {
+      for (const sy of [-cy0, cy0]) {
+        const sY = sy * round;
+        const rx = cos * sx - sin * sY;
+        const ry = sin * sx + cos * sY;
+        if (Math.abs(rx) > maxX) maxX = Math.abs(rx);
+        if (Math.abs(ry) > maxY) maxY = Math.abs(ry);
+      }
+    }
+    const outW = Math.max(w, Math.ceil(maxX * 2) + 3);
+    const outH = Math.max(h, Math.ceil(maxY * 2) + 3);
+    const ocx = (outW - 1) / 2, ocy = (outH - 1) / 2;
+    const out = new Uint8Array(outW * outH * 4);
+    let minX = outW, minY = outH, maxBX = -1, maxBY = -1;
+    for (let y = 0; y < outH; y++) {
+      for (let x = 0; x < outW; x++) {
+        let dx = x - ocx, dy = y - ocy;
+        if (flipX) dx = -dx;
+        if (flipY) dy = -dy;
+        // inverse of (squash Y by roundness, then rotate by angle)
+        const rx = cos * dx + sin * dy;
+        const ry = -sin * dx + cos * dy;
+        const sx = rx + cx0;
+        const sy = ry / round + cy0;
+        const px = sampleBilinear(src, w, h, sx, sy);
+        if (px[3] <= 1) continue;
+        const o = (y * outW + x) * 4;
+        out[o] = px[0]; out[o + 1] = px[1]; out[o + 2] = px[2]; out[o + 3] = px[3];
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxBX) maxBX = x;
+        if (y > maxBY) maxBY = y;
+      }
+    }
+    if (maxBX < 0) return img;
+    // crop to content
+    const cw = maxBX - minX + 1, ch = maxBY - minY + 1;
+    if (cw === outW && ch === outH) return { w: outW, h: outH, rgba: out };
+    const cropped = new Uint8Array(cw * ch * 4);
+    for (let y = 0; y < ch; y++) {
+      const srcOff = ((minY + y) * outW + minX) * 4;
+      cropped.set(out.subarray(srcOff, srcOff + cw * 4), y * cw * 4);
+    }
+    return { w: cw, h: ch, rgba: cropped };
+  }
+
+  function sanitizeName(name, index) {
+    let n = (name || '').replace(/[\\/:*?"<>|\r\n\t]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!n) n = 'brush_' + String(index + 1).padStart(3, '0');
+    if (n.length > 60) n = n.slice(0, 60).trim();
+    return n;
+  }
+
+  /**
+   * Convert one parsed brush to a .bru file.
+   * opts: { maxTipSize, sizeScale, spacingOverride, pressure }
+   */
+  function makeBru(brush, opts) {
+    opts = opts || {};
+    let tipImg = tipToRGBA(brush);
+    if (!tipImg) tipImg = synthTip(brush, 256, opts);
+    // 圆度/角度只在 bakeTipTransform 里应用一次（之前 abr 源会被压两次 → 笔刷变得又细又扁）
+    tipImg = bakeTipTransform(tipImg, brush);
+    const maxTip = Math.max(64, Math.min(2048, opts.maxTipSize || 512));
+    let w = tipImg.w, h = tipImg.h, rgba = tipImg.rgba;
+    const maxSide = Math.max(w, h);
+    if (maxSide > maxTip) {
+      const scale = maxTip / maxSide;
+      const nw = Math.max(1, Math.round(w * scale));
+      const nh = Math.max(1, Math.round(h * scale));
+      rgba = png.resize(rgba, w, h, nw, nh);
+      w = nw; h = nh;
+    }
+    const pngBytes = png.encode(w, h, png.toMaskRgba(rgba));
+    const sizeScale = opts.sizeScale || 1;
+    let sizePx = (brush.sizePx || 100) * sizeScale;
+    if (!isFinite(sizePx) || sizePx < 1) sizePx = Math.max(4, Math.max(w, h));
+    sizePx = Math.max(1, Math.min(3000, Math.round(sizePx * 100) / 100));
+    let spacingPct = opts.spacingOverride > 0 ? opts.spacingOverride : (brush.spacingPct || 10);
+    spacingPct = Math.max(1, Math.min(1000, spacingPct));
+    const usePressure = opts.pressure === undefined ? !!brush.pressure : !!opts.pressure;
+    const meta = {
+      name: brush.name || '',
+      pkgId: opts.pkgId || brush.pkgId,
+      texId: util.md5(pngBytes).toUpperCase(),
+      sizePx,
+      spacingPct,
+      opacity: brush.opacity === undefined ? 1 : brush.opacity,
+      minSizeRatio: usePressure ? (brush.minSizeRatio || 0.1) : 1,
+      minOpacityRatio: usePressure ? (brush.minOpacityRatio || 0.25) : 1,
+      pressure: usePressure,
+      // 把能写进 .bru 的其它参数一起带上（纹理/散布/抖动/锥度/湿边/混色/颜色动态/圆度硬度/流量）
+      pressureSize: !!brush.pressureSize || !!brush.pressure,
+      pressureOpacity: !!brush.pressureOpacity,
+      flowPct: brush.flowPct,
+      minFlowRatio: brush.minFlowRatio,
+      roundness: brush.roundness,
+      hardness: brush.hardness,
+      angle: brush.angle,
+      angleJitterDeg: brush.angleJitterDeg,
+      sizeJitterPct: brush.sizeJitterPct,
+      spacingJitterPct: brush.spacingJitterPct,
+      flowJitterPct: brush.flowJitterPct,
+      countJitterPct: brush.countJitterPct,
+      scatterOn: brush.scatterOn,
+      scatterPct: brush.scatterPct,
+      scatterBothAxes: brush.scatterBothAxes,
+      scatterCount: brush.scatterCount,
+      hasTexture: brush.hasTexture,
+      textureScale: brush.textureScale,
+      textureBrightness: brush.textureBrightness,
+      textureContrast: brush.textureContrast,
+      textureDepth: brush.textureDepth,
+      taperOn: brush.taperOn,
+      taperSize: brush.taperSize,
+      taperOpacity: brush.taperOpacity,
+      wetEdgesOn: brush.wetEdgesOn,
+      wetEdgesAmount: brush.wetEdgesAmount,
+      wetEdgesDepth: brush.wetEdgesDepth,
+      smudgeOn: brush.smudgeOn,
+      smudgeAmount: brush.smudgeAmount,
+      colorDynamicsOn: brush.colorDynamicsOn,
+      colorJitterHue: brush.colorJitterHue,
+      colorJitterSat: brush.colorJitterSat,
+      colorJitterVal: brush.colorJitterVal,
+      _rawMeta: opts.fidelity !== false ? brush._rawMeta : undefined
+    };
+    const bytes = bru.writeBrush(Object.assign({ png: pngBytes }, meta), opts);
+    return { bytes, pngBytes, meta, tipW: w, tipH: h };
+  }
+
+  /**
+   * Convert a list of parsed brushes into ONE multi-brush .bru pack
+   * (画世界Pro keeps the whole set together when importing a single .bru).
+   */
+  function makeBruPack(brushList, opts) {
+    opts = opts || {};
+    const items = [];
+    const used = new Map();
+    brushList.forEach(function (brush, i) {
+      const made = makeBru(brush, opts);
+      let base = sanitizeName(brush.name, i);
+      let name = base, k = 2;
+      while (used.has(name.toLowerCase())) { name = base + ' (' + k + ')'; k++; }
+      used.set(name.toLowerCase(), 1);
+      items.push(Object.assign({}, made.meta, { name: name, png: made.pngBytes }));
+    });
+    if (!items.length) throw new Error('没有可打包的笔刷');
+    const bytes = bru.writePack(items, { pkgId: opts.pkgId, fidelity: opts.fidelity, keepRawMeta: opts.keepRawMeta });
+    return { bytes, count: items.length, meta: items };
+  }
+
+  /**
+   * Convert a list of parsed brushes into ONE .abr (v6) file.
+   * v2 输出已移除：PS 2026 拒绝 v2，画世界Pro/PS 均支持 v6。
+   */
+  /** ABR -> ABR 直接原样导出：完全保留文件夹分组、动态参数、计算画笔等，
+      是唯一能 100% 还原原版外观与分组的方式。 */
+  function makeAbrPassthrough(bytes) {
+    if (!bytes || !bytes.length) throw new Error('没有可导出的 ABR 数据');
+    return { bytes: bytes, count: 0, passthrough: true };
+  }
+
+  /** 生成 .pat 图案文件（PS 图案面板可导入；ABR 里的 patt 块不会自动进 PS 图案库） */
+  function makePatternFile(brushList, opts) {
+    opts = opts || {};
+    const list = brushList || [];
+    const src = list.find(function (b) { return b && b._pattBlock && b._pattBlock.length; });
+    if (src && src._pattBlock.length <= 32 * 1024 * 1024) {
+      // 源 ABR 自带图案：原样导出（仍是合法的图案记录流）
+      return { bytes: new Uint8Array(src._pattBlock), count: 1 };
+    }
+    const bytes = abr.buildPatternFile();
+    if (!bytes) throw new Error('无法生成图案');
+    return { bytes: bytes, count: 1 };
+  }
+
+  function makeAbrPack(brushList, opts) {
+    opts = opts || {};
+    // 重名会让 Photoshop 导入时去重/合并，导致预设与采样错位（画出来变成别的笔刷），
+    // 这里统一给重名加序号
+    const names = uniqueNames(brushList);
+    const items = [];
+    brushList.forEach(function (brush, i) {
+      let tipImg = tipToRGBA(brush);
+      if (!tipImg) tipImg = synthTip(brush, 256, opts);
+      if (brush.source === 'abr') tipImg = bakeTipTransform(tipImg, brush);
+      const maxTip = Math.max(64, Math.min(2048, opts.maxTipSize || 512));
+      let w = tipImg.w, h = tipImg.h, rgba = tipImg.rgba;
+      const maxSide = Math.max(w, h);
+      if (maxSide > maxTip) {
+        const scale = maxTip / maxSide;
+        w = Math.max(1, Math.round(w * scale));
+        h = Math.max(1, Math.round(h * scale));
+        rgba = png.resize(rgba, tipImg.w, tipImg.h, w, h);
+      }
+      const name = String(names[i] || brush.name || ('brush_' + (i + 1)))
+      // 纹理：ABR 现在可以写真实 patt 图案块；只有关闭 psTexture 时才退化为烘焙
+      // 默认策略（越还原越好）：
+      //  · 源有原始描述符（保留引用路径）→ 保留原纹理引用
+      //  · 需要重建描述符（其他格式来源）→ 把纹理烘焙进笔尖（PS 不会从 ABR 导入图案，写图案引用会变空）
+      const willUseRaw = opts.preserveRaw !== false && !!brush._rawPreset;
+      const usePsTexture = !!brush.hasTexture && opts.writePsTexture === true && willUseRaw;
+      if (brush.hasTexture && !usePsTexture && opts.noTextureBake !== true) {
+        rgba = bakeGrainIntoRGBA(rgba, w, h, brush.grainStrength === undefined ? 0.35 : brush.grainStrength, 3);
+      }
+      items.push({
+        name: name, w: w, h: h, gray: abr.maskFromRGBA(rgba),
+        sizePx: brush.sizePx, spacingPct: brush.spacingPct,
+        angle: brush.angle, roundness: brush.roundness,
+        flipY: !!opts.abrFlipY,
+        pressureSize: !!brush.pressureSize || !!brush.pressure,
+        pressureOpacity: !!brush.pressureOpacity,
+        minSizeRatio: brush.minSizeRatio,
+        minOpacityRatio: brush.minOpacityRatio,
+        angleJitterDeg: brush.angleJitterDeg || 0,
+        sizeJitterPct: brush.sizeJitterPct || 0,
+        flowJitterPct: brush.flowJitterPct || 0,
+        countJitterPct: brush.countJitterPct || 0,
+        scatterOn: !!brush.scatterOn,
+        scatterPct: brush.scatterPct || 0,
+        scatterBothAxes: !!brush.scatterBothAxes,
+        scatterCount: brush.scatterCount || 1,
+        flowPct: brush.flowPct === undefined ? 1 : brush.flowPct,
+        opacityPct: brush.opacity === undefined ? 1 : brush.opacity,
+        hardness: brush.hardness,
+        psTexture: usePsTexture,
+        textureDepth: brush.textureDepth,
+        textureScale: brush.textureScale,
+        // 源就是 ABR 时，保留原始描述符/样本字节（部分导出也能保住 PS 原版特性）
+        rawPreset: opts.preserveRaw !== false ? brush._rawPreset : undefined,
+        rawSample: opts.preserveRaw !== false ? brush._rawSample : undefined,
+        keepAllSamples: opts.preserveRaw !== false && !!brush._allRawSamples,
+        allRawSamples: opts.preserveRaw !== false ? brush._allRawSamples : undefined,
+        rle: opts.abrRle !== false,
+        uuid: (opts.abrUuids && opts.abrUuids[i]) || undefined
+      });
+    });
+    if (!items.length) throw new Error('没有可写入 ABR 的笔刷');
+    // 文件夹分组：按笔刷顺序把同组连续笔刷折叠成 phry token（组名/数量）
+    const groups = [];
+    let cur = null;
+    for (const b of brushList) {
+      const g = b.group || '';
+      if (!cur || cur.name !== g) { cur = { name: g, count: 0 }; groups.push(cur); }
+      cur.count++;
+    }
+    const hasNamed = groups.some(function (g) { return !!g.name; });
+    // 源 ABR 的纹理图案块：只在不太大时原样带上（否则文件会暴涨）
+    let patternBlock = null;
+    let patternWarning = null;
+    if (opts.preserveRaw !== false) {
+      const withPatt = brushList.find(function (b) { return b && b._pattBlock && b._pattBlock.length; });
+      if (withPatt) {
+        if (withPatt._pattBlock.length <= 32 * 1024 * 1024) patternBlock = withPatt._pattBlock;
+        else patternWarning = '源文件的纹理图案块过大（' + Math.round(withPatt._pattBlock.length / 1048576) + 'MB），已跳过；描述符里的纹理引用会失效';
+      }
+    }
+    const bytes = abr.writeAbrV6(items, { groups: hasNamed ? groups : null, patternBlock: patternBlock });
+    if (patternWarning && !opts._patternWarned) { opts._patternWarned = true; console.warn(patternWarning); }
+    return { bytes: bytes, count: items.length, meta: items };
+  }
+
+  /** Convert one brush to a Procreate .brush file (zip). */
+  function makeProcreateBrush(brush, opts) {
+    opts = opts || {};
+    // 还原优先：源本身就是 Procreate，且没有强制重建时，直接原样打包
+    if (opts.fidelity !== false && brush._rawArchive && !opts.forceRebuild) {
+      const bytes = procreate.writeBrush(brush, { maxTipSize: opts.maxTipSize || 512, noTextureBake: opts.noTextureBake, fidelity: true });
+      return { bytes: bytes, name: brush.name || 'brush', passthrough: true };
+    }
+    const tip = tipToRGBA(brush) || synthTip(brush, 256, opts);
+    const b2 = Object.assign({}, brush, { tip: { w: tip.w, h: tip.h, rgba: tip.rgba } });
+    const bytes = procreate.writeBrush(b2, { maxTipSize: opts.maxTipSize || 512, noTextureBake: opts.noTextureBake, fidelity: opts.fidelity, forceRebuild: opts.forceRebuild });
+    void b2;
+    return { bytes: bytes, name: brush.name || 'brush' };
+  }
+
+  /** Convert a whole set to one Procreate .brushset file (zip). */
+  function makeProcreateBrushset(brushList, opts) {
+    opts = opts || {};
+    const list = brushList.map(function (b) {
+      const tip = tipToRGBA(b) || synthTip(b, 256, opts);
+      return Object.assign({}, b, { tip: { w: tip.w, h: tip.h, rgba: tip.rgba } });
+    });
+    const bytes = procreate.writeBrushset(list, { maxTipSize: opts.maxTipSize || 512 });
+    return { bytes: bytes, count: list.length };
+  }
+
+  function bytesToB64(bytes) {
+    if (typeof Buffer !== 'undefined') return Buffer.from(bytes).toString('base64');
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
+
+  /**
+   * Expand a ZIP that is not itself a brush file into a list of brush files.
+   * Also supports a bundled CSP decrypted dump: `_decrypted/<name>/<name>.params.json`
+   * + `tips/*.png` is matched to a sibling .sut (or exported as its own brush when
+   * no .sut is present). Returns { files: [{name, bytes, kind, decrypted?}], skipped, warnings }.
+   */
+  function expandArchive(zipName, bytes, depth) {
+    depth = depth || 0;
+    const warnings = [];
+    const files = [];
+    const skipped = [];
+    if (depth > 3) return { files, skipped, warnings: ['压缩包嵌套过深，已停止: ' + zipName] };
+    let entries;
+    try {
+      entries = zip.read(bytes);
+    } catch (e) {
+      throw new Error('无法解压：' + e.message);
+    }
+    if (entries.length > 4000) throw new Error('压缩包条目过多');
+
+    // ---- pre-scan CSP decrypted dumps ----
+    const groups = new Map(); // groupRoot -> { json, jsonBytes, tipsByName, meta }
+    for (const entry of entries) {
+      if (entry.dir) continue;
+      const norm = entry.name.replace(/\\/g, '/');
+      if (!/\.params\.json$/i.test(norm)) continue;
+      const parts = norm.split('/');
+      const idx = parts.lastIndexOf('_decrypted');
+      if (idx < 0) continue;
+      const groupRoot = parts.slice(0, idx + 2).join('/'); // .../_decrypted/<name>
+      let data;
+      try { data = entry.data(); } catch (e) { continue; }
+      let meta = null;
+      try { meta = JSON.parse(util.utf8Decode(data)); } catch (e) { continue; }
+      groups.set(groupRoot, { json: meta, jsonBytes: data, tipsByName: new Map(), meta: meta });
+    }
+    for (const entry of entries) {
+      if (entry.dir) continue;
+      const norm = entry.name.replace(/\\/g, '/');
+      for (const [groupRoot, grp] of groups) {
+        if (!norm.startsWith(groupRoot + '/')) continue;
+        const rel = norm.slice(groupRoot.length + 1);
+        let data;
+        try { data = entry.data(); } catch (e) { break; }
+        grp.tipsByName.set(rel, data);
+        break;
+      }
+    }
+    const groupPayload = function (grp) {
+      const mats = Array.isArray(grp.meta.materials) ? grp.meta.materials : [];
+      const tips = mats.map(function (m) {
+        const prev = m && m.previews && m.previews[0];
+        if (!prev || !prev.file) return null;
+        const f = String(prev.file).replace(/^\/+/, '');
+        const hit = grp.tipsByName.get(f);
+        return hit ? bytesToB64(hit) : null;
+      });
+      return {
+        json: grp.jsonBytes,
+        tips: tips,
+        name: String(grp.meta.brush_name || '').trim() || groupRoot.split('/').pop()
+      };
+    };
+    const usedGroups = new Set();
+
+    for (const entry of entries) {
+      if (entry.dir) continue;
+      const lower = entry.name.toLowerCase();
+      if (lower.includes('__macosx') || lower.endsWith('.ds_store')) continue;
+      const base = lower.split('/').pop();
+      if (!base || base.startsWith('.')) continue;
+      // decrypted dump internal files belong to a group, not standalone brushes
+      let inGroup = null;
+      for (const groupRoot of groups.keys()) {
+        if (entry.name.replace(/\\/g, '/').startsWith(groupRoot + '/')) { inGroup = groupRoot; break; }
+      }
+      if (inGroup) {
+        // handled below via the sut match / virtual entry
+        continue;
+      }
+      let data;
+      try {
+        data = entry.data();
+      } catch (e) {
+        skipped.push(entry.name);
+        continue;
+      }
+      const kind = detect(entry.name, data);
+      if (kind) {
+        const item = { name: entry.name, bytes: data, kind };
+        if (kind === 'sut') {
+          const sutBase = base.replace(/\.sut$/i, '');
+          for (const [groupRoot, grp] of groups) {
+            if (usedGroups.has(groupRoot)) continue;
+            const dirName = groupRoot.split('/').pop().toLowerCase();
+            const metaSut = String((grp.meta && grp.meta.sut) || '').toLowerCase();
+            if (dirName === sutBase || (metaSut && metaSut === base)) {
+              item.decrypted = groupPayload(grp);
+              usedGroups.add(groupRoot);
+              break;
+            }
+          }
+        }
+        files.push(item);
+        continue;
+      }
+      if (zip.isZip(data) && depth < 3) {
+        const inner = expandArchive(entry.name, data, depth + 1);
+        inner.files.forEach(function (f) { files.push({ name: entry.name + ' / ' + f.name, bytes: f.bytes, kind: f.kind, decrypted: f.decrypted }); });
+        inner.skipped.forEach(function (s) { skipped.push(entry.name + ' / ' + s); });
+        inner.warnings.forEach(function (w) { warnings.push(w); });
+        continue;
+      }
+      skipped.push(entry.name);
+    }
+
+    // decrypted dumps without a matching .sut become brushes of their own
+    for (const [groupRoot, grp] of groups) {
+      if (usedGroups.has(groupRoot)) continue;
+      const payload = groupPayload(grp);
+      files.push({
+        name: groupRoot + '/' + (payload.name || 'csp') + '.params.json',
+        bytes: grp.jsonBytes,
+        kind: 'csp-decrypted',
+        decrypted: payload
+      });
+      usedGroups.add(groupRoot);
+    }
+
+    if (!files.length) {
+      warnings.push('压缩包里没有找到可识别的笔刷文件（支持 .abr/.bru/.brush/.brushset，或包含 .sut + _decrypted 的压缩包）');
+    } else if (skipped.length) {
+      warnings.push('压缩包内 ' + skipped.length + ' 个不相关文件已忽略（' + skipped.slice(0, 3).join(', ') + '…）');
+    }
+    return { files, skipped, warnings };
+  }
+
+  /** Convert one brush to a GIMP .gbr file (8-bit gray tip). */
+  function makeGbr(brush, opts) {
+    opts = opts || {};
+    // 还原优先：源就是 .gbr 时直接原样输出
+    if (opts.fidelity !== false && brush._rawKind === 'gbr' && brush._rawFile) {
+      return { bytes: new Uint8Array(brush._rawFile), count: 1, passthrough: true };
+    }
+    const b2 = withTipRGBA(brush, opts, { bake: true, fit: true });
+    const w = b2.tip.w, h = b2.tip.h;
+    const gray = new Uint8Array(w * h);
+    for (let k = 0; k < w * h; k++) gray[k] = b2.tip.rgba[k * 4 + 3];
+    const name = String(brush.name || 'brush').trim().slice(0, 120);
+
+
+    return { bytes: gimp.writeGbr({ name: name, tip: { w: w, h: h, data: gray }, spacingPct: brush.spacingPct }), count: 1 };
+  }
+
+  /** Convert one brush to a MyPaint .myb file. */
+  function makeMyb(brush, opts) {
+    opts = opts || {};
+    // 还原优先：源就是 .myb 时原样输出
+    if (opts.fidelity !== false && brush._rawMyb && brush._rawMyb.length) {
+      return { bytes: new Uint8Array(brush._rawMyb), count: 1, passthrough: true };
+    }
+    const bytes = mypaint.writeMyb(brush);
+    return { bytes: bytes, count: 1 };
+  }
+
+  /** One brush -> Krita .kpp (best-effort preset). */
+  function makeKpp(brush, opts) {
+    const b2 = withTipRGBA(brush, opts);
+    return { bytes: krita.writeKpp(b2), count: 1 };
+  }
+
+  /** Brush list -> one GIMP .gih pipe. */
+  function makeGih(brushList, opts) {
+    opts = opts || {};
+    // 还原优先：整组来自同一个 .gih 时原样输出
+    if (opts.fidelity !== false && brushList.length && brushList.every(function (b) { return b._rawKind === 'gih' && b._rawFile; })) {
+      const ref = brushList[0]._rawFile;
+      const sameBytes = function (a, b) {
+        if (!a || !b || a.length !== b.length) return false;
+        for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+        return true;
+      };
+      const same = brushList.every(function (b) { return b._rawFile === ref || sameBytes(b._rawFile, ref); });
+      if (same) return { bytes: new Uint8Array(brushList[0]._rawFile), count: brushList.length, passthrough: true };
+    }
+    const list = brushList.map(function (b) { return withTipRGBA(b, opts); });
+    const name = (opts.name && String(opts.name).trim()) ||
+      (list.length ? String(list[0].name || '').trim() : '') || 'brushconv';
+    return { bytes: gimp.writeGih(list, name), count: list.length };
+  }
+
+  /** Brush list -> Corel Painter .brushcategory XML (heuristic). */
+  function makePainter(brushList, opts, name) {
+    return { bytes: genericBrush.writePainter(brushList, name || 'BrushConv'), count: brushList.length };
+  }
+
+  /** Brush list -> MediBang .mdp (heuristic zip). */
+  function makeMdp(brushList, opts, name) {
+    const list = brushList.map(function (b) { return withTipRGBA(b, opts, { bake: true, fit: true }); });
+    return { bytes: genericBrush.writeMdp(list, name || 'BrushConv'), count: list.length };
+  }
+
+  /** One brush -> .ipcfg JSON (ibisPaint-style config exchange). */
+  function makeIpcfg(brush) {
+    return { bytes: genericBrush.writeIpcfg(brush), count: 1 };
+  }
+
+  /** Attach a prepared RGBA tip to a copy of the brush.
+      - flags.bake: squash the tip width by brush.roundness so formats without a
+        roundness field (GBR/BRU/MDP/PRBR) still look oval;
+      - flags.fit: scale the tip to brush.sizePx so pixel-sized brush formats
+        (GBR/GIH/MDP/PRBR) keep the intended brush size. */
+  function withTipRGBA(brush, opts, flags) {
+    opts = opts || {};
+    flags = flags || {};
+    let tip = tipToRGBA(brush) || synthTip(brush, 256, opts);
+    let w = tip.w, h = tip.h, rgba = tip.rgba;
+    if (flags.bake) {
+      const round = Math.max(5, Math.min(100, brush.roundness === undefined ? 100 : brush.roundness)) / 100;
+      if (round < 0.98 && w > 1) {
+        const nw = Math.max(1, Math.round(w * round));
+        rgba = png.resize(rgba, w, h, nw, h);
+        w = nw;
+      }
+    }
+    const limit = Math.max(16, Math.min(2048, opts.maxTipSize || 512));
+    const maxSide = Math.max(w, h);
+    let target = null;
+    if (flags.fit && brush.sizePx) target = Math.max(4, Math.min(limit, Math.round(brush.sizePx)));
+    if (target && Math.abs(maxSide - target) > 1) {
+      const sc = target / maxSide;
+      const nw = Math.max(1, Math.round(w * sc)), nh = Math.max(1, Math.round(h * sc));
+      rgba = png.resize(rgba, w, h, nw, nh);
+      w = nw; h = nh;
+    } else if (maxSide > limit) {
+      const sc = limit / maxSide;
+      const nw = Math.max(1, Math.round(w * sc)), nh = Math.max(1, Math.round(h * sc));
+      rgba = png.resize(rgba, w, h, nw, nh);
+      w = nw; h = nh;
+    }
+    return Object.assign({}, brush, { tip: { w: w, h: h, rgba: rgba } });
+  }
+
+  /** One brush -> Infinite Painter .prbr */
+  function makePrbr(brush, opts) {
+    const b2 = withTipRGBA(brush, opts, { bake: true, fit: true });
+    return { bytes: infpainter.writePrbr(b2), count: 1 };
+  }
+
+  /** One brush -> MediBang .mdp material (stamp document). */
+  function makeMdp(brushList, opts) {
+    const list = Array.isArray(brushList) ? brushList : [brushList];
+    const chunks = [];
+    for (const b of list) {
+      const b2 = withTipRGBA(b, opts, { bake: true, fit: true });
+      chunks.push({ name: (sanitizeName(b2.name || 'material', 0)) + '.mdp', data: medibang.writeMdp(b2) });
+    }
+    if (chunks.length === 1) return { bytes: chunks[0].data, count: 1 };
+    return { files: chunks, count: chunks.length };
+  }
+
+  /** Build a MediBang Paint brush package: black-shape tip PNG + Brush2.ini entry.
+      Install: copy the PNG into %LOCALAPPDATA%\\Medibang\\CloudAlpaca\\brush_bitmap\\
+      and append the ini snippet to Brush2.ini, then restart MediBang. */
+  function makeMediBangBrush(brush, opts) {
+    opts = opts || {};
+    const b2 = withTipRGBA(brush, opts, { fit: true });
+    const w = b2.tip.w, h = b2.tip.h;
+    const rgba = new Uint8Array(w * h * 4);
+    for (let i = 0; i < w * h; i++) {
+      rgba[i * 4] = 0; rgba[i * 4 + 1] = 0; rgba[i * 4 + 2] = 0;
+      rgba[i * 4 + 3] = b2.tip.rgba[i * 4 + 3];
+    }
+    const pngBytes = png.encode(w, h, rgba);
+    const base = 'bc_' + String(brush.name || 'brush').replace(/[^A-Za-z0-9\u4e00-\u9fff_-]+/g, '_').slice(0, 40) + '_' + Date.now().toString(36);
+    const pngName = base + '.png';
+    const EOL = '\n';
+    const EOL_CRLF = String.fromCharCode(13) + String.fromCharCode(10);
+    const opacity = Math.max(0.01, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity)).toFixed(3);
+    const width = Math.max(1, Math.min(1000, Math.round(brush.sizePx || 40)));
+    const section = '[' + (opts.index === undefined ? 100 : opts.index) + ']' + EOL +
+      'name=' + (brush.name || 'brush') + EOL +
+      'type=bitmap' + EOL +
+      'group=-1' + EOL +
+      'width=' + width + EOL +
+      'min=0' + EOL +
+      'opacity=' + opacity + EOL +
+      'pSize=true' + EOL +
+      'pAlpha=false' + EOL +
+      'cloudId=-1' + EOL +
+      'cloudUuid=' + EOL +
+      'bitmapFile=' + pngName + EOL +
+      'option=0' + EOL + 'option2=0' + EOL + 'option3=50' + EOL;
+    const readme = [
+      'MediBang Paint 笔刷安装说明',
+      '1. 把 ' + pngName + ' 复制到 brush_bitmap 目录（%LOCALAPPDATA%\\Medibang\\CloudAlpaca\\brush_bitmap\\）',
+      '2. 打开同目录下的 Brush2.ini，在文件末尾追加 Brush2.ini.snippet.txt 里的内容',
+      '3. 完全退出并重新打开 MediBang Paint Pro，笔刷列表最后会出现「' + (brush.name || 'brush') + '」'
+    ].join('\r\n');
+    const installBat = [
+      '@echo off',
+      'chcp 65001 >nul',
+      'echo MediBang Paint brush install',
+      'powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"',
+      'echo.',
+      'pause',
+      ''
+    ].join(String.fromCharCode(13, 10));
+    const installPs1 = String.raw`
+$ErrorActionPreference = 'Stop'
+$dst = Join-Path $env:LOCALAPPDATA 'Medibang\CloudAlpaca'
+if (-not (Test-Path $dst)) { Write-Host ('not found: ' + $dst); exit 1 }
+$png = Get-ChildItem (Join-Path $PSScriptRoot 'brush_bitmap') -Filter *.png | Select-Object -First 1
+if (-not $png) { Write-Host 'missing brush_bitmap/*.png'; exit 1 }
+Copy-Item $png.FullName (Join-Path $dst 'brush_bitmap') -Force
+$ini = Join-Path $dst 'Brush2.ini'
+if (-not (Test-Path $ini)) { New-Item -ItemType File -Path $ini | Out-Null }
+$text = Get-Content $ini -Raw -Encoding UTF8
+if ($null -eq $text) { $text = '' }
+$max = 0
+foreach ($m in [regex]::Matches($text, '(?m)^\[(\d+)\]')) { $n = [int]$m.Groups[1].Value; if ($n -gt $max) { $max = $n } }
+$next = $max + 1
+$snip = Get-Content (Join-Path $PSScriptRoot 'Brush2.ini.snippet.txt') -Raw -Encoding UTF8
+$snip = [regex]::Replace($snip, '^\[\d+\]', '[' + $next + ']')
+$snip = [regex]::Replace($snip, '(?m)^bitmapFile=.*$', 'bitmapFile=' + $png.Name)
+Add-Content -Path $ini -Value $snip -Encoding UTF8
+Write-Host ('installed section [' + $next + '] bitmap: ' + $png.Name)
+Write-Host 'restart MediBang Paint Pro'
+`;
+    const zipMod = isNode ? require('./zip.js') : root.BC.zip;
+    const bytes = zipMod.write([
+      { name: 'brush_bitmap/' + pngName, data: pngBytes },
+      { name: 'Brush2.ini.snippet.txt', data: util.utf8Encode(section) },
+      { name: '安装.bat', data: util.utf8Encode(installBat) },
+      { name: 'install.ps1', data: util.utf8Encode(String.fromCharCode(0xfeff) + installPs1) },
+      { name: '安装说明.txt', data: util.utf8Encode(readme) }
+    ]);
+    return { bytes: bytes, name: pngName, section: section, count: 1 };
+  }
+
+  /** 天生会画(GoPaint) 目前只支持导入 .abr 与原生 .gobrush；这里按 ABR 导出。 */
+  /** Export the brush tip as a standalone PNG (material for apps without a brush-file import:
+      MediBang Paint / Infinite Painter: create a custom brush from an image). */
+  function makeTipPng(brush, opts) {
+    opts = opts || {};
+    let img = tipToRGBA(brush);
+    if (!img) img = synthTip(brush, 256, opts);
+    if (brush.source === 'abr') img = bakeTipTransform(img, brush);
+    const maxTip = Math.max(64, Math.min(2048, opts.maxTipSize || 512));
+    let w = img.w, h = img.h, rgba = img.rgba;
+    const maxSide = Math.max(w, h);
+    if (maxSide > maxTip) {
+      const s = maxTip / maxSide;
+      const nw = Math.max(1, Math.round(w * s)), nh = Math.max(1, Math.round(h * s));
+      rgba = png.resize(rgba, w, h, nw, nh);
+      w = nw; h = nh;
+    }
+    return {
+      bytes: png.encode(w, h, png.toMaskRgba(rgba)),
+      w: w, h: h,
+      meta: { name: brush.name || 'brush', sizePx: brush.sizePx, spacingPct: brush.spacingPct, opacity: brush.opacity }
+    };
+  }
+
+  /** 提取可读的笔刷参数（用于 PNG 导出时附带的参数说明） */
+  function brushParamInfo(b) {
+    const r = (v, d) => (v === undefined || v === null || (typeof v === 'number' && !isFinite(v))) ? d : v;
+    const num = (v, d, digits) => {
+      const x = r(v, d);
+      return typeof x === 'number' ? Math.round(x * Math.pow(10, digits === undefined ? 2 : digits)) / Math.pow(10, digits === undefined ? 2 : digits) : x;
+    };
+    return {
+      名称: b.name || '',
+      笔尖尺寸: b.tip ? (b.tip.w + '×' + b.tip.h) : '',
+      画笔尺寸: num(b.sizePx, ''),
+      间距百分比: num(b.spacingPct, ''),
+      角度: num(b.angle, 0, 0),
+      圆度: num(b.roundness, 100, 0),
+      硬度: b.hardness === undefined ? '' : num(b.hardness * 100, '', 0),
+      不透明度百分比: num((b.opacity === undefined ? 1 : b.opacity) * 100, '', 0),
+      流量百分比: b.flowPct === undefined ? '' : num(b.flowPct * 100, '', 0),
+      最小直径百分比: b.minSizeRatio === undefined ? '' : num(b.minSizeRatio * 100, '', 0),
+      最小不透明度百分比: b.minOpacityRatio === undefined ? '' : num(b.minOpacityRatio * 100, '', 0),
+      大小随机百分比: num(b.sizeJitterPct, 0, 0),
+      间距随机百分比: num(b.spacingJitterPct, 0, 0),
+      流量随机百分比: num(b.flowJitterPct, 0, 0),
+      角度随机: num(b.angleJitterDeg, 0, 0),
+      散布: b.scatterOn ? '开' : '关',
+      散布强度百分比: b.scatterOn ? num(b.scatterPct, 0, 0) : '',
+      散布数量: b.scatterOn ? num(b.scatterCount, 1, 0) : '',
+      纹理: b.hasTexture ? '有' : '无',
+      压感大小: b.pressureSize ? '是' : (b.pressure ? '是' : '否'),
+      压感不透明度: b.pressureOpacity ? '是' : '否',
+      来源格式: b.source || ''
+    };
+  }
+
+  function brushParamText(brushList) {
+    const TAB = String.fromCharCode(9); const NL = String.fromCharCode(10);
+    const rows = brushList.map(function (b) { return brushParamInfo(b); });
+    const keys = ['名称', '笔尖尺寸', '画笔尺寸', '间距百分比', '角度', '圆度', '硬度', '不透明度百分比', '流量百分比',
+      '最小直径百分比', '最小不透明度百分比', '大小随机百分比', '间距随机百分比', '流量随机百分比', '角度随机',
+      '散布', '散布强度百分比', '散布数量', '纹理', '压感大小', '压感不透明度', '来源格式'];
+    const out = [];
+    out.push('笔刷参数表（与同目录 PNG 笔尖一一对应）');
+    out.push('========================================');
+    out.push('说明：间距为画笔直径的百分比；角度/角度随机单位为度；随机/散布为百分比；空值表示该来源没有此参数。');
+    out.push('');
+    out.push(['序号'].concat(keys).join(TAB));
+    rows.forEach(function (row, i) {
+      out.push([i + 1].concat(keys.map(function (k) { return row[k] === '' || row[k] === undefined ? '-' : row[k]; })).join(TAB));
+    });
+    return out.join(NL);
+  }
+
+  /* 程序化颗粒（确定性噪声）：用于把"纹理/颗粒"烘焙进笔尖，或在 Procreate 里生成 Grain.png */
+  function grainValue(x, y, seed) {
+    let h = (x * 374761393 + y * 668265263 + seed * 2147483647) ^ 0x5bf03635;
+    h = (h ^ (h >> 13)) * 1274126177;
+    h = h ^ (h >> 16);
+    return ((h >>> 0) % 1000) / 999;
+  }
+
+  function grainNoise(w, h, seed, scale) {
+    scale = Math.max(1, Math.round(scale || 3));
+    const out = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        // 低频 + 高频混合，接近纸纹/颗粒
+        const lf = grainValue(Math.floor(x / scale), Math.floor(y / scale), seed);
+        const hf = grainValue(x, y, seed + 7);
+        out[y * w + x] = Math.max(0, Math.min(1, lf * 0.65 + hf * 0.35));
+      }
+    }
+    return out;
+  }
+
+  function bakeGrainIntoRGBA(rgba, w, h, strength, seed) {
+    const noise = grainNoise(w, h, seed || 1, 3);
+    const k = Math.max(0, Math.min(1, strength === undefined ? 0.35 : strength));
+    for (let i = 0; i < w * h; i++) {
+      const a = rgba[i * 4 + 3];
+      if (!a) continue;
+      const n = 1 - k + k * noise[i];
+      rgba[i * 4 + 3] = Math.max(0, Math.min(255, Math.round(a * n)));
+    }
+    return rgba;
+  }
+
+  /* ---------- 一键安装脚本（放进输出 ZIP，用户双击即可装进目标软件） ---------- */
+  function makeInstallScripts(target) {
+    const NL = String.fromCharCode(13, 10);
+    const files = [];
+    const mk = (name, text) => files.push({ name: name, data: util.utf8Encode(text) });
+    if (target === 'abr') {
+      mk('安装说明.txt', [
+        'Photoshop 笔刷安装说明',
+        '方法一（推荐）：Photoshop → 画笔面板右上 ☰ → 载入画笔 → 选择本目录的 .abr 文件',
+        '方法二：把 .abr 复制到 Photoshop 安装目录\Presets\Brushes\ 后重启 PS',
+        '提示：导入后整包会显示为一个画笔组；选中画笔回车可重命名。'
+      ].join(NL));
+    } else if (target === 'gbr' || target === 'gih') {
+      mk('安装到GIMP.ps1', [
+        '$ErrorActionPreference = "Stop"',
+        '$dst = Join-Path $env:APPDATA "GIMP"',
+        '$dir = Get-ChildItem $dst -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1',
+        'if (-not $dir) { Write-Host "未找到 GIMP 用户目录（先运行一次 GIMP）"; exit 1 }',
+        '$brushes = Join-Path $dir.FullName "brushes"',
+        'if (-not (Test-Path $brushes)) { New-Item -ItemType Directory -Path $brushes | Out-Null }',
+        'Get-ChildItem $PSScriptRoot -Include *.gbr,*.gih -File | Copy-Item -Destination $brushes -Force',
+        'Write-Host ("已复制到 " + $brushes)',
+        'Write-Host "重启 GIMP 后生效"'
+      ].join(NL));
+      mk('安装到GIMP.bat', ['@echo off', 'chcp 65001 >nul', 'powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0安装到GIMP.ps1"', 'pause', ''].join(NL));
+      mk('安装说明.txt', 'GIMP 笔刷安装说明' + NL + '运行「安装到GIMP.bat」，然后重启 GIMP；画笔面板里即可看到。' + NL + '（.gbr 是单支笔刷，.gih 是整包管道）');
+    } else if (target === 'kbundle') {
+      mk('安装说明.txt', [
+        'Krita 笔刷包安装说明',
+        'Krita → 设置 → 管理资源 → 导入资源 → 选择本目录的 .bundle 文件',
+        '导入后在「画笔预设」里搜索包名即可。'
+      ].join(NL));
+    } else if (target === 'medibang') {
+      mk('安装说明.txt', [
+        'MediBang 笔刷安装说明',
+        '每个 zip 解压后运行里面的「安装.bat」，会写入 MediBang 笔刷目录',
+        '全部装完后重启 MediBang Paint Pro，笔刷列表末尾即可看到。'
+      ].join(NL));
+    } else if (target === 'brushset' || target === 'brush') {
+      mk('安装到Procreate.txt', [
+        'Procreate 笔刷安装说明',
+        '1. 把 .brush/.brushset 传到 iPad（AirDrop / iCloud / 文件 App）',
+        '2. 在「文件」里点该文件 → 用 Procreate 打开；或直接拖进 Procreate 画笔库',
+        '.brushset 是整包，会新增一个画笔组。'
+      ].join(NL));
+    } else if (target === 'gobrush' || target === 'gopaint_set') {
+      mk('安装到天生会画.txt', '天生会画：打开 App → 画笔 → 导入笔刷 → 选择 .gobrush（组文件选 .gobrushes）。');
+    } else if (target === 'painter') {
+      mk('安装到CorelPainter.txt', 'Corel Painter：笔刷选择器 → 导入 → 笔刷类别（.brushcategory）。');
+    }
+    return files;
+  }
+
+  /* ---------- 转换差异报告：每支笔刷在目标格式里保留了哪些、丢了哪些 ---------- */
+  function brushLossReport(brushList, targets) {
+    const NL = String.fromCharCode(10);
+    const fields = [
+      ['尺寸', 'sizePx'], ['间距', 'spacingPct'], ['角度', 'angle'], ['圆度', 'roundness'],
+      ['不透明度', 'opacity'], ['流量', 'flowPct'], ['硬度', 'hardness'],
+      ['最小直径', 'minSizeRatio'], ['最小不透明度', 'minOpacityRatio'],
+      ['大小随机', 'sizeJitterPct'], ['角度随机', 'angleJitterDeg'],
+      ['散布', 'scatterOn'], ['散布数量', 'scatterCount'],
+      ['纹理', 'hasTexture'], ['压感尺寸', 'pressureSize'], ['压感不透明度', 'pressureOpacity'],
+      ['锥度', 'taperOn'], ['湿边', 'wetEdgesOn'], ['混色/涂抹', 'smudgeOn'], ['颜色动态', 'colorDynamicsOn']
+    ];
+    const support = {
+      abr: ['尺寸', '间距', '角度', '圆度', '不透明度', '流量', '硬度', '最小直径', '最小不透明度', '大小随机', '角度随机', '散布', '散布数量', '纹理', '压感尺寸', '压感不透明度'],
+      bru: ['尺寸', '间距', '角度', '圆度', '不透明度', '流量', '硬度', '最小直径', '最小不透明度', '大小随机', '角度随机', '散布', '散布数量', '纹理', '压感尺寸', '压感不透明度', '锥度', '湿边', '混色/涂抹', '颜色动态'],
+      brushset: ['尺寸', '间距', '角度', '圆度', '不透明度', '流量', '硬度', '最小直径', '最小不透明度', '大小随机', '散布', '散布数量', '纹理', '压感尺寸', '压感不透明度', '锥度', '湿边', '混色/涂抹', '颜色动态'],
+      brush: ['尺寸', '间距', '角度', '圆度', '不透明度', '流量', '硬度', '最小直径', '最小不透明度', '大小随机', '散布', '散布数量', '纹理', '压感尺寸', '压感不透明度', '锥度', '湿边', '混色/涂抹', '颜色动态'],
+      kbundle: ['尺寸', '间距', '角度', '圆度', '不透明度', '流量', '硬度', '最小直径', '最小不透明度', '散布', '压感尺寸', '压感不透明度', '混色/涂抹'],
+      gbr: ['尺寸', '间距'], gih: ['尺寸', '间距'],
+      myb: ['尺寸', '间距', '角度', '圆度', '不透明度', '硬度', '最小直径', '最小不透明度', '大小随机', '散布', '压感尺寸'],
+      painter: ['尺寸'], sai2: ['尺寸', '间距'], png: ['尺寸', '间距', '角度', '圆度', '不透明度'],
+      medibang: ['尺寸', '间距', '不透明度'], gobrush: ['尺寸', '间距', '不透明度', '散布', '纹理'],
+      gopaint_set: ['尺寸', '间距', '不透明度', '散布', '纹理'], gopaint_abr: ['尺寸', '间距', '不透明度', '纹理']
+    };
+    const lines = [];
+    lines.push('转换差异报告（自动生成）');
+    lines.push('========================================');
+    lines.push('说明：✅=目标格式能保留  ⚠️=近似/需换算  ❌=目标格式没有这个概念（转换后丢失）');
+    lines.push('');
+    for (const target of targets) {
+      const keep = support[target] || [];
+      lines.push('【目标格式：' + target + '】');
+      let lostCount = 0;
+      brushList.forEach(function (b, i) {
+        const has = [];
+        const lost = [];
+        for (const f of fields) {
+          const v = b[f[1]];
+          const present = v !== undefined && v !== null && v !== '' && v !== 0 && v !== false;
+          if (!present) continue;
+          if (keep.indexOf(f[0]) >= 0) has.push(f[0]); else lost.push(f[0]);
+        }
+        if (lost.length) lostCount++;
+        lines.push('  ' + (i + 1) + '. ' + (b.name || '未命名') + '  ← 保留：' + (has.length ? has.join('、') : '（基础）') + (lost.length ? ' ｜ 丢失：' + lost.join('、') : ''));
+      });
+      lines.push('  小结：共 ' + brushList.length + ' 支，其中 ' + lostCount + ' 支存在参数丢失');
+      lines.push('');
+    }
+    return lines.join(NL);
+  }
+
+  function makeTipPngPack(brushList, opts) {
+    opts = opts || {};
+    const zipMod = isNode ? require('./zip.js') : root.BC.zip;
+    const entries = [];
+    const used = new Map();
+    brushList.forEach(function (b, i) {
+      const made = makeTipPng(b, Object.assign({}, opts, { maxTipSize: Math.max(opts.maxTipSize || 512, 512) }));
+      let base = sanitizeName(b.name, i);
+      let name = base, k = 2;
+      while (used.has(name.toLowerCase())) { name = base + ' (' + k + ')'; k++; }
+      used.set(name.toLowerCase(), 1);
+      entries.push({ name: name + '_笔尖.png', data: made.bytes });
+    });
+    const lines = [
+      '笔尖/素材 PNG 导出（v2.4）',
+      '============================',
+      '这些 PNG 是笔尖形状图（白底+透明度），可直接导入：',
+      '  · MediBang Paint：素材/画笔 → 用图片新建自定义笔刷',
+      '  · Infinite Painter：笔刷库 → 创建 → 以图片创建笔刷',
+      '尺寸 = 原笔刷设置的像素尺寸；间距/压感请在 App 内手动设置（文件里不带）。'
+    ];
+    entries.push({ name: '说明.txt', data: util.utf8Encode(lines.join('\n')) });
+    entries.push({ name: '笔刷参数.txt', data: util.utf8Encode(brushParamText(brushList)) });
+    entries.push({ name: '笔刷参数.json', data: util.utf8Encode(JSON.stringify(brushList.map(function (b) {
+      const info = brushParamInfo(b); const obj = {}; for (const k in info) obj[k] = info[k] === '' ? null : info[k]; return obj;
+    }), null, 2)) });
+    return { bytes: zipMod.write(entries), count: brushList.length };
+  }
+
+  /** Brush list -> Krita resource bundle (.bundle) with GBR tips + presets. */
+  function makeKritaBundle(brushList, opts) {
+    return krita.writeBundle(brushList, opts || {});
+  }
+
+  /** Brush list -> SAI2 scatter brush files (bmp + ini), zipped. */
+  function makeSai2Pack(brushList, opts) {
+    return sai2.makeSai2Pack(brushList, opts || {});
+  }
+
+  function makeGoPaintAbr(brushList, opts) {
+    return makeAbrPack(brushList, opts || {});
+  }
+
+  /** 天生会画（GoPaint）原生 .gobrush：zip(info.json + 10x10 shape/grain + brush_<uuid>.info + 快照) */
+  function makeGoPaintBrush(brush, opts) {
+    opts = opts || {};
+    // 还原优先：源就是 .gobrush 时原样输出
+    if (opts.fidelity !== false && brush._rawGobrush && brush._rawGobrush.length) {
+      return { bytes: new Uint8Array(brush._rawGobrush), count: 1, passthrough: true };
+    }
+    const made = gobrushWrite.makeGobrush(brush, opts || {});
+    const name = sanitizeName((brush.name || 'brush'), 0) || 'brush';
+    return { bytes: made.bytes, fileName: name + '.gobrush', count: 1 };
+  }
+
+  /** 整个笔刷集 -> 单个 .gobrushes 文件（GoPaint 原生笔刷组） */
+  function makeGoPaintGroup(brushList, opts) {
+    opts = opts || {};
+    // 还原优先：整组来自同一个 .gobrushes 时原样输出
+    if (opts.fidelity !== false && brushList.length && brushList.every(function (b) { return b._rawGobrush; })) {
+      const ref = brushList[0]._rawGobrush;
+      const same = brushList.every(function (b) { return b._rawGobrush === ref || (b._rawGobrush.length === ref.length && (function () { for (let i = 0; i < ref.length; i++) if (b._rawGobrush[i] !== ref[i]) return false; return true; })()); });
+      if (same) return { bytes: new Uint8Array(ref), count: brushList.length, passthrough: true };
+    }
+    const made = gobrushWrite.makeGobrushes(brushList, opts || {});
+    const name = sanitizeName((opts && opts.groupName) || '笔刷组', 0) || '笔刷组';
+    return { bytes: made.bytes, fileName: name + '.gobrushes', count: made.count };
+  }
+
+  /** 整个笔刷集 -> 多个 .gobrush 文件（GoPaint 原生格式） */
+  function makeGoPaintSet(brushList, opts) {
+    const files = [];
+    for (const b of brushList) {
+      const made = makeGoPaintBrush(b, opts);
+      files.push({ name: made.fileName, data: made.bytes });
+    }
+    return { files: files, count: files.length };
+  }
+
+  function uniqueNames(brushes) {
+    const seen = new Map();
+    return brushes.map((b, i) => {
+      let base = sanitizeName(b.name, i);
+      let n = base;
+      let k = 2;
+      while (seen.has(n)) { n = base + ' (' + k + ')'; k++; }
+      seen.set(n, 1);
+      return n;
+    });
+  }
+
+  const api = { detect, parseFile, expandArchive, synthTip, makeBru, makeBruPack, makeAbrPack, makeAbrPassthrough, makePatternFile, grainNoise, bakeGrainIntoRGBA, makeInstallScripts, brushLossReport, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makePainter, makeMdp, makeMediBangBrush, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, synthTip, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
+  if (isNode) module.exports = api;
+  else root.BC = Object.assign(root.BC || {}, { convert: api });
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
