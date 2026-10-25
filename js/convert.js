@@ -468,8 +468,8 @@
     if (opts.dualBake !== false && brush.dualOn && brush.dualTip && (brush.dualTip.rgba || brush.dualTip.data) && opts.noDualBake !== true) tipImg = bakeDualTip(tipImg, brush);
     // 圆度/角度只在 bakeTipTransform 里应用一次（之前 abr 源会被压两次 → 笔刷变得又细又扁）
     tipImg = bakeTipTransform(tipImg, brush);
-    const maxTip = Math.max(32, Math.min(2048, opts.maxTipSize || 512));
-    const wantTip = Math.max(32, Math.min(512, Math.round(((brush.sizePx || 100) * (opts.sizeScale || 1)))));
+    const maxTip = Math.max(16, Math.min(2048, opts.maxTipSize || 512));
+    const wantTip = Math.max(8, Math.min(512, Math.round(((brush.sizePx || 100) * (opts.sizeScale || 1)))));
     let w = tipImg.w, h = tipImg.h, rgba = tipImg.rgba;
     const maxSide = Math.max(w, h);
     if (maxSide > maxTip) {
@@ -649,7 +649,7 @@
       const key = String(t.w) + 'x' + String(t.h) + ':' + util.md5(t.gray);
       if (seen[key]) continue;
       seen[key] = 1;
-      list.push({ key: key, t: t, name: (b.textureName || 'brushconv-texture') });
+      list.push({ key: key, t: t, name: (b.textureName || 'brushconv-texture'), brushName: b.name });
     }
     if (!list.length) {
       const made = patMod.buildGrainPat({ size: opts.size || 256, seed: opts.seed || 11 });
@@ -660,8 +660,9 @@
     let i = 0;
     for (const item of list) {
       i++;
-      const base = String(item.name || 'texture').replace(/^.*=/, '');
-      const nm = (base && base !== 'brushconv-texture' ? base : ('纹理 ' + i)).slice(0, 30) + (i > 1 ? (' ' + i) : '');
+      let base = String(item.name || 'texture').replace(/^.*=/, '');
+      if (!base || base === 'brushconv-texture') base = String(item.brushName || ('纹理 ' + i));
+      const nm = (base || ('纹理 ' + i)).slice(0, 26) + ' ' + item.t.w + 'x' + item.t.h + (i > 1 ? (' #' + i) : '');
       const p = patMod.buildPattern(nm, item.t.w, item.t.h, [item.t.gray, item.t.gray, item.t.gray], undefined, true);
       records.push(p);
       refs.set(item.key, { id: p.id, name: p.name });
@@ -1137,7 +1138,7 @@
         w = nw;
       }
     }
-    const limit = Math.max(16, Math.min(2048, opts.maxTipSize || 512));
+    const limit = Math.max(8, Math.min(2048, opts.maxTipSize || 512));
     const maxSide = Math.max(w, h);
     let target = null;
     if (flags.fit && brush.sizePx) target = Math.max(4, Math.min(limit, Math.round(brush.sizePx)));

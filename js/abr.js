@@ -521,11 +521,16 @@
           brush._patternRecord = patternRecords.find(function (r) { return (brush.textureId && r.id === brush.textureId) || (brush.textureName && r.name === brush.textureName); }) || null;
           if (brush._patternRecord) {
             const rr = brush._patternRecord;
-            const bpp = rr.mode === 3 ? 3 : 1;
-            const pixelLen = rr.w * rr.h * bpp;
-            const start = rr.data.length - pixelLen;
-            if (start > 0 && pixelLen > 0) {
-              brush._patternPixels = { w: rr.w, h: rr.h, mode: rr.mode, data: rr.data.subarray(start, start + pixelLen) };
+            if (rr.planes && rr.planes.gray) {
+              brush._patternPixels = { w: rr.w, h: rr.h, mode: 1, data: rr.planes.gray };
+              brush._patternDepth = rr.planes.planes && rr.planes.planes[0] ? rr.planes.planes[0].depth : 8;
+            } else {
+              const bpp = rr.mode === 3 ? 3 : 1;
+              const pixelLen = rr.w * rr.h * bpp;
+              const start = rr.data.length - pixelLen;
+              if (start > 0 && pixelLen > 0) {
+                brush._patternPixels = { w: rr.w, h: rr.h, mode: rr.mode, data: rr.data.subarray(start, start + pixelLen) };
+              }
             }
           }
         }
@@ -794,10 +799,87 @@
         p2 += idl;
         id = s2;
       } catch (e) { /* header variant */ }
-      records.push({ offset: at, total: total, len: len, mode: mode, w: w, h: h, name: name, id: id, data: data.subarray(at, at + total) });
+      const recData = data.subarray(at, at + total);
+      const planes = parsePatternPlanes(recData, w, h);
+      records.push({ offset: at, total: total, len: len, mode: mode, w: w, h: h, name: name, id: id, data: recData, planes: planes });
       at += total;
     }
     return records;
+  }
+
+  function parsePatternPlanes(data, w, h) {
+    try {
+      let p = 4;
+      const mode = util.u32(data, p); p += 4;
+      p += 4;
+      const nl = util.u32(data, p); p += 4 + nl * 2;
+      const idl = data[p]; p += 1 + idl;
+      let palette = null;
+      if (mode === 2) { palette = data.subarray(p, p + 768); p += 768 + 4; }
+      p += 4;
+      p += 4;
+      p += 16;
+      const slotCount = util.u32(data, p); p += 4;
+      const planes = [];
+      for (let s2 = 0; s2 < slotCount; s2++) {
+        if (p + 4 > data.length) break;
+        const written = util.u32(data, p); p += 4;
+        if (written !== 1) break;
+        const alen = util.u32(data, p); p += 4;
+        const bodyStart = p;
+        p += 4;
+        p += 16;
+        const depth2 = util.u16(data, p); p += 2;
+        const comp = data[p]; p += 1;
+        const dataStart = p;
+        const dataEnd = Math.min(data.length, bodyStart + alen);
+        const n = w * h;
+        const gray = new Uint8Array(n);
+        const bytes = depth2 === 16 ? 2 : depth2 === 32 ? 4 : 1;
+        if (comp === 0) {
+          for (let i = 0; i < n; i++) {
+            const o = dataStart + i * bytes;
+            if (o + bytes > dataEnd) break;
+            let v;
+            if (bytes === 1) v = data[o];
+            else if (bytes === 2) v = data[o] >> 8;
+            else { v = Math.max(0, Math.min(255, Math.round(data[o] ))); }
+            gray[i] = v;
+          }
+        } else if (comp === 1) {
+          let rp = dataStart;
+          for (let y = 0; y < h && rp + 2 <= dataEnd; y++) {
+            const rowLen = util.u16(data, rp); rp += 2;
+            const rowEnd = Math.min(dataEnd, rp + rowLen);
+            const out = [];
+            let q = rp;
+            while (q < rowEnd) {
+              const hh = data[q++];
+              if (hh <= 127) { for (let k = 0; k < hh + 1 && q < rowEnd; k++) out.push(data[q++]); }
+              else if (hh >= 129) { const v = data[q++] || 0; for (let k = 0; k < 257 - hh; k++) out.push(v); }
+            }
+            rp = rowEnd;
+            for (let x = 0; x < w; x++) gray[y * w + x] = out[x * bytes] || 0;
+          }
+        }
+        planes.push({ depth: depth2, compression: comp, gray: gray });
+        p = bodyStart + alen;
+      }
+      let out = null;
+      if (mode === 2 && palette && planes[0]) {
+        out = new Uint8Array(w * h);
+        for (let i = 0; i < w * h; i++) {
+          const q = (planes[0].gray[i] || 0) * 3;
+          out[i] = Math.round((palette[q] + palette[q + 1] + palette[q + 2]) / 3);
+        }
+      } else if (mode === 3 && planes.length >= 3) {
+        out = new Uint8Array(w * h);
+        for (let i = 0; i < w * h; i++) out[i] = Math.round((planes[0].gray[i] + planes[1].gray[i] + planes[2].gray[i]) / 3);
+      } else if (planes.length) {
+        out = planes[0].gray;
+      }
+      return { mode: mode, planes: planes, gray: out };
+    } catch (e) { return null; }
   }
 
   function buildPatternRecord(seed) {

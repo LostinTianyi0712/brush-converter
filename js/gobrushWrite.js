@@ -85,11 +85,18 @@
   function resize(img, w, h) {
     return { w: w, h: h, rgba: png.resize(img.rgba, img.w, img.h, w, h) };
   }
-  function renderSnapshot(img, light) {
+  function renderSnapshot(img, light, brush) {
     const W = 600, H = 200;
     const rgba = new Uint8Array(W * H * 4);
-    const size = 46;
-    const step = Math.max(1, size * 0.12);
+    const b = brush || {};
+    const size = Math.max(10, Math.min(90, Math.round((b.sizePx || 60) * 0.8)));
+    const spacing = Math.max(0.02, Math.min(2, (b.spacingPct === undefined ? 25 : b.spacingPct) / 100));
+    const step = Math.max(1, size * spacing);
+    const scatter = b.scatterOn ? Math.max(0, Math.min(1, (b.scatterPct || 0) / 200)) : 0;
+    const count = b.scatterOn ? Math.max(1, Math.min(8, b.scatterCount || 1)) : 1;
+    const alpha = Math.max(0.05, Math.min(1, b.opacity === undefined ? 1 : b.opacity));
+    let seed = 12345;
+    const rnd = function () { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
     const stamp = function (cx, cy) {
       const scale = size / img.w;
       const half = size / 2;
@@ -111,8 +118,13 @@
     for (let x = 40; x <= W - 40; x += step) {
       const t = (x - 40) / (W - 80);
       const y = H / 2 + Math.sin(t * Math.PI * 2) * H * 0.22;
-      stamp(x, y);
+      for (let c = 0; c < count; c++) {
+        const ox = scatter ? (rnd() - 0.5) * size * scatter * 2 : 0;
+        const oy = scatter ? (rnd() - 0.5) * size * scatter * 2 : 0;
+        stamp(x + ox, y + oy);
+      }
     }
+    if (alpha < 0.999) { for (let i = 3; i < rgba.length; i += 4) rgba[i] = Math.round(rgba[i] * alpha); }
     return { w: W, h: H, rgba: rgba };
   }
 
@@ -294,8 +306,8 @@
     const tip = whiteShape(tipRgba(brush));
     const shape10 = resize(tip, 10, 10);
     const grain10 = resize(tip, 10, 10);
-    const snapshot = renderSnapshot(tip, false);
-    const snapshotLight = renderSnapshot(tip, true);
+    const snapshot = renderSnapshot(tip, false, brush);
+    const snapshotLight = renderSnapshot(tip, true, brush);
     const info = buildInfo(uuid, name, size, spacing, opacity, tip);
     const files = [
       { name: 'info.json', data: util.utf8Encode(T.infoJson) },
