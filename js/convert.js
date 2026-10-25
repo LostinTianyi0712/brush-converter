@@ -461,7 +461,7 @@
   function makeBruDualPair(brush, opts) {
     const pair = buildBruDualPairBrushes(brush);
     if (!pair) return null;
-    const opts2 = Object.assign({}, opts, { pkgId: (opts && opts.pkgId) || genUuid() });
+    const opts2 = Object.assign({}, opts, { pkgId: pair.pkgUuid });
     const made = makeBruPack([pair.primary, pair.secondary], opts2);
     return { bytes: made.bytes, count: 2, primaryUuid: pair.primaryUuid, secondaryUuid: pair.secondaryUuid };
   }
@@ -501,7 +501,7 @@
     const usePressure = opts.pressure === undefined ? !!brush.pressure : !!opts.pressure;
     const meta = {
       name: brush.name || '',
-      pkgId: opts.pkgId || brush.pkgId,
+      pkgId: brush.pkgId || opts.pkgId,
       texId: util.md5(pngBytes).toUpperCase(),
       sizePx,
       spacingPct,
@@ -555,6 +555,7 @@
       colorJitterVal: brush.colorJitterVal,
       bruUuid: brush.bruUuid,
       bruDualRefUuid: brush.bruDualRefUuid,
+      dualSubName: brush.dualSubName,
       bruLinkTemplate: brush.bruLinkTemplate,
       _rawMeta: opts.fidelity !== false ? brush._rawMeta : undefined
     };
