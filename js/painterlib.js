@@ -202,7 +202,7 @@
     const pngMod = isNode ? require('./png.js') : root.BC.png;
     const cat = String(categoryName || 'BrushConv').replace(/[\/:*?"<>|]/g, '_');
     const files = [];
-    const readme = ['Corel Painter 笔刷分类（brushconv 生成）', '', '把整个 zip 改名为 .brushcategory 后拖进 Painter 窗口导入。', '注意：Painter 的笔尖必须是 .nib(JPEG)，这里无法生成 nib，所以每支笔刷附带了 PNG 笔尖素材；', '如果导入后笔尖是默认圆点，请用对应 PNG 在 Painter 里手动替换笔尖。', ''].join(String.fromCharCode(13, 10));
+    const readme = ['Corel Painter 笔刷分类（brushconv 生成）', '', '把整个 zip 改名为 .brushcategory 后拖进 Painter 窗口导入。', '说明：本包内每支笔刷都带 .xml 和 .nib（JPEG 笔尖），来自 Painter 的笔刷会原样复用原始 nib（无损）。', ''].join(String.fromCharCode(13, 10));
     files.push({ name: '说明.txt', data: util.utf8Encode(readme) });
     brushes.forEach(function (b, i) {
       const nm = String(b.name || ('brush' + (i + 1))).replace(/[\/:*?"<>|]/g, '_');

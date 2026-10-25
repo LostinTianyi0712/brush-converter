@@ -110,7 +110,6 @@
     parts.push(u8arr(fBytes(42, new Uint8Array(0))));           // RGBTOALPHA
     parts.push(u8arr(fVarint(49, 1)));                          // PRESSUSEPERCENT
     parts.push(u8arr(fF32(51, Math.min(1, flow * minFlow))));   // SMALLBRUSHFLOWPERCENT
-    if ((b.scatterCount || 1) > 1) parts.push(u8arr(fVarint(59, Math.round(b.scatterCount)))); // SPREADPOINTS
     parts.push(u8arr(fVarint(65, 1)));                          // ALLBRUSHRECT
     if (b.taperOn) {
       parts.push(u8arr(fVarint(74, 1)));

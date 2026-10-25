@@ -77,7 +77,13 @@
       sut: 'Clip Studio Paint SUT',
       gobrush: '天生会画 GoBrush',
       kbundle: 'Krita 资源包 BUNDLE',
-      'csp-decrypted': 'CSP 解密目录'
+      'csp-decrypted': 'CSP 解密目录',
+      mbini: 'MediBang 云笔刷 Brush2.ini',
+      'mbini_set': 'MediBang 云笔刷包',
+      sai2pack: 'SAI 2 素材包',
+      sai2ini: 'SAI 2 笔刷 ini',
+      pat: 'Photoshop 图案 PAT',
+      gobrushSet: '天生会画笔刷组'
     }[kind] || kind;
   }
 
@@ -1391,7 +1397,7 @@ Write-Host 'restart MediBang Paint Pro'
       gbr: ['尺寸','间距','硬度'], gih: ['尺寸','间距','硬度'],
       myb: ['尺寸','间距','角度','圆度','不透明度','硬度','最小直径','最小不透明度','大小随机','散布','混色/涂抹','颜色动态'],
       painter: ['尺寸'], sai2: ['尺寸','间距'], png: ['尺寸','间距','角度','圆度','不透明度'],
-      medibang: ['尺寸','间距','不透明度'],
+      medibang: ['尺寸','间距','不透明度'], mbini: ['尺寸','间距','不透明度'],
       gobrush: ['尺寸','间距','不透明度','最小直径','最小不透明度','流量','散布','纹理深度'],
       gopaint_set: ['尺寸','间距','不透明度','散布','纹理深度'], gopaint_abr: ['尺寸','间距','不透明度','纹理深度']
     };
@@ -1488,7 +1494,7 @@ Write-Host 'restart MediBang Paint Pro'
       gbr: ['尺寸','间距','硬度'], gih: ['尺寸','间距','硬度'],
       myb: ['尺寸','间距','角度','圆度','不透明度','硬度','最小直径','最小不透明度','大小随机','散布','压感尺寸','混色/涂抹','颜色动态'],
       painter: ['尺寸'], sai2: ['尺寸','间距'], png: ['尺寸','间距','角度','圆度','不透明度'],
-      medibang: ['尺寸','间距','不透明度'],
+      medibang: ['尺寸','间距','不透明度'], mbini: ['尺寸','间距','不透明度'],
       gobrush: ['尺寸','间距','不透明度','最小直径','最小不透明度','流量','散布','纹理'],
       gopaint_set: ['尺寸','间距','不透明度','散布','纹理'], gopaint_abr: ['尺寸','间距','不透明度','纹理']
     };
@@ -1504,7 +1510,7 @@ Write-Host 'restart MediBang Paint Pro'
       painter: 'Painter 笔刷格式只写了笔尖',
       sai2: 'SAI2 只写了尺寸与间距',
       png: 'PNG 只导出笔尖图 + 参数文本',
-      medibang: 'MediBang 只写基础字段',
+      medibang: 'MediBang 只写基础字段', mbini: 'MediBang 云笔刷只写基础字段',
       gobrush: '天生会画写了主要数值参数，压力曲线仍为模板',
       gopaint_set: '天生会画组写了主要数值参数',
       gopaint_abr: '天生会画 ABR 只写基础参数'
