@@ -143,6 +143,34 @@
     return out;
   }
 
+  /* 天生的压力曲线：属性块里 apply_preference_settings_pressure 的 tag 0x20 是 JSON 点集
+     [{"x":0,"y":0},...,{"x":255,"y":255}]（x/y 0..255），全局压力响应曲线 */
+  function extractPressureCurve(info) {
+    const le = function (b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; };
+    for (let i = 0; i + 6 < info.length; i++) {
+      if (info[i] !== 0x10 || info[i + 1] !== 0xC0) continue;
+      const outerLen = le(info, i + 2);
+      if (outerLen < 20 || i + 6 + outerLen > info.length) continue;
+      let p = i + 6, end = i + 6 + outerLen, name = '', curve = null;
+      while (p + 6 <= end) {
+        const tag = info[p];
+        if (info[p + 1] !== 0xC0) break;
+        const len = le(info, p + 2);
+        if (p + 6 + len > end) break;
+        if (tag === 0x11) { try { name = util.utf8Decode(info.subarray(p + 6, p + 6 + len)); } catch (e) { name = ''; } }
+        else if (tag === 0x20 && len > 1 && info[p + 6] === 0x5b) {
+          try {
+            const pts = JSON.parse(util.utf8Decode(info.subarray(p + 6, p + 6 + len)));
+            if (Array.isArray(pts) && pts.length) curve = pts;
+          } catch (e) { /* ignore */ }
+        }
+        p += 6 + len;
+      }
+      if (curve && name === 'apply_preference_settings_pressure') return curve;
+    }
+    return null;
+  }
+
   function decodePng(bytes) {
     try {
       if (!png.isPng(bytes)) return null;
@@ -170,6 +198,7 @@
     let name = infoFile ? nameFromInfo(infoFile) : '';
     if (!name) name = (fileName || 'gobrush').replace(/\.[^.]+$/, '');
     const params = infoFile ? extractParams(infoFile) : { size: 0, spacing: 0, opacity: 0, flow: 0 };
+    const pressureCurve = infoFile ? extractPressureCurve(infoFile) : null;
     if (!shape) warnings.push('该 .gobrush 没有 shape PNG，转换时会生成程序化笔尖');
     warnings.push('天生会画参数：间距已校准（tag5），尺寸/不透明度按参数块映射，笔尖形状图精确；可在界面用「整体尺寸倍数」微调');
     // GoPaint shape images are small normalized masks (e.g. 10x10); upscale for other apps
@@ -202,6 +231,7 @@
         scatterPct: params.scatter || 0,
         scatterCount: 1,
         scatterBothAxes: true,
+        gopaintPressureCurve: pressureCurve || undefined,
         hasTexture: (params.textureDepth || 0) > 0,
         textureDepth: params.textureDepth || 0,
         source: 'gopaint'

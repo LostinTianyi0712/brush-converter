@@ -160,6 +160,53 @@
   }
 
   let EXTRA = null;
+  /* 在属性块里写压力曲线 JSON（apply_preference_settings_pressure 的 tag 0x20） */
+  function setPressureCurve(propBytes, curve) {
+    if (!curve || !curve.length) return propBytes;
+    const le = function (b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; };
+    const json = util.utf8Encode(JSON.stringify(curve));
+    const outers = [];
+    let p = 0;
+    let hit = false;
+    while (p + 6 <= propBytes.length) {
+      const tag = propBytes[p], flag = propBytes[p + 1];
+      const len = le(propBytes, p + 2);
+      const end = p + 6 + len;
+      if ((tag !== 0x10 && tag !== 0x00) || end > propBytes.length) break;
+      let inner = propBytes.subarray(p + 6, end);
+      if (tag === 0x10) {
+        const recs = [];
+        let q = 0, name = '', curveIdx = -1;
+        while (q + 6 <= inner.length) {
+          const t2 = inner[q];
+          const l2 = le(inner, q + 2);
+          if (q + 6 + l2 > inner.length) break;
+          if (t2 === 0x11) { try { name = util.utf8Decode(inner.subarray(q + 6, q + 6 + l2)); } catch (e) { name = ''; } }
+          if (t2 === 0x20 && l2 > 1 && inner[q + 6] === 0x5b) curveIdx = recs.length;
+          recs.push({ tag: t2, flag: inner[q + 1], payload: inner.subarray(q + 6, q + 6 + l2) });
+          q += 6 + l2;
+        }
+        if (name === 'apply_preference_settings_pressure') {
+          const cand = JSON.stringify(curve);
+          const newRec = { tag: 0x20, flag: 0xc0, payload: json };
+          if (curveIdx >= 0) recs[curveIdx] = newRec;
+          else {
+            // 插到 0x21（结束标记）之前，没有就追加
+            let at = recs.length;
+            for (let k = 0; k < recs.length; k++) if (recs[k].tag === 0x21) { at = k; break; }
+            recs.splice(at, 0, newRec);
+          }
+          inner = concat(recs.map(function (r) { return recordBytes(rec(r.tag, r.flag, r.payload)); }));
+          hit = true;
+        }
+      }
+      outers.push(recordBytes(rec(tag, flag, inner)));
+      p = end;
+    }
+    if (!hit) return propBytes;
+    return concat(outers);
+  }
+
   function buildInfo(uuid, name, size, spacing, opacity, tip) {
     const res = [];
     for (const r of T.resources) {
@@ -198,7 +245,8 @@
       params.push(recordBytes(rec(p.tag, 0xb0, payload)));
     }
     const paramBlock = recordBytes(rec(0, 0xb0, concat(params)));
-    const propBytes = patchUuid(b64ToBytes(T.propPayload), T.templateUuid, uuid);
+    let propBytes = patchUuid(b64ToBytes(T.propPayload), T.templateUuid, uuid);
+    if (EXTRA && EXTRA.pressureCurve) propBytes = setPressureCurve(propBytes, EXTRA.pressureCurve);
     setPropField(propBytes, 'strokeSpacing', spacing);
     setPropField(propBytes, 'propertiesMaxSize', size);
     // 按原笔刷输出：最小尺寸/最小不透明度/流量/纹理深度都用源笔刷的真实值
@@ -237,6 +285,7 @@
     if (EXTRA.minSizeRatio === undefined) EXTRA.minSizeRatio = brush.minSizeRatio;
     if (EXTRA.minOpacityRatio === undefined) EXTRA.minOpacityRatio = brush.minOpacityRatio;
     if (EXTRA.flowPct === undefined) EXTRA.flowPct = brush.flowPct;
+    if (EXTRA.pressureCurve === undefined) EXTRA.pressureCurve = brush.gopaintPressureCurve;
     const uuid = makeUuid();
     const name = String(brush.name || 'brush').slice(0, 40) || 'brush';
     const size = Math.max(1, Math.min(1000, Math.round(brush.sizePx || 40)));

@@ -151,6 +151,40 @@
   }
 
   /* ---------------- rendering ---------------- */
+  /* 事前预检：用参数级报告估算「前 3 支笔刷」在目标格式会丢多少项参数 */
+  function updatePrecheck() {
+    const el = $('#precheck');
+    if (!el) return;
+    const sel = $('#optTarget');
+    const target = sel ? sel.value : 'bru';
+    const brushes = [];
+    for (const rec of state.files) {
+      for (const b of (rec.brushes || [])) {
+        if (b && b.enabled !== false) brushes.push(b);
+        if (brushes.length >= 3) break;
+      }
+      if (brushes.length >= 3) break;
+    }
+    if (!brushes.length || !BC.convert.brushLossReport) { el.style.display = 'none'; return; }
+    try {
+      const txt = BC.convert.brushLossReport(brushes, [target]);
+      const lines = txt.split(String.fromCharCode(10));
+      const lostLines = lines.filter(function (l) { return l.indexOf('丢失：') >= 0; });
+      const names = [];
+      lostLines.forEach(function (ln) {
+        ln.replace(/丢失：/, '').split('、').forEach(function (x) {
+          const nm = x.split('(')[0].trim();
+          if (nm && names.indexOf(nm) < 0) names.push(nm);
+        });
+      });
+      if (!names.length) {
+        el.textContent = '预检：目标格式 ' + target + ' 可保留当前笔刷的全部主要参数';
+      } else {
+        el.textContent = '预检：目标格式 ' + target + ' 预计丢失 ' + names.length + ' 类参数（' + names.slice(0, 8).join('、') + (names.length > 8 ? '…' : '') + '），详见转换报告';
+      }
+      el.style.display = '';
+    } catch (e) { el.style.display = 'none'; }
+  }
   function render() {
     filesEl.innerHTML = '';
     const allBrushes = state.files.reduce((acc, f) => acc.concat(f.brushes || []), []);
@@ -162,6 +196,7 @@
     btnConvert.textContent = total
       ? '转换并下载 ZIP（已选 ' + total + ' 支 · ' + fmtLabel + '）'
       : (allBrushes.length ? '请至少勾选 1 支笔刷' : '转换并下载 ZIP');
+    if (typeof updatePrecheck === 'function') { clearTimeout(state._precheckT); state._precheckT = setTimeout(updatePrecheck, 120); }
 
     state.files.forEach((rec, fi) => {
       const card = document.createElement('div');
