@@ -215,19 +215,25 @@
       el.style.display = '';
     } catch (e) { el.style.display = 'none'; }
   }
+  function updateConvertButton() {
+    const allBrushes = state.files.reduce(function (acc, f) { return acc.concat(f.brushes || []); }, []);
+    const total = allBrushes.filter(function (b) { return b.enabled !== false; }).length;
+    const sel = $('#optTarget');
+    const fmtLabel = sel && sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex].text : '';
+    const packMode = $('#optPack') ? $('#optPack').value !== 'files' : true;
+    const outText = packMode ? '转换并下载 ZIP' : '转换并保存文件';
+    btnConvert.disabled = !total || state.converting;
+    btnConvert.textContent = total
+      ? outText + '（已选 ' + total + ' 支 · ' + fmtLabel + '）'
+      : (allBrushes.length ? '请至少勾选 1 支笔刷' : outText);
+  }
+
   function render() {
     filesEl.innerHTML = '';
     const allBrushes = state.files.reduce((acc, f) => acc.concat(f.brushes || []), []);
     const total = allBrushes.filter(b => b.enabled !== false).length;
     emptyEl.style.display = state.files.length ? 'none' : 'block';
-    const sel = $('#optTarget');
-    const fmtLabel = sel && sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex].text : '';
-    btnConvert.disabled = !total || state.converting;
-    const packMode = $('#optPack') ? $('#optPack').value !== 'files' : true;
-    const outText = packMode ? '转换并下载 ZIP' : '转换并保存文件';
-    btnConvert.textContent = total
-      ? outText + '（已选 ' + total + ' 支 · ' + fmtLabel + '）'
-      : (allBrushes.length ? '请至少勾选 1 支笔刷' : outText);
+    updateConvertButton();
     if (typeof updatePrecheck === 'function') { clearTimeout(state._precheckT); state._precheckT = setTimeout(updatePrecheck, 120); }
 
     state.files.forEach((rec, fi) => {
@@ -1188,6 +1194,13 @@
   })();
   var btnCancel = $('#btnCancel');
   if (btnCancel) btnCancel.addEventListener('click', function () { state.cancelRequested = true; btnCancel.disabled = true; });
+  document.addEventListener('change', function (ev) {
+    const t = ev.target;
+    if (t && (t.tagName === 'SELECT' || t.tagName === 'INPUT')) {
+      updateConvertButton();
+      if (typeof updatePrecheck === 'function') updatePrecheck();
+    }
+  });
   (async function checkVersion() {
     try {
       const r = await fetch('version.json?_=' + Date.now(), { cache: 'no-store' });
