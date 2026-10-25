@@ -100,6 +100,13 @@
           </select>
         </div>
         <div class="opt">
+          <label>大输出自动分卷（>200MB）</label>
+          <select id="optAutoBatch">
+            <option value="1" selected>是（自动拆成多个 ZIP）</option>
+            <option value="0">否（单文件）</option>
+          </select>
+        </div>
+        <div class="opt">
           <label>纹理处理</label>
           <select id="optTextureMode">
             <option value="bake" selected>烘焙进笔尖（默认）</option>

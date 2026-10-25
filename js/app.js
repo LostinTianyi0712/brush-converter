@@ -223,9 +223,11 @@
     const sel = $('#optTarget');
     const fmtLabel = sel && sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex].text : '';
     btnConvert.disabled = !total || state.converting;
+    const packMode = $('#optPack') ? $('#optPack').value !== 'files' : true;
+    const outText = packMode ? '转换并下载 ZIP' : '转换并保存文件';
     btnConvert.textContent = total
-      ? '转换并下载 ZIP（已选 ' + total + ' 支 · ' + fmtLabel + '）'
-      : (allBrushes.length ? '请至少勾选 1 支笔刷' : '转换并下载 ZIP');
+      ? outText + '（已选 ' + total + ' 支 · ' + fmtLabel + '）'
+      : (allBrushes.length ? '请至少勾选 1 支笔刷' : outText);
     if (typeof updatePrecheck === 'function') { clearTimeout(state._precheckT); state._precheckT = setTimeout(updatePrecheck, 120); }
 
     state.files.forEach((rec, fi) => {
@@ -514,7 +516,8 @@
     const fidelity = $('#optFidelity') ? $('#optFidelity').value !== 'off' : true;
     const textureMode = $('#optTextureMode') ? $('#optTextureMode').value : 'bake';
     const scatterScale = $('#optScatterScale') ? Number($('#optScatterScale').value) / 100 : 0.15;
-    return { tipSize, sizeScale, spacingOverride, pressureMode, prefix, groupBySource, mode, target, packOut, goScatter, grainBake, fidelity, textureMode, scatterScale };
+    const autoBatch = $('#optAutoBatch') ? $('#optAutoBatch').value !== '0' : true;
+    return { tipSize, sizeScale, spacingOverride, pressureMode, prefix, groupBySource, mode, target, packOut, goScatter, grainBake, fidelity, textureMode, scatterScale, autoBatch };
   }
 
   function toast(msg, ms) {
@@ -840,11 +843,27 @@
     if (opts.packOut === false) {
       payload = outFiles;
     } else {
-      const zipBytes = BC.zip.write(outFiles);
       const ts = new Date();
       const pad = n => String(n).padStart(2, '0');
       const stamp = ts.getFullYear() + pad(ts.getMonth() + 1) + pad(ts.getDate()) + '_' + pad(ts.getHours()) + pad(ts.getMinutes());
-      payload = [{ name: '画世界笔刷_' + stamp + '.zip', data: zipBytes }];
+      const LIMIT = 120 * 1024 * 1024;
+      if (opts.autoBatch !== false && totalOut > 200 * 1024 * 1024) {
+        // 大输出自动分卷：每卷最多 120MB，避免浏览器一次分配超大 Buffer
+        const vols = [];
+        let cur = [], curSize = 0;
+        for (const f of outFiles) {
+          const sz = (f.data && f.data.length) || 0;
+          if (cur.length && curSize + sz > LIMIT) { vols.push(cur); cur = []; curSize = 0; }
+          cur.push(f); curSize += sz;
+        }
+        if (cur.length) vols.push(cur);
+        payload = vols.map(function (files, i) {
+          return { name: '画世界笔刷_' + stamp + '_' + (i + 1) + 'of' + vols.length + '.zip', data: BC.zip.write(files) };
+        });
+        warnings.push('输出较大，已自动分成 ' + vols.length + ' 个 ZIP（每卷约 120MB）');
+      } else {
+        payload = [{ name: '画世界笔刷_' + stamp + '.zip', data: BC.zip.write(outFiles) }];
+      }
     }
     setProgress(0.995, opts.packOut === false ? '正在保存文件…' : '正在打包 ZIP…');
     let savedMsg = '';
