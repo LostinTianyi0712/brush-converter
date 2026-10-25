@@ -214,7 +214,8 @@
         files.push({ name: dir + '/' + nm + '.nib', data: raw.nib });
       } else {
         files.push({ name: dir + '/' + nm + '.xml', data: util.utf8Encode(brushXml(b)) });
-        const nib = nibFromTip(b.tip, 30);
+        const tn = b.tip ? Math.max(b.tip.w || 0, b.tip.h || 0) : 0;
+        const nib = nibFromTip(b.tip, tn >= 96 ? 50 : 30);
         if (nib) files.push({ name: dir + '/' + nm + '.nib', data: nib.bytes });
         else if (b.tip && b.tip.rgba) {
           const img = { w: b.tip.w, h: b.tip.h, rgba: b.tip.rgba };

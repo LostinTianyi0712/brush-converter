@@ -1092,7 +1092,11 @@
       Install: copy the PNG into %LOCALAPPDATA%\\Medibang\\CloudAlpaca\\brush_bitmap\\
       and append the ini snippet to Brush2.ini, then restart MediBang. */
   function makeMediBangIniPack(brushList, opts) {
-    return medibangIni.writeIniPack(brushList, opts || {});
+    // 保证每支都有笔尖（程序笔刷也转成位图笔刷，否则缺少 .bs 脚本无法被 MediBang 识别）
+    const list = (brushList || []).map(function (b) {
+      try { return withTipRGBA(b, opts || {}); } catch (e) { return b; }
+    });
+    return medibangIni.writeIniPack(list, opts || {});
   }
 
   function makeMediBangBrush(brush, opts) {
@@ -1495,6 +1499,7 @@ Write-Host 'restart MediBang Paint Pro'
     out.push('<div class="meta">目标格式：<b>' + esc(target) + '</b> · 笔刷数：' + brushList.length + (meta && meta.fileName ? ' · 来源：' + esc(meta.fileName) : '') + '</div>');
     out.push('<div class="meta">✅ = 目标格式能保留（值按源笔刷写入）　❌ = 目标格式没有这个概念（转换后丢失）</div>');
     out.push('<div class="meta">双笔刷：ABR 目标原样保留，其它目标按笔尖合成近似</div>');
+    if (MANUAL_ADVICE[target]) out.push('<div class="meta">手动补全建议：' + esc(MANUAL_ADVICE[target]) + '</div>');
     brushList.forEach(function (b, idx) {
       out.push('<div class="card">');
       out.push('<div class="tip">' + thumb(b) + '<div>' + esc(b.name || ('笔刷 ' + (idx + 1))) + '</div></div>');
@@ -1511,6 +1516,25 @@ Write-Host 'restart MediBang Paint Pro'
     out.push('</body></html>');
     return out.join(NL);
   }
+
+  const MANUAL_ADVICE = {
+    abr: '纹理：先在 PS 图案面板导入配套 .pat；双笔刷：本格式原样保留，无需补',
+    bru: '散布：画世界刻度更小，可用「散布换算系数」微调；双笔刷：已按笔尖合成近似',
+    brushset: '双笔刷：已合成进笔尖；倾斜/速度动态 Procreate 无对应字段',
+    brush: '双笔刷：已合成进笔尖；倾斜/速度动态 Procreate 无对应字段',
+    kbundle: '不透明度/流量曲线：在 Krita「画笔设置」里手动调；双笔刷：已合成近似',
+    gbr: '不透明度/圆度：在 GIMP 画笔选项里手动设；散布/动态：GIMP 不支持',
+    gih: '不透明度/圆度：在 GIMP 管道画笔选项里手动设',
+    myb: '速度/倾斜传感器：MyPaint 笔刷设置里手动勾选；双笔刷：已合成近似',
+    painter: '笔尖/半径：Painter 里按 PNG/nib 手动微调；双笔刷：已合成近似',
+    sai2: '完整笔刷参数在 SAI2 的 toolsettings 里，导入 BMP/INI 后手动补',
+    png: '仅笔尖图 + 参数文本，需在目标软件里手动建笔刷',
+    medibang: '位图笔刷导入后可在 MediBang 里调间距/压感',
+    mbini: '复制到 CloudAlpaca 后重启；程序笔刷已转成位图笔刷',
+    gobrush: '压力曲线按模板写入，可在天生会画里手动调曲线',
+    gopaint_set: '压力曲线按模板写入，可在天生会画里手动调曲线',
+    gopaint_abr: '文本参数有限，需在目标软件里补全'
+  };
 
   function brushLossReport(brushList, targets) {
     const NL = String.fromCharCode(10);
@@ -1594,6 +1618,7 @@ Write-Host 'restart MediBang Paint Pro'
         if (lost.length) lines.push('     丢失：' + lost.join('、'));
       });
       lines.push('  小结：保留参数 ' + keptTotal + ' 项，丢失 ' + lostTotal + ' 项');
+      if (MANUAL_ADVICE[target]) lines.push('  手动补全建议：' + MANUAL_ADVICE[target]);
       lines.push('');
     }
     return lines.join(NL);

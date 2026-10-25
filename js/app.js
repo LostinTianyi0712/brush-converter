@@ -236,7 +236,7 @@
       head.innerHTML = `
         <div class="fname" title="${esc(rec.name)}">${esc(rec.name)}</div>
         <div class="badge ${rec.error ? 'err' : (rec.kind || 'parsing')}">${rec.error ? '无法识别' : (rec.kind ? (rec.kindLabel || rec.kind) : '解析中')}</div>
-        <div class="fmeta">${rec.bytes ? fmtSize(rec.bytes.length) : ''}</div>
+        <div class="fmeta">${rec.sizeBytes ? fmtSize(rec.sizeBytes) : (rec.bytes ? fmtSize(rec.bytes.length) : '')}</div>
         <div class="fmeta">${rec.brushes ? rec.brushes.length + ' 支笔刷' : (rec.error ? '出错' : '解析中…')}${rec.parseMs ? ' · ' + (rec.parseMs >= 1000 ? (rec.parseMs / 1000).toFixed(1) + 's' : rec.parseMs + 'ms') : ''}</div>
         ${rec.brushes && rec.brushes.length ? '<button class="btn tiny ghost selall" title="全选本文件笔刷">全选</button><button class="btn tiny ghost selnone" title="取消本文件笔刷">清空</button>' : ''}
         <button class="btn tiny ghost remove" title="移除">✕</button>`;
@@ -315,6 +315,7 @@
   }
 
   function adoptParsed(rec, bytes, parsed, displayName) {
+    rec.sizeBytes = bytes ? bytes.length : 0;
     rec.pkgId = BC.util.uid();
     rec.baseName = (displayName || rec.name).replace(/\.[^.]+$/, '').split('/').pop();
     rec.kind = parsed.kind;
@@ -327,6 +328,8 @@
       return copy;
     });
     rec.origBrushes = parsed.brushes.length;
+    // 原始字节只在解析时需要：释放它，几百支的批量解析能省下大量内存
+    rec.bytes = null;
   }
 
   /* 大文件用 Worker 解析（不卡界面）；失败自动回退到主线程分块解析 */
@@ -629,6 +632,7 @@
       'myb', 'kbundle', 'sai2', 'png', 'painter', 'medibang', 'mbini'];
     const usedFileNames = new Set();
     let doneCount = 0;
+    let outBytes = 0;
 
     function uniqueFile(base, ext) {
       let name = base, k = 2;
@@ -822,6 +826,14 @@
       render();
       toast('转换失败：' + (failed[0] || '未知错误'), 6000);
       return;
+    }
+    // 输出体积提示：几百支大笔刷时提醒分批，避免浏览器内存爆掉
+    let totalOut = 0;
+    for (const f of outFiles) totalOut += (f.data && f.data.length) || 0;
+    if (totalOut > 500 * 1024 * 1024) {
+      warnings.push('本次输出约 ' + (totalOut / 1048576).toFixed(0) + 'MB，可能超出浏览器内存，建议分 2~3 批转换（每批 50~100 支）');
+    } else if (totalOut > 200 * 1024 * 1024) {
+      warnings.push('本次输出约 ' + (totalOut / 1048576).toFixed(0) + 'MB，若保存失败请分批转换');
     }
     // prepare output payload: zip mode -> one zip; files mode -> individual files
     let payload;
