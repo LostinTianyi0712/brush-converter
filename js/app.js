@@ -626,7 +626,7 @@
       }
     } catch (e) { /* 对比页失败不影响转换 */ }
     const ALL_FORMATS = ['bru', 'abr', 'gopaint', 'gopaint_set', 'gopaint_abr', 'brushset', 'brush', 'gbr', 'gih',
-      'myb', 'kbundle', 'sai2', 'png', 'painter', 'medibang'];
+      'myb', 'kbundle', 'sai2', 'png', 'painter', 'medibang', 'mbini'];
     const usedFileNames = new Set();
     let doneCount = 0;
 
@@ -701,6 +701,12 @@
             } else if (fmt === 'painter') {
               const made = BC.convert.makePainter(list, commonOpts(rec), sourceName);
               outFiles.push({ name: uniqueFile(base, '.brushcategory'), data: made.bytes });
+            } else if (fmt === 'mbini') {
+              for (const b of list) {
+                const made = BC.convert.makeMediBangIniPack([b], commonOpts(rec));
+                const bname = BC.convert.sanitizeName(opts.prefix + (b.name || 'medibang'), 0);
+                outFiles.push({ name: uniqueFile(bname + '_MediBang云笔刷', '.zip'), data: made.bytes });
+              }
             } else if (fmt === 'medibang') {
               for (const b of list) {
                 const made = BC.convert.makeMediBangBrush(b, commonOpts(rec));
@@ -771,10 +777,11 @@
               : fmt === 'kbundle' ? BC.convert.makeKritaBundle([b], co)
               : fmt === 'gih' ? BC.convert.makeGih([b], co)
               : fmt === 'painter' ? BC.convert.makePainter([b], co, b.name)
+              : fmt === 'mbini' ? BC.convert.makeMediBangIniPack([b], co)
               : fmt === 'medibang' ? BC.convert.makeMediBangBrush(b, co)
               : fmt === 'png' ? BC.convert.makeTipPng(b, co)
               : BC.convert.makeBru(b, co);
-            const extOut = { painter: '.brushcategory', kbundle: '.bundle', sai2: '.zip', medibang: '.zip', gopaint_set: '.gobrushes' }[fmt] || ('.' + fmt);
+            const extOut = { painter: '.brushcategory', kbundle: '.bundle', sai2: '.zip', medibang: '.zip', mbini: '.zip', gopaint_set: '.gobrushes' }[fmt] || ('.' + fmt);
             outFiles.push({ name: folder + uniqueFile(base, extOut), data: made.bytes });
             if (fmt === 'png') {
               // PNG 笔尖旁边同时输出该笔刷的参数，方便在目标软件里手动还原设置

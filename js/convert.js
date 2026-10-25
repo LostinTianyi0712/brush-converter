@@ -15,6 +15,9 @@
   const genericBrush = isNode ? require('./genericbrush.js') : root.BC.genericBrush;
   const csp = isNode ? require('./csp.js') : root.BC.csp;
   const medibang = isNode ? require('./medibang.js') : root.BC.medibang;
+  const medibangIni = isNode ? require('./medibangIni.js') : root.BC.medibangIni;
+  const sai2read = isNode ? require('./sai2read.js') : root.BC.sai2read;
+  const painterlib = isNode ? require('./painterlib.js') : root.BC.painterlib;
   const gobrush = isNode ? require('./gobrush.js') : root.BC.gobrush;
   const gobrushWrite = isNode ? require('./gobrushWrite.js') : root.BC.gobrushWrite;
   const sai2 = isNode ? require('./sai2.js') : root.BC.sai2;
@@ -23,6 +26,8 @@
   function detect(name, bytes) {
     const lower = (name || '').toLowerCase();
     if (/\.params\.json$/.test(lower)) return 'csp-decrypted';
+    if (medibangIni.isIni(bytes)) return 'mbini';
+    if (sai2read.isBrushIni(bytes)) return 'sai2ini';
     if (bru.isBru(bytes)) return 'bru';
     if (csp.isSut(bytes)) return 'sut';
     if (gobrush.isGobrush(lower)) return 'gobrush';
@@ -30,6 +35,9 @@
       let zentries = null;
       try { zentries = zip.read(bytes); } catch (e) { /* ignore */ }
       if (zentries) {
+        if (zentries.some(e => /^brush2\.ini$/i.test(e.name.replace(/^.*\//, '')))) return 'mbini_set';
+        if (zentries.some(e => /(^|\/)(brushform|brushtex|papertex|scatter|bristle)\.conf$/i.test(e.name))) return 'sai2pack';
+        if (painterlib.isLibraryZip(bytes)) return 'painterlib';
         if (zentries.some(e => /Brush\.archive$/i.test(e.name))) return 'procreate';
         if (zentries.some(e => /^paintoppresets\/[^/]+\.kpp$/i.test(e.name))) return 'kbundle';
       }
@@ -160,6 +168,30 @@
         }),
         warnings: []
       };
+    } else if (kind === 'mbini' || kind === 'mbini_set') {
+      let text = util.utf8Decode(bytes);
+      let files = null;
+      if (kind === 'mbini_set') {
+        files = {};
+        let iniBytes = null;
+        for (const e of zip.read(bytes)) {
+          if (e.dir) continue;
+          const data = e.data();
+          const base = e.name.replace(/^.*\//, '');
+          files[base] = data;
+          files[e.name] = data;
+          if (/^brush2\.ini$/i.test(base)) iniBytes = data;
+        }
+        if (!iniBytes) throw new Error('压缩包里没有 Brush2.ini');
+        text = util.utf8Decode(iniBytes);
+      }
+      result = medibangIni.parseIni(text, files, name);
+    } else if (kind === 'painterlib') {
+      result = painterlib.parseLibrary(bytes, name);
+    } else if (kind === 'sai2pack') {
+      result = sai2read.parsePack(bytes, name);
+    } else if (kind === 'sai2ini') {
+      result = sai2read.parseBrushIni(bytes, name);
     } else if (kind === 'kbundle') {
       result = parseKritaBundle(name, bytes);
     } else if (kind === 'procreate') {
@@ -990,6 +1022,10 @@
   /** Build a MediBang Paint brush package: black-shape tip PNG + Brush2.ini entry.
       Install: copy the PNG into %LOCALAPPDATA%\\Medibang\\CloudAlpaca\\brush_bitmap\\
       and append the ini snippet to Brush2.ini, then restart MediBang. */
+  function makeMediBangIniPack(brushList, opts) {
+    return medibangIni.writeIniPack(brushList, opts || {});
+  }
+
   function makeMediBangBrush(brush, opts) {
     opts = opts || {};
     const b2 = withTipRGBA(brush, opts, { fit: true });
@@ -1581,7 +1617,7 @@ Write-Host 'restart MediBang Paint Pro'
     });
   }
 
-  const api = { detect, parseFile, expandArchive, synthTip, makeBru, makeBruPack, makeAbrPack, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makePainter, makeMdp, makeMediBangBrush, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, synthTip, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
+  const api = { detect, parseFile, expandArchive, synthTip, makeBru, makeBruPack, makeAbrPack, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, synthTip, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { convert: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);
