@@ -476,6 +476,17 @@
         usedTips.add(tipUuid ? tipUuid.toLowerCase() : '');
         const brush = toBrush(preset, tipEntry);
         if (presetGroups[pi]) brush.group = presetGroups[pi];
+        // 双笔刷：解析第二支笔尖（按 uuid 找对应采样），供不支持双笔刷的目标格式做近似烘焙
+        if (brush.dualBrush && brush.dualBrush.enabled) {
+          brush.dualOn = true;
+          brush.dualBlendMode = brush.dualBrush.blend;
+          const du = String(brush.dualBrush.uuid || '').toLowerCase();
+          const de = du ? tipByUuid.get(du) : null;
+          if (de && de.tip) brush.dualTip = de.tip;
+          if (brush.dualBrush.diameter && brush.sizePx) {
+            brush.dualSizeRatio = Math.max(0.05, Math.min(4, brush.dualBrush.diameter / brush.sizePx));
+          }
+        }
         // 保留原始描述符/样本字节：部分导出（只选几支）时可以原样搬过去，
         // 从而完整保留 dualBrush / texture / scatter / dynamics / 分组等 PS 专属参数
         try {
