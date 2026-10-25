@@ -1086,9 +1086,11 @@
       const padLen = ((body.length + 3) & ~3) - body.length;
       sampParts.push(util.concat([_u32be(entryLen), body, new Uint8Array(padLen)]));
       if (it.dualGray && it.dualW && it.dualH && it.dualUuid) {
+        const dualUuid = _makeUuid();
+        it._dualUuidResolved = dualUuid;
         const dh = new Uint8Array(301);
         dh[0] = 0x24;
-        dh.set(util.utf8Encode(it.dualUuid).subarray(0, 36), 1);
+        dh.set(util.utf8Encode(dualUuid).subarray(0, 36), 1);
         dh[38] = 0x01; dh[44] = 0x03;
         const dEntryLen = 301 + 19 + it.dualGray.length;
         dh.set(_u32be(dEntryLen - 49), 45);
@@ -1227,16 +1229,7 @@
       let dualObjc = null;
       if (it.rawDualObjc && it.dualOn) dualObjc = it.rawDualObjc;
       else if (it.dualUuid) {
-        dualObjc = buildDualObjc({
-          uuid: it.dualUuid,
-          diameter: it.dualDiameter || 100,
-          blend: it.dualBlend || 'hardMix',
-          name: it.dualName || '第二支笔刷',
-          spacing: it.dualSpacing,
-          roundness: it.dualRoundness,
-          angle: it.dualAngle,
-          flip: it.dualFlip
-        });
+        dualObjc = patchDualObjc(_dualObjcTemplate(), { uuid: it._dualUuidResolved || it.dualUuid });
       }
       presetItems.push(
         _descItem('dualBrush', 'Objc', dualObjc ||
@@ -1320,7 +1313,7 @@
       const rec = buildPatternRecord(11);
       if (rec) pattData = rec;
     }
-    const pattBlock = _block8('patt', pattData || new Uint8Array(0));
+    const pattBlock = (pattData && pattData.length) ? _block8('patt', pattData) : new Uint8Array(0);
 
     // phry(hierarchy)：分组 = Grup{Nm} + 若干 preset{} + groupEnd{} 扁平 token 流
     const groups = (optsFromArgs && optsFromArgs.groups) || [];
