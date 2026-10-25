@@ -1309,6 +1309,102 @@ Write-Host 'restart MediBang Paint Pro'
   }
 
   /* ---------- 转换差异报告：每支笔刷在目标格式里保留了哪些、丢了哪些 ---------- */
+  /* 生成「参数对比页」HTML（原参数 vs 目标格式支持情况 + 笔尖缩略图），无需外部样本 */
+  function buildCompareHtml(brushList, target, meta) {
+    const NL = String.fromCharCode(10);
+    const fields = [
+      ['尺寸', 'sizePx', function (v) { return Math.round(v) + 'px'; }],
+      ['间距', 'spacingPct', function (v) { return (Math.round(v * 10) / 10) + '%'; }],
+      ['角度', 'angle', function (v) { return Math.round(v) + '°'; }],
+      ['圆度', 'roundness', function (v) { return Math.round(v) + '%'; }],
+      ['不透明度', 'opacity', function (v) { return Math.round(v * 100) + '%'; }],
+      ['流量', 'flowPct', function (v) { return Math.round(v * 100) + '%'; }],
+      ['硬度', 'hardness', function (v) { return Math.round(v * 100) + '%'; }],
+      ['最小直径', 'minSizeRatio', function (v) { return Math.round(v * 100) + '%'; }],
+      ['最小不透明度', 'minOpacityRatio', function (v) { return Math.round(v * 100) + '%'; }],
+      ['大小随机', 'sizeJitterPct', function (v) { return Math.round(v) + '%'; }],
+      ['角度随机', 'angleJitterDeg', function (v) { return Math.round(v) + '°'; }],
+      ['散布', 'scatterPct', function (v) { return Math.round(v) + '%'; }],
+      ['散布数量', 'scatterCount', function (v) { return String(Math.round(v)); }],
+      ['纹理深度', 'textureDepth', function (v) { return Math.round(v * 100) + '%'; }],
+      ['锥度', 'taperOn', function () { return '开'; }],
+      ['湿边', 'wetEdgesOn', function () { return '开'; }],
+      ['混色/涂抹', 'smudgeOn', function () { return '开'; }],
+      ['颜色动态', 'colorDynamicsOn', function () { return '开'; }],
+      ['平滑', 'smoothingStrength', function (v) { return Math.round(v * 100) + '%'; }]
+    ];
+    const support = {
+      abr: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','角度随机','散布','散布数量','纹理深度','锥度','湿边','混色/涂抹','颜色动态','平滑'],
+      bru: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','角度随机','散布','散布数量','纹理深度','锥度','湿边','混色/涂抹','颜色动态','平滑'],
+      brushset: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','散布','散布数量','纹理深度','锥度','湿边','混色/涂抹','颜色动态','平滑'],
+      brush: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','散布','散布数量','纹理深度','锥度','湿边','混色/涂抹','颜色动态','平滑'],
+      kbundle: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','散布','纹理深度','混色/涂抹','颜色动态'],
+      gbr: ['尺寸','间距','硬度'], gih: ['尺寸','间距','硬度'],
+      myb: ['尺寸','间距','角度','圆度','不透明度','硬度','最小直径','最小不透明度','大小随机','散布','混色/涂抹','颜色动态'],
+      painter: ['尺寸'], sai2: ['尺寸','间距'], png: ['尺寸','间距','角度','圆度','不透明度'],
+      medibang: ['尺寸','间距','不透明度'],
+      gobrush: ['尺寸','间距','不透明度','最小直径','最小不透明度','流量','散布','纹理深度'],
+      gopaint_set: ['尺寸','间距','不透明度','散布','纹理深度'], gopaint_abr: ['尺寸','间距','不透明度','纹理深度']
+    };
+    const keep = support[target] || [];
+    const esc = function (x) { return String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); };
+    const b64 = function (bytes) {
+      if (typeof Buffer !== 'undefined') return Buffer.from(bytes).toString('base64');
+      let s2 = '';
+      for (let i = 0; i < bytes.length; i += 8192) s2 += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+      return btoa(s2);
+    };
+    const thumb = function (brush) {
+      if (!brush) return '';
+      let tp = brush.tip;
+      if (!tp || !tp.rgba) { try { tp = synthTip(brush); } catch (e) { tp = null; } }
+      if (!tp || !tp.rgba) return '';
+      try {
+        let w = tp.w, h = tp.h, rgba = tp.rgba;
+        const max = 96;
+        if (Math.max(w, h) > max) {
+          const sc = max / Math.max(w, h);
+          const nw = Math.max(1, Math.round(w * sc)), nh = Math.max(1, Math.round(h * sc));
+          rgba = png.resize(rgba, w, h, nw, nh); w = nw; h = nh;
+        }
+        const p = png.encode(w, h, rgba);
+        return '<img alt="tip" src="data:image/png;base64,' + b64(p) + '">';
+      } catch (e) { return ''; }
+    };
+    const out = [];
+    out.push('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">');
+    out.push('<title>参数对比 · ' + esc(target) + '</title>');
+    out.push('<style>');
+    out.push('body{font:14px/1.5 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;margin:24px;color:#222;background:#fafafa}');
+    out.push('h1{font-size:20px;margin:0 0 4px}h2{font-size:16px;margin:24px 0 8px}');
+    out.push('.meta{color:#666;margin-bottom:16px}');
+    out.push('.card{background:#fff;border:1px solid #e5e5e5;border-radius:10px;padding:16px;margin-bottom:16px;display:flex;gap:16px;flex-wrap:wrap}');
+    out.push('.tip{width:120px;text-align:center;color:#888}.tip img{max-width:96px;max-height:96px;background:#f0f0f0;border-radius:6px}');
+    out.push('table{border-collapse:collapse;flex:1;min-width:320px}');
+    out.push('th,td{border:1px solid #eee;padding:5px 8px;text-align:left;font-size:13px}');
+    out.push('th{background:#f7f7f7;font-weight:600}');
+    out.push('.ok{color:#2a7a2a;font-weight:600}.no{color:#b03030;font-weight:600}');
+    out.push('</style></head><body>');
+    out.push('<h1>参数对比</h1>');
+    out.push('<div class="meta">目标格式：<b>' + esc(target) + '</b> · 笔刷数：' + brushList.length + (meta && meta.fileName ? ' · 来源：' + esc(meta.fileName) : '') + '</div>');
+    out.push('<div class="meta">✅ = 目标格式能保留（值按源笔刷写入）　❌ = 目标格式没有这个概念（转换后丢失）</div>');
+    brushList.forEach(function (b, idx) {
+      out.push('<div class="card">');
+      out.push('<div class="tip">' + thumb(b) + '<div>' + esc(b.name || ('笔刷 ' + (idx + 1))) + '</div></div>');
+      out.push('<table><tr><th>参数</th><th>原值</th><th>状态</th></tr>');
+      for (const f of fields) {
+        const v = b[f[1]];
+        if (v === undefined || v === null || v === '' || v === 0 || v === false) continue;
+        const text = f[2] ? f[2](v) : String(v);
+        const ok = keep.indexOf(f[0]) >= 0;
+        out.push('<tr><td>' + esc(f[0]) + '</td><td>' + esc(text) + '</td><td class="' + (ok ? 'ok' : 'no') + '">' + (ok ? '✅ 保留' : '❌ 丢失') + '</td></tr>');
+      }
+      out.push('</table></div>');
+    });
+    out.push('</body></html>');
+    return out.join(NL);
+  }
+
   function brushLossReport(brushList, targets) {
     const NL = String.fromCharCode(10);
     const fields = [
@@ -1485,7 +1581,7 @@ Write-Host 'restart MediBang Paint Pro'
     });
   }
 
-  const api = { detect, parseFile, expandArchive, synthTip, makeBru, makeBruPack, makeAbrPack, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makePainter, makeMdp, makeMediBangBrush, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, synthTip, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
+  const api = { detect, parseFile, expandArchive, synthTip, makeBru, makeBruPack, makeAbrPack, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makePainter, makeMdp, makeMediBangBrush, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, synthTip, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { convert: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

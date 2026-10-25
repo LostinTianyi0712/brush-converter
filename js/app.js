@@ -25,11 +25,41 @@
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
   function readFileBytes(file) {
-    return new Promise((resolve, reject) => {
-      const fr = new FileReader();
-      fr.onload = () => resolve(new Uint8Array(fr.result));
-      fr.onerror = () => reject(new Error('读取文件失败'));
-      fr.readAsArrayBuffer(file);
+    // 大文件分块读取：避免一次性分配两份内存，并显示进度
+    if (!file || file.size <= 32 * 1024 * 1024 || typeof file.slice !== 'function') {
+      return new Promise((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(new Uint8Array(fr.result));
+        fr.onerror = () => reject(new Error('读取文件失败'));
+        fr.readAsArrayBuffer(file);
+      });
+    }
+    const CHUNK = 8 * 1024 * 1024;
+    return new Promise(function (resolve, reject) {
+      const parts = [];
+      let offset = 0;
+      function next() {
+        if (offset >= file.size) {
+          const total = parts.reduce(function (n, p) { return n + p.length; }, 0);
+          const out = new Uint8Array(total);
+          let p = 0;
+          parts.forEach(function (b) { out.set(b, p); p += b.length; });
+          setProgress(null);
+          resolve(out);
+          return;
+        }
+        const blob = file.slice(offset, Math.min(file.size, offset + CHUNK));
+        const fr = new FileReader();
+        fr.onload = function () {
+          parts.push(new Uint8Array(fr.result));
+          offset += blob.size;
+          setProgress(Math.min(0.99, offset / file.size), '读取中：' + file.name);
+          next();
+        };
+        fr.onerror = function () { setProgress(null); reject(new Error('读取文件失败')); };
+        fr.readAsArrayBuffer(blob);
+      }
+      next();
     });
   }
 
@@ -585,6 +615,16 @@
       }
       if (refCount > 0) warnings.push('ABR 里保留了 ' + refCount + ' 支笔刷的纹理引用：目标 Photoshop 需要先有同名图案，否则纹理不显示（高级设置改「纹理处理=图案文件」可自动附带 .pat）');
     }
+    try {
+      if (BC.convert.buildCompareHtml) {
+        const cmpHtml = BC.convert.buildCompareHtml(
+          records.reduce(function (acc, r) { return acc.concat(r.brushes.filter(function (b) { return b.enabled !== false; })); }, []),
+          opts.target,
+          { fileName: records.map(function (r) { return r.name; }).join(' + ') }
+        );
+        outFiles.push({ name: '参数对比.html', data: new TextEncoder().encode(cmpHtml) });
+      }
+    } catch (e) { /* 对比页失败不影响转换 */ }
     const ALL_FORMATS = ['bru', 'abr', 'gopaint', 'gopaint_set', 'gopaint_abr', 'brushset', 'brush', 'gbr', 'gih',
       'myb', 'kbundle', 'sai2', 'png', 'painter', 'medibang'];
     const usedFileNames = new Set();
@@ -955,6 +995,31 @@
     else toast('当前环境不支持保存日志');
   });
   btnConvert.addEventListener('click', convertAll);
+  // 参数对比预览（转换前也能看）
+  (function initCompare() {
+    const btn = $('#btnCompare');
+    const modal = $('#compareModal');
+    const frame = $('#compareFrame');
+    const close = $('#compareClose');
+    if (!btn || !modal) return;
+    btn.addEventListener('click', function () {
+      const sel = $('#optTarget');
+      const target = sel ? sel.value : 'bru';
+      const brushes = [];
+      for (const rec of state.files) {
+        for (const b of (rec.brushes || [])) if (b && b.enabled !== false) brushes.push(b);
+        if (brushes.length >= 20) break;
+      }
+      if (!brushes.length) { toast('先添加笔刷文件'); return; }
+      try {
+        const html = BC.convert.buildCompareHtml(brushes.slice(0, 20), target, {});
+        frame.srcdoc = html;
+        modal.style.display = 'flex';
+      } catch (e) { toast('生成对比失败：' + e.message); }
+    });
+    if (close) close.addEventListener('click', function () { modal.style.display = 'none'; });
+    modal.addEventListener('click', function (ev) { if (ev.target === modal) modal.style.display = 'none'; });
+  })();
   var btnCancel = $('#btnCancel');
   if (btnCancel) btnCancel.addEventListener('click', function () { state.cancelRequested = true; btnCancel.disabled = true; });
   (async function checkVersion() {
