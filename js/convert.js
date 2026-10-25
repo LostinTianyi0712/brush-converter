@@ -404,7 +404,7 @@
     opts = opts || {};
     let tipImg = tipToRGBA(brush);
     if (!tipImg) tipImg = synthTip(brush, 256, opts);
-    if (brush.dualOn && brush.dualTip && (brush.dualTip.rgba || brush.dualTip.data) && opts.noDualBake !== true) tipImg = bakeDualTip(tipImg, brush);
+    if (opts.dualBake !== false && brush.dualOn && brush.dualTip && (brush.dualTip.rgba || brush.dualTip.data) && opts.noDualBake !== true) tipImg = bakeDualTip(tipImg, brush);
     // 圆度/角度只在 bakeTipTransform 里应用一次（之前 abr 源会被压两次 → 笔刷变得又细又扁）
     tipImg = bakeTipTransform(tipImg, brush);
     const maxTip = Math.max(32, Math.min(2048, opts.maxTipSize || 512));
@@ -912,12 +912,22 @@
   }
 
   /* 把双笔刷的第二支笔尖按 alpha 合成进主笔尖（近似，非 PS 的双笔尖混合算法） */
+  function bakedTipFor(brush, opts) {
+    opts = opts || {};
+    let tip = tipToRGBA(brush) || synthTip(brush, 256, opts);
+    if (opts.dualBake !== false && brush.dualOn && brush.dualTip && (brush.dualTip.rgba || brush.dualTip.data) && opts.noDualBake !== true) {
+      tip = bakeDualTip(tip, brush);
+    }
+    return tip;
+  }
+
   function bakeDualTip(tip, brush) {
     const d = brush.dualTip;
     if (!d || !tip || !tip.rgba) return tip;
     if (!d.rgba && !d.data) return tip;
+    const info = brush.dualBrush || {};
     const bpp = d.bpp || 1;
-    const dualAlpha = function (x, y) {
+    const raw = function (x, y) {
       const o = y * d.w + x;
       if (d.rgba) return d.rgba[o * 4 + 3] / 255;
       if (bpp >= 3) return (d.data[o * bpp] + d.data[o * bpp + 1] + d.data[o * bpp + 2]) / 3 / 255;
@@ -925,34 +935,41 @@
     };
     const w = tip.w, h = tip.h;
     const out = new Uint8Array(w * h * 4);
-    const blend = String(brush.dualBlendMode || '').toLowerCase();
+    const blend = String(brush.dualBlendMode || info.blend || '').toLowerCase();
+    const ratio = Math.max(0.5, Math.min(2, (info.diameter && brush.sizePx) ? info.diameter / brush.sizePx : 1));
+    const ang = ((info.angle || 0) * Math.PI) / 180;
+    const round = Math.max(0.05, Math.min(1, (info.roundness === undefined ? 100 : info.roundness) / 100));
+    const flipX = !!info.flipX, flipY = !!info.flipY, invert = !!info.flip;
+    const cos = Math.cos(-ang), sin = Math.sin(-ang);
+    const cx = w / 2, cy = h / 2;
+    const dualAlpha = function (px, py) {
+      const dx = px - cx, dy = py - cy;
+      const rx = dx * cos - dy * sin;
+      const ry = dx * sin + dy * cos;
+      let u = (rx / ratio + d.w / 2);
+      let v = (ry / (ratio * round) + d.h / 2);
+      if (flipX) u = d.w - 1 - u;
+      if (flipY) v = d.h - 1 - v;
+      const sx = Math.round(u), sy = Math.round(v);
+      if (sx < 0 || sy < 0 || sx >= d.w || sy >= d.h) return 0;
+      const a = raw(sx, sy);
+      return invert ? 1 - a : a;
+    };
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
-        const sx = Math.min(d.w - 1, Math.floor(x * d.w / w));
-        const sy = Math.min(d.h - 1, Math.floor(y * d.h / h));
         const a1 = tip.rgba[(y * w + x) * 4 + 3] / 255;
-        const a2 = dualAlpha(sx, sy);
+        const a2 = dualAlpha(x, y);
         let a;
         if (blend.indexOf('scrn') >= 0 || blend.indexOf('lghn') >= 0) a = 1 - (1 - a1) * (1 - a2);
         else if (blend.indexOf('drkn') >= 0) a = Math.min(a1, a2);
         else if (blend.indexOf('ovrl') >= 0) a = a1 < 0.5 ? 2 * a1 * a2 : 1 - 2 * (1 - a1) * (1 - a2);
-        else a = a1 * a2; // 默认按乘（PS 双笔刷最常见的遮罩语义）
+        else a = a1 * a2;
         const o = (y * w + x) * 4;
         out[o] = tip.rgba[o]; out[o + 1] = tip.rgba[o + 1]; out[o + 2] = tip.rgba[o + 2];
         out[o + 3] = Math.max(0, Math.min(255, Math.round(Math.max(a1 * 0.05, a) * 255)));
       }
     }
     return { w: w, h: h, rgba: out };
-  }
-
-  /* 取笔尖并（在目标不支持双笔刷时）把第二支笔尖合成进去 */
-  function bakedTipFor(brush, opts) {
-    opts = opts || {};
-    let tip = tipToRGBA(brush) || synthTip(brush, 256, opts);
-    if (brush.dualOn && brush.dualTip && (brush.dualTip.rgba || brush.dualTip.data) && opts.noDualBake !== true) {
-      tip = bakeDualTip(tip, brush);
-    }
-    return tip;
   }
 
   /** Convert one brush to a GIMP .gbr file (8-bit gray tip). */
@@ -1045,7 +1062,7 @@
     flags = flags || {};
     let tip = tipToRGBA(brush) || synthTip(brush, 256, opts);
     // 目标格式没有"双笔刷"时：把第二支笔尖按 alpha 混合进主笔尖，保留大致外观
-    if (flags.dual !== false && brush.dualOn && brush.dualTip && (brush.dualTip.rgba || brush.dualTip.data)) {
+    if (flags.dual !== false && opts.dualBake !== false && brush.dualOn && brush.dualTip && (brush.dualTip.rgba || brush.dualTip.data)) {
       tip = bakeDualTip(tip, brush);
     }
     let w = tip.w, h = tip.h, rgba = tip.rgba;
@@ -1512,7 +1529,8 @@ Write-Host 'restart MediBang Paint Pro'
       for (const f of fields) {
         const v = b[f[1]];
         if (v === undefined || v === null || v === '' || v === 0 || v === false) continue;
-        const text = f[2] ? f[2](v) : String(v);
+        let text = f[2] ? f[2](v) : String(v);
+        if (f[0] === '双笔刷') text = dualDesc(b);
         const ok = keep.indexOf(f[0]) >= 0;
         out.push('<tr><td>' + esc(f[0]) + '</td><td>' + esc(text) + '</td><td class="' + (ok ? 'ok' : 'no') + '">' + (ok ? '✅ 保留' : '❌ 丢失') + '</td></tr>');
       }
@@ -1520,6 +1538,16 @@ Write-Host 'restart MediBang Paint Pro'
     });
     out.push('</body></html>');
     return out.join(NL);
+  }
+
+  function dualDesc(brush) {
+    const d = brush.dualBrush || {};
+    const parts = [];
+    if (d.name) parts.push(d.name);
+    if (d.blend) parts.push(d.blend);
+    if (d.diameter) parts.push(Math.round(d.diameter) + 'px');
+    if (d.useScatter) parts.push('散布' + Math.round(d.scatterPct || 0) + '%×' + (d.count || 1));
+    return parts.length ? parts.join(' · ') : '开';
   }
 
   const MANUAL_ADVICE = {
@@ -1568,7 +1596,7 @@ Write-Host 'restart MediBang Paint Pro'
       ['双笔刷', 'dualOn', function () { return '开'; }]
     ];
     const support = {
-      abr: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','角度随机','散布','散布数量','纹理','压感尺寸','压感不透明度','湿边','平滑'],
+      abr: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','角度随机','散布','散布数量','纹理','压感尺寸','压感不透明度','湿边','平滑','双笔刷'],
       bru: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','角度随机','散布','散布数量','纹理','压感尺寸','压感不透明度','锥度','湿边','混色/涂抹','颜色动态','平滑'],
       brushset: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','散布','散布数量','纹理','压感尺寸','压感不透明度','锥度','湿边','混色/涂抹','颜色动态','平滑'],
       brush: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','散布','散布数量','纹理','压感尺寸','压感不透明度','锥度','湿边','混色/涂抹','颜色动态','平滑'],
@@ -1614,7 +1642,8 @@ Write-Host 'restart MediBang Paint Pro'
           const v = b[f[1]];
           const present = v !== undefined && v !== null && v !== '' && v !== 0 && v !== false;
           if (!present) continue;
-          const text = f[2] ? f[2](v) : String(v);
+          let text = f[2] ? f[2](v) : String(v);
+          if (f[0] === '双笔刷') text = dualDesc(b);
           if (keep.indexOf(f[0]) >= 0) { has.push(f[0] + '(' + text + ')'); keptTotal++; }
           else { lost.push(f[0] + '(' + text + ')'); lostTotal++; }
         }

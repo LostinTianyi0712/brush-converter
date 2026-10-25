@@ -344,18 +344,33 @@
       const angleVr = desc.getItem(preset, 'angleDynamics');
       const scatterVr = desc.getItem(preset, 'scatterDynamics');
       const dual = desc.getItem(preset, 'dualBrush');
+      const jit = function (vr) { try { return vr ? (desc.unitValue(desc.getItem(vr, 'jitter')) || 0) : 0; } catch (e) { return 0; } };
       const dualInfo = (function (d) {
         if (!d || !d.items) return null;
         const on = desc.getItem(d, 'useDualBrush') === true;
         const br = desc.getItem(d, 'Brsh');
         const bl = desc.getItem(d, 'BlnM');
+        const useScatter2 = desc.getItem(d, 'useScatter') === true;
+        const sctVr = desc.getItem(d, 'scatterDynamics');
+        const cntVr = desc.getItem(d, 'countDynamics');
         return {
           enabled: on,
           blend: bl && bl.value ? bl.value : (bl && bl.type === 'enum' ? bl.value : undefined),
           diameter: br ? desc.unitValue(desc.getItem(br, 'Dmtr')) : undefined,
           spacing: br ? desc.unitValue(desc.getItem(br, 'Spcn')) : undefined,
           name: br ? (desc.getItem(br, 'Nm  ') || '') : '',
-          uuid: br ? (desc.getItem(br, 'sampledData') || '') : ''
+          uuid: br ? (desc.getItem(br, 'sampledData') || '') : '',
+          angle: br ? desc.unitValue(desc.getItem(br, 'Angl')) : undefined,
+          roundness: br ? desc.unitValue(desc.getItem(br, 'Rndn')) : undefined,
+          flipX: br ? desc.getItem(br, 'flipX') === true : undefined,
+          flipY: br ? desc.getItem(br, 'flipY') === true : undefined,
+          useScatter: useScatter2,
+          count: useScatter2 ? desc.getItem(d, 'Cnt ') : undefined,
+          bothAxes: useScatter2 ? desc.getItem(d, 'bothAxes') === true : undefined,
+          scatterPct: useScatter2 && sctVr ? jit(sctVr) : undefined,
+          countJitterPct: useScatter2 && cntVr ? jit(cntVr) : undefined,
+          scatterSpacing: useScatter2 ? desc.unitValue(desc.getItem(d, 'Spcn')) : undefined,
+          flip: desc.getItem(d, 'Flip') === true
         };
       })(dual);
       const useColorDyn = desc.getItem(preset, 'useColorDynamics');

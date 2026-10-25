@@ -296,6 +296,13 @@
     if (b.pressure) tags.push('<span class="tag">压感</span>');
     if (b.tipSource === 'synth') tags.push('<span class="tag gray">合成圆头</span>');
     if (b.hasGrain) tags.push('<span class="tag gray">纹理略</span>');
+    if (b.dualOn) {
+      const di = b.dualBrush || {};
+      const dt = '双笔刷：' + (di.name || '第二支笔尖') + ' · ' + (di.blend || '') +
+        (di.diameter ? ' · ' + Math.round(di.diameter) + 'px' : '') +
+        (di.useScatter ? ' · 散布' + Math.round(di.scatterPct || 0) + '%×' + (di.count || 1) : '');
+      tags.push('<span class="tag" title="' + esc(dt) + '">双笔刷</span>');
+    }
     info.innerHTML = '<div class="bname" title="' + esc(b.name) + '">' + (esc(b.name) || '未命名') + '</div>' +
       '<div class="bparams">尺寸 ' + Math.round(b.sizePx || 0) + 'px · 间距 ' + (b.spacingPct || 0).toFixed(1) + '% · 不透明度 ' +
       Math.round((b.opacity === undefined ? 1 : b.opacity) * 100) + '% ' + tags.join(' ') + '</div>';
@@ -645,7 +652,8 @@
     const textureMode = $('#optTextureMode') ? $('#optTextureMode').value : 'bake';
     const scatterScale = $('#optScatterScale') ? Number($('#optScatterScale').value) / 100 : 0.15;
     const autoBatch = $('#optAutoBatch') ? $('#optAutoBatch').value !== '0' : true;
-    return { tipSize, sizeScale, spacingOverride, pressureMode, prefix, groupBySource, mode, target, packOut, goScatter, grainBake, fidelity, textureMode, scatterScale, autoBatch };
+    const dualBake = $('#optDualBake') ? $('#optDualBake').value !== '0' : true;
+    return { tipSize, sizeScale, spacingOverride, pressureMode, prefix, groupBySource, mode, target, packOut, goScatter, grainBake, fidelity, textureMode, scatterScale, autoBatch, dualBake };
   }
 
   function toast(msg, ms) {
@@ -783,6 +791,7 @@
         pkgId: rec.pkgId,
         scatter: opts.goScatter === 'auto' ? undefined : Number(opts.goScatter),
         scatterScale: opts.scatterScale,
+        dualBake: opts.dualBake,
         noTextureBake: opts.grainBake === false,
         patternRefs: commonPatRefs,
         fidelity: opts.fidelity === false ? false : undefined,
