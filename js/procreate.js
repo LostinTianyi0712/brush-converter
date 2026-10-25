@@ -74,12 +74,43 @@
     const paintOpacity = toRatio(params.paintOpacity, 1);
     const minOpacity = toRatio(params.minOpacity, 0);
     const spacing = toRatio(params.plotSpacing, 0);
-    let sizePx = Math.round(maxSize * 120);
+    // paintSize 是当前笔刷大小（×400≈像素），之前用 maxSize*120 会放大约 3~5 倍
+    let sizePx = Math.round((Number(params.paintSize) > 0 ? Number(params.paintSize) : maxSize * 0.25) * 400);
     if (!isFinite(sizePx) || sizePx < 4) sizePx = 40;
     sizePx = Math.max(2, Math.min(3000, sizePx));
     const opacity = Math.max(0.01, Math.min(1, paintOpacity * maxOpacity));
     const minSizeRatio = pressSize > 0.05 ? Math.max(0.02, Math.min(1, minSize)) : 1;
     const minOpacityRatio = pressOpacity > 0.05 ? Math.max(0.02, Math.min(1, minOpacity || 0.25)) : 1;
+    const nv = function (k, d) { const v = Number(params[k]); return isFinite(v) ? v : (d === undefined ? 0 : d); };
+    const angleDeg = nv('shapeAngle');
+    const roundnessPct = nv('shapeRoundness', 1) * 100;
+    const taperOn = nv('taperSize') > 0.001 || nv('taperOpacity') > 0.001;
+    const taperSizeV = nv('taperSize'), taperOpacityV = nv('taperOpacity');
+    const taperStartLen = nv('taperStartLength'), taperEndLen = nv('taperEndLength');
+    const wetAmount = nv('wetEdgesAmount');
+    const smudgeSizeV = nv('smudgeSize'), smudgeOpacityV = nv('smudgeOpacity');
+    const smudgeOnV = smudgeSizeV > 0.5 && smudgeOpacityV > 0.5;
+    const smudgeAmount = smudgeOnV ? Math.max(0.05, Math.min(1, nv('dynamicsSmudgeAccumulation', 0.5))) : 0;
+    const wetAccum = nv('dynamicsWetAccumulation');
+    const grainDepthV = nv('grainDepth', 0);
+    const grainDepthJitter = nv('grainDepthJitter');
+    const grainDepthMin = nv('grainDepthMinimum');
+    const texScaleV = nv('textureScale', 1);
+    const texBrightV = nv('textureBrightness', 0.5);
+    const texContrastV = nv('textureContrast', 1);
+    const plotJitterV = nv('plotJitter');
+    const smoothingV = nv('plotSmoothing');
+    const hueDyn = Math.max(nv('dynamicsPressureHue'), nv('dynamicsJitterHue'), nv('dynamicsJitterStrokeHue'));
+    const satDyn = Math.max(nv('dynamicsPressureSaturation'), nv('dynamicsJitterSaturation'), nv('dynamicsJitterStrokeSaturation'));
+    const briDyn = Math.max(nv('dynamicsPressureBrightness'), nv('dynamicsJitterLightness'), nv('dynamicsJitterStrokeLightness'));
+    const sizeJitV = Math.max(nv('dynamicsJitterSize'), nv('dynamicsTiltSize'));
+    const pressureRound = nv('dynamicsPressureShapeRoundness');
+    // 散布/数量：Procreate 的 shapeScatter（0~约2，对应 0~200%）、shapeCount（/16 为个数）
+    const scatterRaw = Number(params.shapeScatter) || 0;
+    const shapeCountRaw = Number(params.shapeCount) || 0;
+    const countJitterRaw = Number(params.shapeCountJitter) || 0;
+    const scatterPct = Math.max(0, Math.min(1000, scatterRaw * 100));
+    const scatterCount = shapeCountRaw > 0.001 ? Math.max(2, Math.round(shapeCountRaw * 16)) : 1;
     return {
       name,
       tip,
@@ -97,6 +128,51 @@
       pressureSize: pressSize > 0.05,
       pressureOpacity: pressOpacity > 0.05,
       hasGrain: !!grainEntry,
+      hardness: tip ? undefined : 0.8,
+      hasTexture: !!grainEntry && grainDepthV > 0,
+      angle: angleDeg,
+      roundness: roundnessPct,
+      taperOn: taperOn,
+      taperSize: taperSizeV,
+      taperOpacity: taperOpacityV,
+      taperStartLength: taperStartLen,
+      taperEndLength: taperEndLen,
+      wetEdgesOn: wetAmount > 0.001,
+      wetEdgesAmount: wetAmount,
+      smudgeOn: smudgeOnV,
+      smudgeSize: smudgeSizeV,
+      smudgeOpacity: smudgeOpacityV,
+      smudgeAmount: smudgeAmount,
+      textureDepth: grainDepthV > 0 ? Math.max(0.05, Math.min(1, grainDepthV)) : 0,
+      grainDepthMinimum: grainDepthMin,
+      grainDepthJitter: grainDepthJitter,
+      textureScale: texScaleV > 0 ? texScaleV : 1,
+      textureBrightness: texBrightV * 100,
+      textureContrast: texContrastV * 100,
+      spacingJitterPct: plotJitterV * 100,
+      smoothingStrength: smoothingV,
+      colorDynamicsOn: hueDyn > 0.001 || satDyn > 0.001 || briDyn > 0.001,
+      colorJitterHue: hueDyn,
+      colorJitterSat: satDyn,
+      colorJitterVal: briDyn,
+      sizeJitterPct: sizeJitV * 100,
+      roundnessDynamics: pressureRound,
+      wetEdgesAccumulation: wetAccum,
+      burntEdgesAmount: nv('burntEdgesAmount'),
+      grainBlendMode: params.grainBlendMode,
+      textureRotation: nv('textureRotation'),
+      textureInverted: !!params.textureInverted,
+      dynamicsLoad: nv('dynamicsLoad'),
+      dynamicsGlazedFlow: nv('dynamicsGlazedFlow'),
+      dynamicsMix: nv('dynamicsMix'),
+      dynamicsMixSoftening: nv('dynamicsMixSoftening'),
+      blendMode: params.blendMode,
+      _params: params,
+      scatterOn: scatterPct > 0.01,
+      scatterPct: scatterPct,
+      scatterCount: scatterCount,
+      scatterBothAxes: true,
+      countJitterPct: countJitterRaw * 100,
       source: 'procreate'
     };
   }
@@ -290,7 +366,9 @@
     const params = Object.assign(D, {
       version: 2,
       plotSpacingVersion: 1,
-      maxSize: Math.max(0.02, Math.min(16, (brush.sizePx || 100) / 120)),
+      // paintSize 是当前大小（×400≈像素），maxSize 是上限；往返尺寸才一致
+      paintSize: Math.max(0.0005, Math.min(4, (brush.sizePx || 100) / 400)),
+      maxSize: Math.max(0.02, Math.min(16, ((brush.sizePx || 100) / 400) * 1.6)),
       minSize: Math.max(0.01, Math.min(1, brush.minSizeRatio === undefined ? 0.05 : brush.minSizeRatio)),
       maxOpacity: Math.max(0.01, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity)),
       minOpacity: 0,
@@ -298,8 +376,17 @@
       plotSpacing: Math.max(0.001, Math.min(1.0, (brush.spacingPct || 10) / 100)),
       shapeRoundness: Math.max(0.05, Math.min(1, (brush.roundness === undefined ? 100 : brush.roundness) / 100)),
       shapeAngle: brush.angle || 0,
-      shapeScatter: brush.scatterOn ? Math.max(0, Math.min(1, (brush.scatterPct || 0) / 100)) : 0,
-      shapeCount: brush.scatterOn ? Math.max(0, Math.min(100, brush.scatterCount || 0)) : 0,
+      shapeScatter: brush.scatterOn ? Math.max(0, Math.min(2, (brush.scatterPct || 0) / 100)) : 0,
+      // shapeCount 在 Procreate 里是 ×16 的归一化值（0.625 = 10 个）
+      shapeCount: brush.scatterOn ? Math.max(0, Math.min(1, (brush.scatterCount || 0) / 16)) : 0,
+      shapeCountJitter: Math.max(0, Math.min(1, (brush.countJitterPct || 0) / 100)),
+      plotJitter: Math.max(0, Math.min(1, (brush.spacingJitterPct || 0) / 100)),
+      plotSmoothing: Math.max(0, Math.min(1, brush.smoothingStrength === undefined ? 0 : brush.smoothingStrength)),
+      grainDepthJitter: Math.max(0, Math.min(1, brush.grainDepthJitter || 0)),
+      textureScale: Math.max(0.01, Math.min(20, brush.textureScale === undefined ? 1 : brush.textureScale)),
+      textureBrightness: Math.max(0, Math.min(1, (brush.textureBrightness === undefined ? 51 : brush.textureBrightness) / 100)),
+      textureContrast: Math.max(0, Math.min(1, (brush.textureContrast === undefined ? 100 : brush.textureContrast) / 100)),
+      textureRotation: brush.textureRotation || 0,
       shapeOrientation: 1,
       previewSize: 0.08,
       dynamicsPressureSize: brush.pressure && (brush.minSizeRatio === undefined || brush.minSizeRatio < 0.95) ? 1 : 0,
@@ -310,7 +397,8 @@
       grainBlendMode: brush.hasTexture ? 0 : 1,
       taperSize: brush.taperOn ? Math.max(0, Math.min(1, brush.taperSize === undefined ? 0.5 : brush.taperSize)) : 0,
       taperOpacity: brush.taperOn ? Math.max(0, Math.min(1, brush.taperOpacity === undefined ? 0.5 : brush.taperOpacity)) : 0,
-      taperEndLength: brush.taperOn ? 0.3 : 0,
+      taperStartLength: brush.taperOn ? Math.max(0, Math.min(1, brush.taperStartLength || 0.2)) : 0,
+      taperEndLength: brush.taperOn ? Math.max(0, Math.min(1, brush.taperEndLength === undefined ? 0.3 : brush.taperEndLength)) : 0,
       wetEdgesAmount: brush.wetEdgesOn ? Math.max(0, Math.min(1, brush.wetEdgesAmount === undefined ? 0.4 : brush.wetEdgesAmount)) : 0,
       smudgeSize: brush.smudgeOn ? Math.max(0, Math.min(1, brush.smudgeAmount === undefined ? 0.3 : brush.smudgeAmount)) : 0,
       smudgeOpacity: brush.smudgeOn ? Math.max(0, Math.min(1, brush.smudgeAmount === undefined ? 0.3 : brush.smudgeAmount)) : 0,

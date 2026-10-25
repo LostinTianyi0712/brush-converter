@@ -128,7 +128,7 @@
   }
 
   function setPropField(bytes, propName, value, fieldTag) {
-    const FT = fieldTag === undefined ? 0x18 : fieldTag;
+    const FT = fieldTag === undefined ? 0x15 : fieldTag;
     let p = 0;
     while (p + 6 <= bytes.length) {
       const tag = bytes[p];

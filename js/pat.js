@@ -126,6 +126,29 @@
     return { record: record, id: id, name: name || 'pattern', width: w, height: h };
   }
 
+  /* 索引色图案（模式 2）：768B 灰度调色板 + 1 字节/像素，体积约为 RGB 的 1/3 */
+  function buildPatternIndexed(name, w, h, gray, uuid) {
+    const id = uuid || randomUuid();
+    const nameBytes = utf16be(name || 'pattern');
+    const nameUnits = nameBytes.length / 2;
+    const palette = new Uint8Array(768);
+    for (let i = 0; i < 256; i++) { palette[i * 3] = i; palette[i * 3 + 1] = i; palette[i * 3 + 2] = i; }
+
+    const body = concat([u32(8), u32(0), u32(0), u32(h), u32(w), u16(8), new Uint8Array([0]), gray]);
+    const slot = concat([u32(1), u32(body.length), body]);
+    const rect = concat([u32(0), u32(0), u32(h), u32(w)]);
+    const list = concat([rect, u32(CHANNEL_SLOTS), slot, new Uint8Array(92)]);
+
+    const record = concat([
+      u32(VERSION), u32(2), u16(h), u16(w),
+      u32(nameUnits), nameBytes,
+      new Uint8Array([id.length]), asciiBytes(id),
+      palette, u16(256), u16(255),
+      u32(VMA_VERSION), u32(list.length), list
+    ]);
+    return { record: record, id: id, name: name || 'pattern', width: w, height: h };
+  }
+
   function randomUuid() {
     const hex = '0123456789abcdef';
     let s = '';
@@ -187,6 +210,7 @@
     buildPat: buildPat,
     buildGrainPat: buildGrainPat,
     buildFromGray: buildFromGray,
+    buildPatternIndexed: buildPatternIndexed,
     noisePlanes: noisePlanes
   };
   if (typeof module !== 'undefined' && module.exports && typeof process !== 'undefined') module.exports = api;

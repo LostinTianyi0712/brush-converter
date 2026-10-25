@@ -25,9 +25,11 @@
   </div>
   <div class="actions">
     <button id="btnSelectAll" class="btn ghost" title="全选/取消全选所有笔刷">全选笔刷</button>
+    <button id="btnShare" class="btn ghost" title="分享/保存到文件（iOS 可用）">分享保存</button>
     <button id="btnLog" class="btn ghost" title="导出本次运行日志">导出日志</button>
     <button id="btnClear" class="btn ghost" title="清空列表">清空</button>
     <button id="btnConvert" class="btn primary" disabled>转换并下载 ZIP</button>
+    <button id="btnCancel" class="btn ghost" style="display:none">取消</button>
   </div>
 </header>
 
@@ -82,6 +84,18 @@
           <select id="optFidelity">
             <option value="on" selected>开启（默认，同格式字节级保留）</option>
             <option value="off">关闭（强制重建笔刷）</option>
+          </select>
+        </div>
+        <div class="opt">
+          <label>散布换算系数（× 源值）</label>
+          <select id="optScatterScale">
+            <option value="5">5%（更小）</option>
+            <option value="10">10%（很小）</option>
+            <option value="15" selected>15%（推荐）</option>
+            <option value="20">20%</option>
+            <option value="30">30%</option>
+            <option value="50">50%</option>
+            <option value="100">100%（等比例）</option>
           </select>
         </div>
         <div class="opt">

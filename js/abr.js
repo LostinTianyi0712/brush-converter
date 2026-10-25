@@ -330,6 +330,7 @@
       const spacing = desc.unitValue(desc.getItem(inner, 'Spcn'));
       const angle = desc.unitValue(desc.getItem(inner, 'Angl')) || 0;
       const roundness = desc.unitValue(desc.getItem(inner, 'Rndn'));
+      const hardnessRaw = desc.unitValue(desc.getItem(inner, 'Hrdn'));
       const useTipDynamics = desc.getItem(preset, 'useTipDynamics');
       const szVr = desc.getItem(preset, 'szVr');
       const opVr = desc.getItem(preset, 'opVr');
@@ -357,6 +358,16 @@
           uuid: br ? (desc.getItem(br, 'sampledData') || '') : ''
         };
       })(dual);
+      const useColorDyn = desc.getItem(preset, 'useColorDynamics');
+      const noiseFlag = desc.getItem(preset, 'Nose');
+      const buildUpFlag = desc.getItem(preset, 'Rpt ');
+      const usePose = desc.getItem(preset, 'useBrushPose');
+      const wtVr = desc.getItem(preset, 'wtVr');
+      const mxVr = desc.getItem(preset, 'mxVr');
+      const cdHue = desc.unitValue(desc.getItem(preset, 'H   '));
+      const cdSat = desc.unitValue(desc.getItem(preset, 'Strt'));
+      const cdBri = desc.unitValue(desc.getItem(preset, 'Brgh'));
+      const cdPur = desc.unitValue(desc.getItem(preset, 'purity'));
       const useTexture = desc.getItem(preset, 'useTexture');
       const txtrRef = desc.getItem(preset, 'Txtr');
       const texDepth = desc.unitValue(desc.getItem(preset, 'textureDepth'));
@@ -396,6 +407,7 @@
         spacingPct: spacing === undefined ? 25 : spacing,
         angle: angle || 0,
         roundness: roundness === undefined ? 100 : roundness,
+        hardness: hardnessRaw === undefined ? undefined : Math.max(0, Math.min(1, hardnessRaw / 100)),
         minSizeRatio: pressureSize ? Math.max(0.02, (minDiam === undefined ? 10 : minDiam) / 100) : 1,
         pressureSize,
         pressureOpacity,
@@ -403,6 +415,20 @@
         minOpacityRatio: pressureOpacity ? 0.25 : 1,
         flipX: !!(flipX === true || (inner && desc.getItem(inner, 'flipX') === true)),
         flipY: !!(flipY === true || (inner && desc.getItem(inner, 'flipY') === true)),
+        noise: noiseFlag === true,
+        buildUp: buildUpFlag === true,
+        wetnessDynamics: wtVr ? jitterOf(wtVr) : undefined,
+        mixDynamics: mxVr ? jitterOf(mxVr) : undefined,
+        poseOn: usePose === true,
+        poseAngle: desc.unitValue(desc.getItem(preset, 'brushPoseAngle')),
+        poseTiltX: desc.unitValue(desc.getItem(preset, 'brushPoseTiltX')),
+        poseTiltY: desc.unitValue(desc.getItem(preset, 'brushPoseTiltY')),
+        posePressure: desc.unitValue(desc.getItem(preset, 'brushPosePressure')),
+        colorDynamicsOn: useColorDyn === true,
+        colorJitterHue: cdHue === undefined ? undefined : cdHue / 100,
+        colorJitterSat: cdSat === undefined ? undefined : cdSat / 100,
+        colorJitterVal: cdBri === undefined ? undefined : cdBri / 100,
+        colorJitterPurity: cdPur === undefined ? undefined : cdPur / 100,
         hasTexture: useTexture === true,
         textureDepth: texDepth === undefined ? undefined : texDepth / 100,
         textureScale: texScale === undefined ? undefined : texScale / 100,
@@ -978,13 +1004,35 @@
           _descItem('useBrushGroup', 'bool', _descBool(false))
         ])),
         _descItem('usePaintDynamics', 'bool', _descBool(!!(it.pressureSize || it.pressureOpacity))),
-        _descItem('useColorDynamics', 'bool', _descBool(false)),
-        _descItem('Wtdg', 'bool', _descBool(false)),
-        _descItem('Nose', 'bool', _descBool(false)),
-        _descItem('Rpt ', 'bool', _descBool(false)),
+        _descItem('useColorDynamics', 'bool', _descBool(!!it.colorDynamicsOn)),
+        _descItem('Wtdg', 'bool', _descBool(!!(it.wetEdgesOn || (it.wetEdgesAmount && it.wetEdgesAmount > 0)))),
+        _descItem('Nose', 'bool', _descBool(!!it.noise)),
+        _descItem('Rpt ', 'bool', _descBool(!!it.buildUp)),
         _descItem('useBrushSize', 'bool', _descBool(false)),
-        _descItem('useBrushPose', 'bool', _descBool(false))
+        _descItem('useBrushPose', 'bool', _descBool(!!it.poseOn))
       );
+      if (it.poseOn) {
+        presetItems.push(_descItem('overridePoseAngle', 'bool', _descBool(!!it.poseOverrideAngle)));
+        presetItems.push(_descItem('overridePoseTiltX', 'bool', _descBool(!!it.poseOverrideTiltX)));
+        presetItems.push(_descItem('overridePoseTiltY', 'bool', _descBool(!!it.poseOverrideTiltY)));
+        presetItems.push(_descItem('overridePosePressure', 'bool', _descBool(!!it.poseOverridePressure)));
+        const pv = function (v, d) { return Math.round(Math.max(0, Math.min(100, (v === undefined ? d : v)))); };
+        presetItems.push(_descItem('brushPosePressure', 'UntF', _descUntF('#Prc', pv(it.posePressure, 50))));
+        presetItems.push(_descItem('brushPoseTiltX', 'long', new Uint8Array([0, 0, 0, Math.max(0, Math.min(255, Math.round(it.poseTiltX || 0)))])));
+        presetItems.push(_descItem('brushPoseTiltY', 'long', new Uint8Array([0, 0, 0, Math.max(0, Math.min(255, Math.round(it.poseTiltY || 0)))])));
+        presetItems.push(_descItem('brushPoseAngle', 'long', new Uint8Array([0, 0, 0, Math.max(0, Math.min(255, Math.round(it.poseAngle || 0)))])));
+      }
+      if (it.wetnessDynamics) presetItems.push(_descItem('wtVr', 'Objc', brv(0, it.wetnessDynamics, 0)));
+      if (it.mixDynamics) presetItems.push(_descItem('mxVr', 'Objc', brv(0, it.mixDynamics, 0)));
+      if (it.colorDynamicsOn) {
+        presetItems.push(_descItem('clVr', 'Objc', brv(0, 0, 0)));
+        const prc = function (v) { return Math.round(Math.max(0, Math.min(100, (v || 0) * 100))); };
+        presetItems.push(_descItem('H   ', 'UntF', _descUntF('#Prc', prc(it.colorJitterHue))));
+        presetItems.push(_descItem('Strt', 'UntF', _descUntF('#Prc', prc(it.colorJitterSat))));
+        presetItems.push(_descItem('Brgh', 'UntF', _descUntF('#Prc', prc(it.colorJitterVal))));
+        presetItems.push(_descItem('purity', 'UntF', _descUntF('#Prc', prc(it.colorJitterPurity))));
+        presetItems.push(_descItem('colorDynamicsPerTip', 'bool', _descBool(true)));
+      }
       const flowPct100 = it.flowPct === undefined ? 100 : Math.max(1, Math.min(100, Math.round(it.flowPct * 100)));
       const opct100 = it.opacityPct === undefined ? 100 : Math.max(1, Math.min(100, Math.round(it.opacityPct * 100)));
       if (flowPct100 < 100 || opct100 < 100) {

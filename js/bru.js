@@ -133,7 +133,16 @@
       if (b.colorJitterVal) parts.push(u8arr(fF32(64, b.colorJitterVal)));
     }
     parts.push(u8arr(fVarint(79, 1)));                          // TAPEREFFECT
-    parts.push(u8arr(fF32(80, 0.2)));                           // SMOOTHSTRENGTH
+    parts.push(u8arr(fF32(80, b.smoothingStrength === undefined ? 0.2 : Math.max(0, Math.min(1, b.smoothingStrength))))); // SMOOTHSTRENGTH
+    if (b.hollowPct !== undefined && b.hollowPct > 0) parts.push(u8arr(fF32(44, Math.max(0, Math.min(0.5, b.hollowPct / 100))))); // 中空度
+    if (b.antialiasLevel) parts.push(u8arr(fVarint(96, Math.max(1, Math.min(3, Math.round(b.antialiasLevel))))));
+    if (b.borderOn) {
+      parts.push(u8arr(fVarint(92, 1)));
+      if (b.borderBlend) parts.push(u8arr(fVarint(95, Math.round(b.borderBlend))));
+      if (b.borderBrightness !== undefined) parts.push(u8arr(fF32(93, Math.max(0, Math.min(1, b.borderBrightness / 100)))));
+      if (b.borderStrength !== undefined) parts.push(u8arr(fF32(94, Math.max(0, Math.min(1, b.borderStrength / 100)))));
+    }
+    if (b.speedPressure) parts.push(u8arr(fVarint(43, 1)));
     parts.push(u8arr(fF32(81, 1)));                             // HOLLOWALPHA
     parts.push(u8arr(fVarint(82, -1)));                         // HOLLOWCOLOR
     parts.push(u8arr(fVarint(83, 1)));                          // HOLALPIND
@@ -141,7 +150,7 @@
     parts.push(u8arr(fF32(93, 1)));                             // BORDERWIDTH
     parts.push(u8arr(fF32(94, 1)));                             // BORDERSTRENGTH
     parts.push(u8arr(fVarint(95, 4)));                          // BORDERBLENDMODE
-    parts.push(u8arr(fVarint(97, 1)));                          // RENDERCOUNT
+    parts.push(u8arr(fVarint(97, Math.max(1, Math.round(b.renderCount || 1))))); // RENDERCOUNT
     parts.push(u8arr(fVarint(115, 1)));                         // SHAPEROTTYPE
     parts.push(u8arr(fF32(135, 1)));                            // BRUWMAXSCALE
     parts.push(u8arr(fF32(136, 0.06776)));                      // BRUWSCALE
@@ -391,6 +400,15 @@
       const taperOpacity = num(o[78], 1);                             // 锥度不透明度（f78）
       const colorDynOn = !!o[61];                                     // 颜色动态（f61）
       const colorHue = num(o[62], 0), colorSat = num(o[63], 0), colorVal = num(o[64], 0);
+      const smoothingStrength = num(o[80], 0.2);                      // 平滑强度（f80）
+      const hollowPct = o[44] === undefined ? undefined : num(o[44], 0.5) * 100;                        // 中空度（f44）
+      const antialiasLevel = num(o[96], 0);                           // 抗锯齿（f96）
+      const borderOn = !!o[92];                                       // 混边开关（f92）
+      const borderBlend = num(o[95], 0);                              // 混边混合（f95）
+      const borderBrightness = num(o[93], 1) * 100;                   // 混边亮度（f93）
+      const borderStrength = num(o[94], 1) * 100;                     // 混边强度（f94）
+      const renderCount = Math.max(1, Math.round(num(o[97], 1)));     // 渲染数量（f97）
+      const speedPressure = !!o[43];                                  // 速度模拟压感（f43）
       const pressureSize = !!o[36];                                   // 大小压力（f36）
       const transferOn = !!o[47];                                     // 传递（f47）
       let tip = null;
@@ -423,6 +441,15 @@
         angleJitterDeg: angleJitterDeg,
         roundness: roundnessPct,
         hardness: hardnessPct / 100,
+        smoothingStrength: smoothingStrength,
+        hollowPct: hollowPct,
+        antialiasLevel: antialiasLevel,
+        borderOn: borderOn,
+        borderBlend: borderBlend,
+        borderBrightness: borderBrightness,
+        borderStrength: borderStrength,
+        renderCount: renderCount,
+        speedPressure: speedPressure,
         scatterOn: scatterOn,
         scatterPct: scatterPct,
         scatterBothAxes: scatterBothAxes,

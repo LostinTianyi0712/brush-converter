@@ -35,6 +35,7 @@
       }
       return null;
     }
+    if (bytes && bytes.length > 10 && bytes[0] === 0x38 && bytes[1] === 0x42 && bytes[2] === 0x50 && bytes[3] === 0x54) return 'pat';
     if (abr.isAbr(bytes)) return 'abr';
     if (krita.isKpp(bytes)) return 'kpp';
     if (gimp.isGbr(bytes)) return /.gih$/i.test(lower) ? 'gih' : 'gbr';
@@ -135,6 +136,30 @@
         } catch (e) { return null; }
       });
       result = csp.parseDecryptedAssets(dec.json, tips, dec.name || name.replace(/\.params\.json$/i, ''));
+    } else if (kind === 'pat') {
+      const patReader = isNode ? require('./patRead.js') : root.BC.patRead;
+      const pats = patReader.readPat(bytes);
+      if (!pats.length) throw new Error('这个 .pat 里没有可读取的图案');
+      result = {
+        brushes: pats.map(function (pt) {
+          const n = pt.width * pt.height;
+          const rgba = new Uint8Array(n * 4);
+          for (let i = 0; i < n; i++) {
+            const v = pt.gray[i];
+            rgba[i * 4] = v; rgba[i * 4 + 1] = v; rgba[i * 4 + 2] = v; rgba[i * 4 + 3] = v;
+          }
+          return {
+            name: pt.name || 'pattern',
+            tip: { w: pt.width, h: pt.height, rgba: rgba },
+            sizePx: Math.max(pt.width, pt.height),
+            spacingPct: 100,
+            hasTexture: true,
+            _patternPixels: { w: pt.width, h: pt.height, mode: 1, data: pt.gray },
+            source: 'pat'
+          };
+        }),
+        warnings: []
+      };
     } else if (kind === 'kbundle') {
       result = parseKritaBundle(name, bytes);
     } else if (kind === 'procreate') {
@@ -230,7 +255,10 @@
         let a;
         if (d >= 1) a = 0;
         else if (d <= hard) a = 1;
-        else a = (1 - d) / (1 - hard);
+        else {
+          const t2 = (1 - d) / (1 - hard);
+          a = t2 * t2 * (3 - 2 * t2);   // smoothstep，接近 PS 柔边圆的高斯衰减
+        }
         const o = (y * n + x) * 4;
         rgba[o] = 255; rgba[o + 1] = 255; rgba[o + 2] = 255;
         rgba[o + 3] = Math.max(0, Math.min(255, Math.round(a * 255)));
@@ -331,7 +359,8 @@
     if (!tipImg) tipImg = synthTip(brush, 256, opts);
     // 圆度/角度只在 bakeTipTransform 里应用一次（之前 abr 源会被压两次 → 笔刷变得又细又扁）
     tipImg = bakeTipTransform(tipImg, brush);
-    const maxTip = Math.max(64, Math.min(2048, opts.maxTipSize || 512));
+    const maxTip = Math.max(32, Math.min(2048, opts.maxTipSize || 512));
+    const wantTip = Math.max(32, Math.min(512, Math.round(((brush.sizePx || 100) * (opts.sizeScale || 1)))));
     let w = tipImg.w, h = tipImg.h, rgba = tipImg.rgba;
     const maxSide = Math.max(w, h);
     if (maxSide > maxTip) {
@@ -340,6 +369,13 @@
       const nh = Math.max(1, Math.round(h * scale));
       rgba = png.resize(rgba, w, h, nw, nh);
       w = nw; h = nh;
+    }
+    if (Math.max(w, h) > wantTip) {
+      const scale2 = wantTip / Math.max(w, h);
+      const nw2 = Math.max(1, Math.round(w * scale2));
+      const nh2 = Math.max(1, Math.round(h * scale2));
+      rgba = png.resize(rgba, w, h, nw2, nh2);
+      w = nw2; h = nh2;
     }
     const pngBytes = png.encode(w, h, png.toMaskRgba(rgba));
     const sizeScale = opts.sizeScale || 1;
@@ -366,6 +402,7 @@
       minFlowRatio: brush.minFlowRatio,
       roundness: brush.roundness,
       hardness: brush.hardness,
+      smoothingStrength: brush.smoothingStrength,
       angle: brush.angle,
       angleJitterDeg: brush.angleJitterDeg,
       sizeJitterPct: brush.sizeJitterPct,
@@ -373,7 +410,8 @@
       flowJitterPct: brush.flowJitterPct,
       countJitterPct: brush.countJitterPct,
       scatterOn: brush.scatterOn,
-      scatterPct: brush.scatterPct,
+      // 画世界的散布刻度比 Procreate/PS 小：默认按 15% 缩放（界面高级设置可调）
+      scatterPct: brush.scatterPct === undefined ? undefined : Math.min(1000, brush.scatterPct * (opts.scatterScale === undefined ? 0.15 : opts.scatterScale)),
       scatterBothAxes: brush.scatterBothAxes,
       scatterCount: brush.scatterCount,
       hasTexture: brush.hasTexture,
@@ -387,6 +425,14 @@
       wetEdgesOn: brush.wetEdgesOn,
       wetEdgesAmount: brush.wetEdgesAmount,
       wetEdgesDepth: brush.wetEdgesDepth,
+      hollowPct: brush.hollowPct,
+      antialiasLevel: brush.antialiasLevel,
+      borderOn: !!brush.borderOn,
+      borderBlend: brush.borderBlend,
+      borderBrightness: brush.borderBrightness,
+      borderStrength: brush.borderStrength,
+      renderCount: brush.renderCount,
+      speedPressure: !!brush.speedPressure,
       smudgeOn: brush.smudgeOn,
       smudgeAmount: brush.smudgeAmount,
       colorDynamicsOn: brush.colorDynamicsOn,
@@ -451,37 +497,66 @@
     return null;
   }
 
+  /** 取笔刷纹理的灰度数据（ABR patt 像素优先，其次 Procreate Grain） */
+  function textureGray(brush) {
+    if (!brush) return null;
+    if (brush._patternPixels && brush._patternPixels.w > 0) {
+      const pp = brush._patternPixels, w = pp.w, h = pp.h;
+      const gray = new Uint8Array(w * h);
+      for (let i = 0; i < w * h; i++) {
+        if (pp.mode === 3) { const o = i * 3; gray[i] = Math.round((pp.data[o] + pp.data[o + 1] + pp.data[o + 2]) / 3); }
+        else gray[i] = pp.data[i];
+      }
+      return { w: w, h: h, gray: gray };
+    }
+    if (brush._grainRgba && brush._grainRgba.w > 0) {
+      const g = brush._grainRgba, w = g.w, h = g.h;
+      const gray = new Uint8Array(w * h);
+      for (let i = 0; i < w * h; i++) gray[i] = g.rgba[i * 4 + 3];
+      return { w: w, h: h, gray: gray };
+    }
+    return null;
+  }
+
+  /* 纹理内容指纹：同内容只生成一个图案 */
+  function textureKey(brush) {
+    const t = textureGray(brush);
+    if (!t) return '';
+    return String(t.w) + 'x' + String(t.h) + ':' + util.md5(t.gray);
+  }
+
   /** 生成 .pat 图案文件（PS 图案面板导入后，ABR 里的纹理引用才能解析）
-      有真实纹理（ABR patt 像素 / Procreate Grain）时用真实纹理，否则用确定性噪声 */
+      支持多纹理：按内容去重，一张纹理一个图案，全部打进同一个 .pat */
   function makePatternFile(brushList, opts) {
     opts = opts || {};
     const patMod = isNode ? require('./pat.js') : root.BC.pat;
-    let gray = null, w = 0, h = 0;
+    const seen = {};
+    const list = [];
     for (const b of (brushList || [])) {
-      if (!b) continue;
-      if (b._patternPixels && b._patternPixels.w > 0) {
-        const pp = b._patternPixels;
-        w = pp.w; h = pp.h;
-        gray = new Uint8Array(w * h);
-        for (let i = 0; i < w * h; i++) {
-          if (pp.mode === 3) { const o = i * 3; gray[i] = Math.round((pp.data[o] + pp.data[o + 1] + pp.data[o + 2]) / 3); }
-          else gray[i] = pp.data[i];
-        }
-        break;
-      }
-      if (b._grainRgba && b._grainRgba.w > 0) {
-        w = b._grainRgba.w; h = b._grainRgba.h;
-        gray = new Uint8Array(w * h);
-        for (let i = 0; i < w * h; i++) gray[i] = b._grainRgba.rgba[i * 4 + 3];
-        break;
-      }
+      const t = textureGray(b);
+      if (!t) continue;
+      const key = String(t.w) + 'x' + String(t.h) + ':' + util.md5(t.gray);
+      if (seen[key]) continue;
+      seen[key] = 1;
+      list.push({ key: key, t: t, name: (b.textureName || 'brushconv-texture') });
     }
-    if (gray) {
-      const made = patMod.buildFromGray('brushconv-texture', w, h, gray, { uuid: opts.uuid });
-      return { bytes: made.bytes, count: 1, ref: { id: made.id, name: made.name }, width: w, height: h };
+    if (!list.length) {
+      const made = patMod.buildGrainPat({ size: opts.size || 256, seed: opts.seed || 11 });
+      return { bytes: made.bytes, count: 1, refs: new Map(), ref: { id: made.id, name: made.name }, width: made.width, height: made.height };
     }
-    const made = patMod.buildGrainPat({ size: opts.size || 256, seed: opts.seed || 11 });
-    return { bytes: made.bytes, count: 1, ref: { id: made.id, name: made.name }, width: made.width, height: made.height };
+    const records = [];
+    const refs = new Map();
+    let i = 0;
+    for (const item of list) {
+      i++;
+      const base = String(item.name || 'texture').replace(/^.*=/, '');
+      const nm = (base && base !== 'brushconv-texture' ? base : ('纹理 ' + i)).slice(0, 30) + (i > 1 ? (' ' + i) : '');
+      const p = patMod.buildPattern(nm, item.t.w, item.t.h, [item.t.gray, item.t.gray, item.t.gray], undefined, true);
+      records.push(p);
+      refs.set(item.key, { id: p.id, name: p.name });
+    }
+    const bytes = patMod.buildPat(records);
+    return { bytes: bytes, count: records.length, refs: refs, ref: records[0] ? { id: records[0].id, name: records[0].name } : null, width: list[0].t.w, height: list[0].t.h };
   }
 
   function makeAbrPack(brushList, opts) {
@@ -534,8 +609,24 @@
         flowPct: brush.flowPct === undefined ? 1 : brush.flowPct,
         opacityPct: brush.opacity === undefined ? 1 : brush.opacity,
         hardness: brush.hardness,
+        wetEdgesOn: !!brush.wetEdgesOn,
+        wetEdgesAmount: brush.wetEdgesAmount,
+        noise: !!brush.noise,
+        buildUp: !!brush.buildUp,
+        poseOn: !!brush.poseOn,
+        poseAngle: brush.poseAngle,
+        poseTiltX: brush.poseTiltX,
+        poseTiltY: brush.poseTiltY,
+        posePressure: brush.posePressure,
+        wetnessDynamics: brush.wetnessDynamics,
+        mixDynamics: brush.mixDynamics,
+        colorDynamicsOn: !!brush.colorDynamicsOn,
+        colorJitterHue: brush.colorJitterHue,
+        colorJitterSat: brush.colorJitterSat,
+        colorJitterVal: brush.colorJitterVal,
+        colorJitterPurity: brush.colorJitterPurity,
         psTexture: usePsTexture,
-        patternRef: (usePsTexture && opts.patternRef) ? opts.patternRef : null,
+        patternRef: (usePsTexture && ((opts.patternRefs && opts.patternRefs.get(textureKey(brush))) || opts.patternRef)) || null,
         textureDepth: brush.textureDepth,
         textureScale: brush.textureScale,
         // 源就是 ABR 时，保留原始描述符/样本字节（部分导出也能保住 PS 原版特性）
@@ -1156,10 +1247,31 @@ Write-Host 'restart MediBang Paint Pro'
       ].join(NL));
       mk('安装到GIMP.bat', ['@echo off', 'chcp 65001 >nul', 'powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0安装到GIMP.ps1"', 'pause', ''].join(NL));
       mk('安装说明.txt', 'GIMP 笔刷安装说明' + NL + '运行「安装到GIMP.bat」，然后重启 GIMP；画笔面板里即可看到。' + NL + '（.gbr 是单支笔刷，.gih 是整包管道）');
+    } else if (target === 'myb') {
+      mk('安装到MyPaint.ps1', [
+        '$ErrorActionPreference = "SilentlyContinue"',
+        '$dst = Join-Path $env:APPDATA "mypaint/brushes"',
+        'if (-not (Test-Path $dst)) { New-Item -ItemType Directory -Path $dst -Force | Out-Null }',
+        'Get-ChildItem $PSScriptRoot -Filter *.myb -File | Copy-Item -Destination $dst -Force',
+        'Write-Host ("已复制到 " + $dst)',
+        'Write-Host "重启 MyPaint 后，在笔刷列表里即可看到"'
+      ].join(NL));
+      mk('安装到MyPaint.bat', ['@echo off', 'chcp 65001 >nul', 'powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0安装到MyPaint.ps1"', 'pause', ''].join(NL));
+      mk('安装说明.txt', 'MyPaint 安装说明' + NL + '运行「安装到MyPaint.bat」，然后重启 MyPaint。' + NL + '笔刷目录：%APPDATA%/mypaint/brushes');
     } else if (target === 'kbundle') {
+      mk('安装到Krita.ps1', [
+        '$ErrorActionPreference = "SilentlyContinue"',
+        '$dst = Join-Path $env:APPDATA "krita"',
+        'if (-not (Test-Path $dst)) { New-Item -ItemType Directory -Path $dst -Force | Out-Null }',
+        'Get-ChildItem $PSScriptRoot -Filter *.bundle -File | Copy-Item -Destination $dst -Force',
+        'Write-Host ("已复制到 " + $dst)',
+        'Write-Host "重启 Krita 后，在 设置->管理资源 里应能看到；看不到就用「导入资源」手动选一次"'
+      ].join(NL));
+      mk('安装到Krita.bat', ['@echo off', 'chcp 65001 >nul', 'powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0安装到Krita.ps1"', 'pause', ''].join(NL));
       mk('安装说明.txt', [
         'Krita 笔刷包安装说明',
-        'Krita → 设置 → 管理资源 → 导入资源 → 选择本目录的 .bundle 文件',
+        '方法一（一键）：运行「安装到Krita.bat」，重启 Krita',
+        '方法二：Krita -> 设置 -> 管理资源 -> 导入资源 -> 选择本目录的 .bundle',
         '导入后在「画笔预设」里搜索包名即可。'
       ].join(NL));
     } else if (target === 'medibang') {
@@ -1187,48 +1299,83 @@ Write-Host 'restart MediBang Paint Pro'
   function brushLossReport(brushList, targets) {
     const NL = String.fromCharCode(10);
     const fields = [
-      ['尺寸', 'sizePx'], ['间距', 'spacingPct'], ['角度', 'angle'], ['圆度', 'roundness'],
-      ['不透明度', 'opacity'], ['流量', 'flowPct'], ['硬度', 'hardness'],
-      ['最小直径', 'minSizeRatio'], ['最小不透明度', 'minOpacityRatio'],
-      ['大小随机', 'sizeJitterPct'], ['角度随机', 'angleJitterDeg'],
-      ['散布', 'scatterOn'], ['散布数量', 'scatterCount'],
-      ['纹理', 'hasTexture'], ['压感尺寸', 'pressureSize'], ['压感不透明度', 'pressureOpacity'],
-      ['锥度', 'taperOn'], ['湿边', 'wetEdgesOn'], ['混色/涂抹', 'smudgeOn'], ['颜色动态', 'colorDynamicsOn']
+      ['尺寸', 'sizePx', function (v) { return Math.round(v) + 'px'; }],
+      ['间距', 'spacingPct', function (v) { return (Math.round(v * 10) / 10) + '%'; }],
+      ['角度', 'angle', function (v) { return Math.round(v) + '°'; }],
+      ['圆度', 'roundness', function (v) { return Math.round(v) + '%'; }],
+      ['不透明度', 'opacity', function (v) { return Math.round(v * 100) + '%'; }],
+      ['流量', 'flowPct', function (v) { return Math.round(v * 100) + '%'; }],
+      ['硬度', 'hardness', function (v) { return Math.round(v * 100) + '%'; }],
+      ['最小直径', 'minSizeRatio', function (v) { return Math.round(v * 100) + '%'; }],
+      ['最小不透明度', 'minOpacityRatio', function (v) { return Math.round(v * 100) + '%'; }],
+      ['大小随机', 'sizeJitterPct', function (v) { return Math.round(v) + '%'; }],
+      ['角度随机', 'angleJitterDeg', function (v) { return Math.round(v) + '°'; }],
+      ['散布', 'scatterPct', function (v) { return Math.round(v) + '%'; }],
+      ['散布数量', 'scatterCount', function (v) { return String(Math.round(v)); }],
+      ['纹理', 'textureDepth', function (v) { return '深度' + Math.round(v * 100) + '%'; }],
+      ['压感尺寸', 'pressureSize', function () { return '开'; }],
+      ['压感不透明度', 'pressureOpacity', function () { return '开'; }],
+      ['锥度', 'taperOn', function () { return '开'; }],
+      ['湿边', 'wetEdgesOn', function () { return '开'; }],
+      ['混色/涂抹', 'smudgeOn', function () { return '开'; }],
+      ['颜色动态', 'colorDynamicsOn', function () { return '开'; }],
+      ['平滑', 'smoothingStrength', function (v) { return Math.round(v * 100) + '%'; }]
     ];
     const support = {
-      abr: ['尺寸', '间距', '角度', '圆度', '不透明度', '流量', '硬度', '最小直径', '最小不透明度', '大小随机', '角度随机', '散布', '散布数量', '纹理', '压感尺寸', '压感不透明度'],
-      bru: ['尺寸', '间距', '角度', '圆度', '不透明度', '流量', '硬度', '最小直径', '最小不透明度', '大小随机', '角度随机', '散布', '散布数量', '纹理', '压感尺寸', '压感不透明度', '锥度', '湿边', '混色/涂抹', '颜色动态'],
-      brushset: ['尺寸', '间距', '角度', '圆度', '不透明度', '流量', '硬度', '最小直径', '最小不透明度', '大小随机', '散布', '散布数量', '纹理', '压感尺寸', '压感不透明度', '锥度', '湿边', '混色/涂抹', '颜色动态'],
-      brush: ['尺寸', '间距', '角度', '圆度', '不透明度', '流量', '硬度', '最小直径', '最小不透明度', '大小随机', '散布', '散布数量', '纹理', '压感尺寸', '压感不透明度', '锥度', '湿边', '混色/涂抹', '颜色动态'],
-      kbundle: ['尺寸', '间距', '角度', '圆度', '不透明度', '流量', '硬度', '最小直径', '最小不透明度', '散布', '压感尺寸', '压感不透明度', '混色/涂抹'],
-      gbr: ['尺寸', '间距'], gih: ['尺寸', '间距'],
-      myb: ['尺寸', '间距', '角度', '圆度', '不透明度', '硬度', '最小直径', '最小不透明度', '大小随机', '散布', '压感尺寸'],
-      painter: ['尺寸'], sai2: ['尺寸', '间距'], png: ['尺寸', '间距', '角度', '圆度', '不透明度'],
-      medibang: ['尺寸', '间距', '不透明度'], gobrush: ['尺寸', '间距', '不透明度', '散布', '纹理'],
-      gopaint_set: ['尺寸', '间距', '不透明度', '散布', '纹理'], gopaint_abr: ['尺寸', '间距', '不透明度', '纹理']
+      abr: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','角度随机','散布','散布数量','纹理','压感尺寸','压感不透明度','湿边','平滑'],
+      bru: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','角度随机','散布','散布数量','纹理','压感尺寸','压感不透明度','锥度','湿边','混色/涂抹','颜色动态','平滑'],
+      brushset: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','散布','散布数量','纹理','压感尺寸','压感不透明度','锥度','湿边','混色/涂抹','颜色动态','平滑'],
+      brush: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','散布','散布数量','纹理','压感尺寸','压感不透明度','锥度','湿边','混色/涂抹','颜色动态','平滑'],
+      kbundle: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','散布','纹理','压感尺寸','压感不透明度','混色/涂抹','颜色动态'],
+      gbr: ['尺寸','间距','硬度'], gih: ['尺寸','间距','硬度'],
+      myb: ['尺寸','间距','角度','圆度','不透明度','硬度','最小直径','最小不透明度','大小随机','散布','压感尺寸','混色/涂抹','颜色动态'],
+      painter: ['尺寸'], sai2: ['尺寸','间距'], png: ['尺寸','间距','角度','圆度','不透明度'],
+      medibang: ['尺寸','间距','不透明度'],
+      gobrush: ['尺寸','间距','不透明度','最小直径','最小不透明度','流量','散布','纹理'],
+      gopaint_set: ['尺寸','间距','不透明度','散布','纹理'], gopaint_abr: ['尺寸','间距','不透明度','纹理']
+    };
+    const reason = {
+      abr: 'ABR 支持这些；纹理需配合 .pat 图案（目标 PS 里要有同名图案）',
+      bru: '画世界Pro 字段最多，基本都能写',
+      brushset: 'Procreate 支持这些；倾斜/速度/釉化等无对应字段',
+      brush: 'Procreate 支持这些；倾斜/速度/釉化等无对应字段',
+      kbundle: 'Krita 6 元组曲线/颜色率未映射',
+      gbr: 'GIMP 格式只有「笔尖 + 间距 + 硬度」',
+      gih: 'GIMP 管道格式只有「笔尖 + 间距 + 硬度」',
+      myb: 'MyPaint 传感器有限，速度/倾斜未映射',
+      painter: 'Painter 笔刷格式只写了笔尖',
+      sai2: 'SAI2 只写了尺寸与间距',
+      png: 'PNG 只导出笔尖图 + 参数文本',
+      medibang: 'MediBang 只写基础字段',
+      gobrush: '天生会画写了主要数值参数，压力曲线仍为模板',
+      gopaint_set: '天生会画组写了主要数值参数',
+      gopaint_abr: '天生会画 ABR 只写基础参数'
     };
     const lines = [];
-    lines.push('转换差异报告（自动生成）');
+    lines.push('转换差异报告（参数级，自动生成）');
     lines.push('========================================');
-    lines.push('说明：✅=目标格式能保留  ⚠️=近似/需换算  ❌=目标格式没有这个概念（转换后丢失）');
+    lines.push('格式：保留（含值） / 丢失（目标格式没有该参数）');
     lines.push('');
     for (const target of targets) {
       const keep = support[target] || [];
       lines.push('【目标格式：' + target + '】');
-      let lostCount = 0;
+      if (reason[target]) lines.push('  说明：' + reason[target]);
+      let lostTotal = 0, keptTotal = 0;
       brushList.forEach(function (b, i) {
-        const has = [];
-        const lost = [];
+        const has = [], lost = [];
         for (const f of fields) {
           const v = b[f[1]];
           const present = v !== undefined && v !== null && v !== '' && v !== 0 && v !== false;
           if (!present) continue;
-          if (keep.indexOf(f[0]) >= 0) has.push(f[0]); else lost.push(f[0]);
+          const text = f[2] ? f[2](v) : String(v);
+          if (keep.indexOf(f[0]) >= 0) { has.push(f[0] + '(' + text + ')'); keptTotal++; }
+          else { lost.push(f[0] + '(' + text + ')'); lostTotal++; }
         }
-        if (lost.length) lostCount++;
-        lines.push('  ' + (i + 1) + '. ' + (b.name || '未命名') + '  ← 保留：' + (has.length ? has.join('、') : '（基础）') + (lost.length ? ' ｜ 丢失：' + lost.join('、') : ''));
+        lines.push('  ' + (i + 1) + '. ' + (b.name || '未命名'));
+        lines.push('     保留：' + (has.length ? has.join('、') : '（基础字段）'));
+        if (lost.length) lines.push('     丢失：' + lost.join('、'));
       });
-      lines.push('  小结：共 ' + brushList.length + ' 支，其中 ' + lostCount + ' 支存在参数丢失');
+      lines.push('  小结：保留参数 ' + keptTotal + ' 项，丢失 ' + lostTotal + ' 项');
       lines.push('');
     }
     return lines.join(NL);
@@ -1325,7 +1472,7 @@ Write-Host 'restart MediBang Paint Pro'
     });
   }
 
-  const api = { detect, parseFile, expandArchive, synthTip, makeBru, makeBruPack, makeAbrPack, makeAbrPassthrough, makePatternFile, makeTexturePng, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makePainter, makeMdp, makeMediBangBrush, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, synthTip, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
+  const api = { detect, parseFile, expandArchive, synthTip, makeBru, makeBruPack, makeAbrPack, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makePainter, makeMdp, makeMediBangBrush, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, synthTip, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { convert: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

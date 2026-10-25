@@ -91,7 +91,7 @@
             if (q + 6 + l2 > body.length) break;
             if (t2 === 0x11) {
               try { nm = util.utf8Decode(body.subarray(q + 6, q + 6 + l2)); } catch (e) { nm = ''; }
-            } else if (t2 === 0x18 && l2 === 4) {
+            } else if (t2 === 0x15 && l2 === 4) {
               v18 = le(body, q + 6);
             }
             q += 6 + l2;
@@ -132,8 +132,14 @@
     const props = extractPropValues(info);
     if (props.strokeSpacing !== undefined) out.spacing = props.strokeSpacing;
     if (props.propertiesMaxAlpha !== undefined) out.opacity = props.propertiesMaxAlpha;
-    if (props.propertiesMaxSize !== undefined && props.propertiesMaxSize > 0) out.size = props.propertiesMaxSize;
+    // propertiesMaxSize 量纲与 tag5 不同（1600 vs 35），尺寸仍以 tag5 为准
     if (props.shapeScatter !== undefined) out.scatter = props.shapeScatter;
+    if (props.grainDepth !== undefined) out.textureDepth = props.grainDepth / 100;
+    if (props.renderingFlow !== undefined) out.flowPct = Math.max(0, Math.min(1, props.renderingFlow / 100));
+    if (props.propertiesMaxSize > 0) {
+      if (props.propertiesMinSize !== undefined) out.minSizeRatio = Math.max(0.01, Math.min(1, props.propertiesMinSize / props.propertiesMaxSize));
+      if (props.propertiesMinAlpha !== undefined && props.propertiesMaxAlpha > 0) out.minOpacityRatio = Math.max(0.01, Math.min(1, props.propertiesMinAlpha / props.propertiesMaxAlpha));
+    }
     return out;
   }
 
@@ -189,7 +195,15 @@
         roundness: 100,
         pressure: false,
         pressureSize: false,
-        minSizeRatio: 1,
+        minSizeRatio: (params.minSizeRatio !== undefined ? params.minSizeRatio : 1),
+        minOpacityRatio: (params.minOpacityRatio !== undefined ? params.minOpacityRatio : 1),
+        flowPct: (params.flowPct !== undefined ? params.flowPct : 1),
+        scatterOn: (params.scatter || 0) > 0,
+        scatterPct: params.scatter || 0,
+        scatterCount: 1,
+        scatterBothAxes: true,
+        hasTexture: (params.textureDepth || 0) > 0,
+        textureDepth: params.textureDepth || 0,
         source: 'gopaint'
       },
       snapshot: snapshot,

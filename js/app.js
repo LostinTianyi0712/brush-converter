@@ -11,7 +11,7 @@
   const btnClear = $('#btnClear');
   const progressEl = $('#progress');
 
-  const state = { files: [], converting: false };
+  const state = { files: [], converting: false , cancelRequested: false };
 
   /* ---------------- helpers ---------------- */
   function fmtSize(n) {
@@ -79,8 +79,12 @@
     const angleJit = Math.max(0, Math.min(90, brush.angleJitterDeg || 0));
     const minSize = brush.minSizeRatio === undefined ? 1 : Math.max(0.1, Math.min(1, brush.minSizeRatio));
     const pressure = !!brush.pressureSize || !!brush.pressure;
-    ctx.save();
-    ctx.globalAlpha = Math.max(0.15, Math.min(1, alpha));
+    // 离屏层画笔迹；有纹理时用纹理做遮罩（近似真实颗粒）
+    const layer = document.createElement('canvas');
+    layer.width = W; layer.height = H;
+    const lctx = layer.getContext('2d');
+    lctx.save();
+    lctx.globalAlpha = Math.max(0.15, Math.min(1, alpha));
     for (let x = 12; x < W - 12; x += step) {
       const t = (x - 12) / (W - 24);
       const y0 = H / 2 + Math.sin(t * Math.PI * 1.6) * 14;
@@ -96,14 +100,54 @@
         const sy = y0 + (scatter ? (jitter2 - 0.5) * sizePx * scatter * 1.4 : 0);
         const w = tipW * baseScale * press * jSize;
         const h = tipH * baseScale * press * jSize;
-        ctx.save();
-        ctx.translate(sx, sy);
-        if (ang) ctx.rotate(ang);
-        ctx.drawImage(tipCv, -w / 2, -h / 2, w, h);
-        ctx.restore();
+        lctx.save();
+        lctx.translate(sx, sy);
+        if (ang) lctx.rotate(ang);
+        lctx.drawImage(tipCv, -w / 2, -h / 2, w, h);
+        lctx.restore();
       }
     }
-    ctx.restore();
+    lctx.restore();
+    const tex = textureCanvas(brush);
+    if (tex) {
+      lctx.globalCompositeOperation = 'destination-in';
+      lctx.fillStyle = lctx.createPattern(tex, 'repeat');
+      lctx.fillRect(0, 0, W, H);
+      lctx.globalCompositeOperation = 'source-over';
+    }
+    ctx.drawImage(layer, 0, 0);
+  }
+
+  /* 纹理遮罩画布（无纹理返回 null） */
+  function textureCanvas(brush) {
+    let w = 0, h = 0, get = null;
+    if (brush._grainRgba && brush._grainRgba.w) {
+      w = brush._grainRgba.w; h = brush._grainRgba.h;
+      get = function (x, y) { return brush._grainRgba.rgba[(y * w + x) * 4 + 3]; };
+    } else if (brush._patternPixels && brush._patternPixels.w) {
+      const pp = brush._patternPixels; w = pp.w; h = pp.h;
+      get = function (x, y) {
+        const i = y * w + x;
+        if (pp.mode === 3) { const o = i * 3; return Math.round((pp.data[o] + pp.data[o + 1] + pp.data[o + 2]) / 3); }
+        return pp.data[i];
+      };
+    } else return null;
+    const n = 128;
+    const cv = document.createElement('canvas');
+    cv.width = n; cv.height = n;
+    const c2 = cv.getContext('2d');
+    const img = c2.createImageData(n, n);
+    for (let y = 0; y < n; y++) {
+      for (let x = 0; x < n; x++) {
+        const sx = Math.min(w - 1, Math.floor(x * w / n));
+        const sy = Math.min(h - 1, Math.floor(y * h / n));
+        const v = get(sx, sy);
+        const o = (y * n + x) * 4;
+        img.data[o] = 255; img.data[o + 1] = 255; img.data[o + 2] = 255; img.data[o + 3] = v;
+      }
+    }
+    c2.putImageData(img, 0, 0);
+    return cv;
   }
 
   /* ---------------- rendering ---------------- */
@@ -281,6 +325,9 @@
         render();
         continue;
       }
+      if (bytes.length > 400 * 1024 * 1024) {
+        toast('文件超过 400MB，网页版可能内存不足；请用桌面版转换', 8000);
+      }
       if (bytes.length > 150 * 1024 * 1024) {
         window.__brushLogs = window.__brushLogs || [];
         window.__brushLogs.push(new Date().toISOString() + ' 大文件 ' + f.name + ' ' + Math.round(bytes.length / 1048576) + 'MB');
@@ -333,7 +380,8 @@
     const grainBake = $('#optGrainBake') ? $('#optGrainBake').value !== 'off' : true;
     const fidelity = $('#optFidelity') ? $('#optFidelity').value !== 'off' : true;
     const textureMode = $('#optTextureMode') ? $('#optTextureMode').value : 'bake';
-    return { tipSize, sizeScale, spacingOverride, pressureMode, prefix, groupBySource, mode, target, packOut, goScatter, grainBake, fidelity, textureMode };
+    const scatterScale = $('#optScatterScale') ? Number($('#optScatterScale').value) / 100 : 0.15;
+    return { tipSize, sizeScale, spacingOverride, pressureMode, prefix, groupBySource, mode, target, packOut, goScatter, grainBake, fidelity, textureMode, scatterScale };
   }
 
   function toast(msg, ms) {
@@ -378,6 +426,8 @@
     const totalBrushes = records.reduce((s, r) => s + r.brushes.filter(b => b.enabled !== false).length, 0);
     if (!records.length || !totalBrushes) { toast('没有可转换的笔刷'); return; }
     state.converting = true;
+    state.cancelRequested = false;
+    if (typeof btnCancel !== 'undefined' && btnCancel) { btnCancel.style.display = ''; btnCancel.disabled = false; }
     render();
     const outFiles = [];
     const failed = [];
@@ -404,25 +454,36 @@
       } catch (e) { warnings.push('纹理导出失败：' + e.message); }
     }
     let commonPat = null;
-    // 图案文件模式：用第一支有真实纹理的笔刷生成一份 .pat，ABR 里写 Txtr 引用它
+    // 图案文件模式：所有带纹理笔刷的纹理去重后打成**一个**多图案 .pat，
+    // ABR 里每支笔刷引用各自纹理对应的图案 id
+    let commonPatRefs = null;
     if (opts.textureMode === 'pattern' && (opts.target === 'abr' || opts.target === 'all')) {
       try {
-        let texBrush = null;
+        const texBrushes = [];
         for (const rec of records) {
           for (const b of rec.brushes) {
-            if (b && b.enabled !== false && b.hasTexture && (b._patternPixels || b._grainRgba)) { texBrush = b; break; }
+            if (b && b.enabled !== false && b.hasTexture) texBrushes.push(b);
           }
-          if (texBrush) break;
         }
-        if (!texBrush) {
+        if (!texBrushes.length) {
           warnings.push('本次没有带纹理的笔刷，未生成 .pat（普通笔刷只需 .abr）');
         } else {
-          const pat = BC.convert.makePatternFile([texBrush], { size: 256 });
-          commonPat = { id: pat.ref.id, name: pat.ref.name };
+          const pat = BC.convert.makePatternFile(texBrushes, { size: 256 });
+          commonPatRefs = pat.refs;
           outFiles.push({ name: '纹理图案_导入PS图案面板.pat', data: pat.bytes });
-          warnings.push('已生成 纹理图案_导入PS图案面板.pat：先在 PS 图案面板导入它，再导入 ABR，纹理才可调');
+          warnings.push('已生成含 ' + pat.count + ' 张纹理的 .pat：先在 PS 图案面板导入它，再导入 ABR，纹理才可调');
         }
       } catch (e) { warnings.push('图案生成失败：' + e.message); }
+    }
+    // 纹理丢失提示：ABR 源保留纹理引用但本次没带 .pat 时，目标 PS 没有同名图案就会没纹理
+    if ((opts.target === 'abr' || opts.target === 'all') && opts.textureMode !== 'pattern') {
+      let refCount = 0;
+      for (const rec of records) {
+        for (const b of rec.brushes) {
+          if (b && b.enabled !== false && b.hasTexture && (b.source === 'abr' || b._rawPreset)) refCount++;
+        }
+      }
+      if (refCount > 0) warnings.push('ABR 里保留了 ' + refCount + ' 支笔刷的纹理引用：目标 Photoshop 需要先有同名图案，否则纹理不显示（高级设置改「纹理处理=图案文件」可自动附带 .pat）');
     }
     const ALL_FORMATS = ['bru', 'abr', 'gopaint', 'gopaint_set', 'gopaint_abr', 'brushset', 'brush', 'gbr', 'gih',
       'myb', 'kbundle', 'sai2', 'png', 'painter', 'medibang'];
@@ -446,14 +507,19 @@
         pressure: pressureOpt(),
         pkgId: rec.pkgId,
         scatter: opts.goScatter === 'auto' ? undefined : Number(opts.goScatter),
+        scatterScale: opts.scatterScale,
         noTextureBake: opts.grainBake === false,
-        patternRef: commonPat,
+        patternRefs: commonPatRefs,
         fidelity: opts.fidelity === false ? false : undefined,
         textureMode: opts.textureMode === 'pattern' ? 'pattern' : undefined
       };
     }
 
-    for (const rec of records) {
+    for (let recIdx = 0; recIdx < records.length; recIdx++) {
+      if (state.cancelRequested) { warnings.push('已取消：已转换的部分仍会打包'); break; }
+      const rec = records[recIdx];
+      try { btnConvert.textContent = '转换中 ' + (recIdx + 1) + '/' + records.length + ' …'; } catch (e) { /* ignore */ }
+      await new Promise(function (r) { setTimeout(r, 0); });
       const list = rec.brushes.filter(b => b.enabled !== false);
       if (!list.length) continue;
       const targets = opts.target === 'all' ? ALL_FORMATS : [opts.target || 'bru'];
@@ -604,6 +670,7 @@
     } catch (e) { warnings.push('安装说明/报告生成失败：' + e.message); }
 
     state.converting = false;
+    try { if (typeof btnCancel !== 'undefined' && btnCancel) btnCancel.style.display = 'none'; } catch (e) { /* ignore */ }
       setProgress(null);
       render();
       toast('转换失败：' + (failed[0] || '未知错误'), 6000);
@@ -623,6 +690,7 @@
     setProgress(0.995, opts.packOut === false ? '正在保存文件…' : '正在打包 ZIP…');
     let savedMsg = '';
     try {
+      lastSavedFiles = payload;
       savedMsg = await saveOutputs(payload, { packOut: opts.packOut !== false });
     } catch (e) {
       toast('保存失败：' + (e && e.message ? e.message : e), 7000);
@@ -705,6 +773,8 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
+  const APP_VERSION = '2.5.14';
+  let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {
     return '<h2>公告</h2>' +
@@ -785,6 +855,31 @@
     else toast('当前环境不支持保存日志');
   });
   btnConvert.addEventListener('click', convertAll);
+  var btnCancel = $('#btnCancel');
+  if (btnCancel) btnCancel.addEventListener('click', function () { state.cancelRequested = true; btnCancel.disabled = true; });
+  (async function checkVersion() {
+    try {
+      const r = await fetch('version.json?_=' + Date.now(), { cache: 'no-store' });
+      if (!r.ok) return;
+      const j = await r.json();
+      if (j && j.version && j.version !== APP_VERSION) toast('发现新版本 ' + j.version + '（当前 ' + APP_VERSION + '），刷新页面即可更新', 8000);
+    } catch (e) { /* 离线/本地文件忽略 */ }
+  })();
+  const btnShare = $('#btnShare');
+  if (btnShare) {
+    if (!(navigator.canShare && navigator.share)) btnShare.style.display = 'none';
+    btnShare.addEventListener('click', async function () {
+      if (!lastSavedFiles || !lastSavedFiles.length) { toast('还没有可分享的转换结果'); return; }
+      try {
+        const files = lastSavedFiles.map(function (f) {
+          const data = f.data instanceof Uint8Array ? f.data : new Uint8Array(f.data);
+          return new File([data], f.name, { type: 'application/octet-stream' });
+        });
+        if (navigator.canShare({ files: files })) await navigator.share({ files: files, title: '笔刷转换结果' });
+        else toast('当前浏览器不支持分享文件');
+      } catch (e) { /* 用户取消 */ }
+    });
+  }
   if ($('#optTarget')) $('#optTarget').addEventListener('change', function () { render(); });
   const btnDemo = $('#btnDemo');
   if (btnDemo) btnDemo.addEventListener('click', function (e) { e.stopPropagation(); window.BCDemo.loadSample(); });

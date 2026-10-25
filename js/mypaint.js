@@ -122,11 +122,11 @@
     const opacity = Math.max(0.01, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity));
     const settings = {
       anti_aliasing: setting(1.0),
-      change_color_h: setting(0.0),
-      change_color_hsl_s: setting(0.0),
+      change_color_h: setting(brush.colorDynamicsOn ? Math.max(0, Math.min(1, brush.colorJitterHue || 0)) : 0.0),
+      change_color_hsl_s: setting(brush.colorDynamicsOn ? Math.max(0, Math.min(1, brush.colorJitterSat || 0)) : 0.0),
       change_color_hsv_s: setting(0.0),
       change_color_l: setting(0.0),
-      change_color_v: setting(0.0),
+      change_color_v: setting(brush.colorDynamicsOn ? Math.max(0, Math.min(1, brush.colorJitterVal || 0)) : 0.0),
       color_h: setting(0.0),
       color_s: setting(0.0),
       color_v: setting(0.0),
@@ -153,7 +153,7 @@
       restore_color: setting(0.0),
       slow_tracking: setting(0.0),
       slow_tracking_per_dab: setting(0.0),
-      smudge: setting(0.0),
+      smudge: setting(brush.smudgeOn ? Math.max(0.05, Math.min(1, brush.smudgeAmount === undefined ? 0.4 : brush.smudgeAmount)) : 0.0),
       smudge_length: setting(0.5),
       smudge_radius_log: setting(0.0),
       speed1_gamma: setting(1.0),

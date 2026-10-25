@@ -593,6 +593,13 @@
     xml = setParam(xml, 'CompositeOp', 'normal');
     xml = setParam(xml, 'OpacityValue', opacity.toFixed(3));
     xml = setParam(xml, 'FlowValue', opacity.toFixed(3));
+    if (brush.scatterOn) {
+      xml = setParam(xml, 'ScatterValue', Math.max(0, Math.min(10, (brush.scatterPct || 0) / 100)).toFixed(3));
+      xml = setParam(xml, 'Scatter/Enabled', 'true');
+      xml = setParam(xml, 'Scatter/X', '1');
+      xml = setParam(xml, 'Scatter/Y', brush.scatterBothAxes === false ? '0' : '1');
+      if ((brush.scatterCount || 1) > 1) xml = setParam(xml, 'Scatter/Count', String(Math.round(brush.scatterCount)));
+    }
     if (patternName) {
       xml = setParam(xml, 'Texture/Pattern/Enabled', 'true');
       xml = setParam(xml, 'Texture/Pattern/FileName', patternName);
