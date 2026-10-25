@@ -53,6 +53,13 @@
     try { params = plist.unarchive(arcEntry.data()) || {}; } catch (e) { params = {}; }
     let name = typeof params.name === 'string' ? params.name.trim() : '';
     if (!name || name === '$null') name = '';
+    let subArcEntry = null, subShapeEntry = null;
+    const subArcCandidates = entries.filter(function (e) { return /(^|\/)Sub\d+\/Brush\.archive$/.test(e.name); });
+    if (subArcCandidates.length) {
+      const subPrefix = subArcCandidates[0].name.replace(/Brush\.archive$/, '');
+      subArcEntry = subArcCandidates[0];
+      subShapeEntry = entries.find(function (e) { return e.name === subPrefix + 'Shape.png'; }) || null;
+    }
     const shapeEntry = find('Shape.png');
     const grainEntry = find('Grain.png');
     const tipFromShape = decodeShape(shapeEntry);
@@ -107,9 +114,22 @@
     const pressureRound = nv('dynamicsPressureShapeRoundness');
     const dualBlendMode = Number(params.dualBlendMode) || 0;
     // 散布/数量：Procreate 的 shapeScatter（0~约2，对应 0~200%）、shapeCount（/16 为个数）
+    let brushSubRaw = null;
     const scatterRaw = Number(params.shapeScatter) || 0;
     const shapeCountRaw = Number(params.shapeCount) || 0;
     const countJitterRaw = Number(params.shapeCountJitter) || 0;
+    let dualOn = false, dualTip = null, dualSubName = '', dualBlendNum = 0;
+    if (subArcEntry) {
+      try {
+        const subParams = plist.unarchive(subArcEntry.data()) || {};
+        dualOn = true;
+        dualSubName = typeof subParams.name === 'string' ? subParams.name : '';
+        dualBlendNum = Number(params.dualBlendMode) || 0;
+        if (subShapeEntry) dualTip = decodeShape(subShapeEntry);
+        if (!dualTip) dualTip = roundTip(96);
+        brushSubRaw = { archive: subArcEntry.data(), shape: subShapeEntry ? subShapeEntry.data() : null };
+      } catch (e) { /* ignore */ }
+    }
     const scatterPct = Math.max(0, Math.min(1000, scatterRaw * 100));
     const scatterCount = shapeCountRaw > 0.001 ? Math.max(2, Math.round(shapeCountRaw * 16)) : 1;
     return {
@@ -126,6 +146,12 @@
       minSizeRatio,
       minOpacityRatio,
       procreateDualBlendMode: dualBlendMode,
+      dualOn: dualOn || undefined,
+      dualTip: dualTip || undefined,
+      dualBlendMode: dualBlendNum || undefined,
+      dualBrush: dualOn ? { enabled: true, name: dualSubName, blend: dualBlendNum, diameter: undefined } : undefined,
+      _rawSubArchive: brushSubRaw ? brushSubRaw.archive : undefined,
+      _rawSubShape: brushSubRaw ? brushSubRaw.shape : undefined,
       pressure: pressSize > 0.05 || pressOpacity > 0.05,
       pressureSize: pressSize > 0.05,
       pressureOpacity: pressOpacity > 0.05,
@@ -408,6 +434,12 @@
       dynamicsJitterSaturation: Math.max(0, Math.min(1, brush.colorJitterSat || 0)),
       dynamicsJitterLightness: Math.max(0, Math.min(1, brush.colorJitterVal || 0)),
       blendMode: 0,
+      dualBlendMode: (function () {
+        if (typeof brush.dualBlendMode === 'number') return brush.dualBlendMode;
+        const nm = String(brush.dualBlendMode || (brush.dualBrush && brush.dualBrush.blend) || '').toLowerCase().replace(/[^a-z]/g, '');
+        const map = { nrml: 0, drkn: 1, mltp: 2, cbrn: 3, linearburn: 4, lghn: 5, scrn: 6, hmix: 7, hardmix: 7, ovrl: 8, sftl: 9, hrdl: 10 };
+        return map[nm] || 0;
+      })(),
       importedFromABR: brush.source === 'abr',
       name: brush.name || 'brush'
     });
@@ -426,6 +458,10 @@
       const entries = [{ name: 'Brush.archive', data: new Uint8Array(brush._rawArchive) }];
       if (brush._rawShape) entries.push({ name: 'Shape.png', data: new Uint8Array(brush._rawShape) });
       if (brush._rawGrain) entries.push({ name: 'Grain.png', data: new Uint8Array(brush._rawGrain) });
+      if (brush._rawSubArchive) {
+        entries.push({ name: 'Sub01/Brush.archive', data: new Uint8Array(brush._rawSubArchive) });
+        if (brush._rawSubShape) entries.push({ name: 'Sub01/Shape.png', data: new Uint8Array(brush._rawSubShape) });
+      }
       let tipRaw = brush._rawShape ? decodeShape({ data: () => new Uint8Array(brush._rawShape) }) : null;
       if (!tipRaw) tipRaw = roundTip(brush.sizePx || 128);
       entries.push({ name: 'QuickLook/Thumbnail.png', data: thumbPng(tipRaw, { spacingPct: brush.spacingPct, opacity: brush.opacity }) });
@@ -444,6 +480,24 @@
     if (brush.hasTexture && !opts.noTextureBake) {
       entries.push({ name: 'Grain.png', data: grainPng(brush) });
     }
+    if (brush.dualOn && brush.dualTip) {
+      const subArchive = buildArchive(Object.assign({}, brush, {
+        name: (brush.dualBrush && brush.dualBrush.name) || (brush.name + ' 2'),
+        dualOn: false
+      }), opts);
+      entries.push({ name: 'Sub01/Brush.archive', data: subArchive });
+      let dtip = brush.dualTip;
+      if (dtip && !dtip.rgba && dtip.data) {
+        const bpp = dtip.bpp || 1;
+        const rgba = new Uint8Array(dtip.w * dtip.h * 4);
+        for (let i = 0; i < dtip.w * dtip.h; i++) {
+          const a = bpp >= 3 ? Math.max(dtip.data[i * bpp], dtip.data[i * bpp + 1], dtip.data[i * bpp + 2]) : dtip.data[i];
+          rgba[i * 4] = 255; rgba[i * 4 + 1] = 255; rgba[i * 4 + 2] = 255; rgba[i * 4 + 3] = a;
+        }
+        dtip = { w: dtip.w, h: dtip.h, rgba: rgba };
+      }
+      if (dtip && dtip.rgba) entries.push({ name: 'Sub01/Shape.png', data: shapePng(dtip, opts.maxTipSize || 512).png });
+    }
     return zip.write(entries);
   }
 
@@ -457,6 +511,10 @@
         files.push({ name: folder + 'Brush.archive', data: new Uint8Array(brush._rawArchive) });
         if (brush._rawShape) files.push({ name: folder + 'Shape.png', data: new Uint8Array(brush._rawShape) });
         if (brush._rawGrain) files.push({ name: folder + 'Grain.png', data: new Uint8Array(brush._rawGrain) });
+        if (brush._rawSubArchive) {
+          files.push({ name: folder + 'Sub01/Brush.archive', data: new Uint8Array(brush._rawSubArchive) });
+          if (brush._rawSubShape) files.push({ name: folder + 'Sub01/Shape.png', data: new Uint8Array(brush._rawSubShape) });
+        }
         let tp = brush._rawShape ? decodeShape({ data: () => new Uint8Array(brush._rawShape) }) : null;
         if (!tp) tp = roundTip(brush.sizePx || 128);
         files.push({ name: folder + 'QuickLook/Thumbnail.png', data: thumbPng(tp, { spacingPct: brush.spacingPct, opacity: brush.opacity }) });
@@ -472,6 +530,24 @@
       files.push({ name: folder + 'QuickLook/Thumbnail.png', data: thumb });
       if (brush.hasTexture && !opts.noTextureBake) {
         files.push({ name: folder + 'Grain.png', data: grainPng(brush) });
+      }
+      if (brush.dualOn && brush.dualTip) {
+        let dtip = brush.dualTip;
+        if (dtip && !dtip.rgba && dtip.data) {
+          const bpp = dtip.bpp || 1;
+          const rgba = new Uint8Array(dtip.w * dtip.h * 4);
+          for (let k = 0; k < dtip.w * dtip.h; k++) {
+            const a = bpp >= 3 ? Math.max(dtip.data[k * bpp], dtip.data[k * bpp + 1], dtip.data[k * bpp + 2]) : dtip.data[k];
+            rgba[k * 4] = 255; rgba[k * 4 + 1] = 255; rgba[k * 4 + 2] = 255; rgba[k * 4 + 3] = a;
+          }
+          dtip = { w: dtip.w, h: dtip.h, rgba: rgba };
+        }
+        const subArchive = buildArchive(Object.assign({}, brush, {
+          name: (brush.dualBrush && brush.dualBrush.name) || (brush.name + ' 2'),
+          dualOn: false
+        }), opts);
+        files.push({ name: folder + 'Sub01/Brush.archive', data: subArchive });
+        if (dtip && dtip.rgba) files.push({ name: folder + 'Sub01/Shape.png', data: shapePng(dtip, opts.maxTipSize || 512).png });
       }
     });
     if (!files.length) throw new Error('没有可写入 Procreate 的笔刷（都缺少笔尖图像）');

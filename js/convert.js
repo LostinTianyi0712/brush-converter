@@ -693,6 +693,7 @@
     brushList.forEach(function (brush, i) {
       let tipImg = tipToRGBA(brush);
       if (!tipImg) tipImg = synthTip(brush, 256, opts);
+      if (brush.source !== 'abr' && brush.dualOn && brush.dualTip && opts.dualBake !== false) tipImg = bakeDualTip(tipImg, brush);
       if (brush.source === 'abr') tipImg = bakeTipTransform(tipImg, brush);
       const maxTip = Math.max(64, Math.min(2048, opts.maxTipSize || 512));
       let w = tipImg.w, h = tipImg.h, rgba = tipImg.rgba;
