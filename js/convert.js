@@ -951,7 +951,12 @@
 
   /** Brush list -> Corel Painter .brushcategory XML (heuristic). */
   function makePainter(brushList, opts, name) {
-    return { bytes: genericBrush.writePainter(brushList, name || 'BrushConv'), count: brushList.length };
+    const painter = isNode ? require('./painterlib.js') : root.BC.painterlib;
+    try {
+      return { bytes: painter.writeLibrary(brushList, name || 'BrushConv'), count: brushList.length };
+    } catch (e) {
+      return { bytes: genericBrush.writePainter(brushList, name || 'BrushConv'), count: brushList.length };
+    }
   }
 
   /** Brush list -> MediBang .mdp (heuristic zip). */
