@@ -110,7 +110,8 @@
         category: category,
         tip: tip,
         source: 'painter',
-        _painterPath: path
+        _painterPath: path,
+        _painterRaw: { xml: files[path], nib: files[nibPath] || null, category: category }
       }, params, { name: base, category: category, tip: tip }));
     }
     return {
@@ -185,10 +186,17 @@
     brushes.forEach(function (b, i) {
       const nm = String(b.name || ('brush' + (i + 1))).replace(/[\/:*?"<>|]/g, '_');
       const dir = (i + 1) + ' ' + cat;
-      files.push({ name: dir + '/' + nm + '.xml', data: util.utf8Encode(brushXml(b)) });
-      if (b.tip && b.tip.rgba) {
-        const img = { w: b.tip.w, h: b.tip.h, rgba: b.tip.rgba };
-        files.push({ name: dir + '/' + nm + '_tip.png', data: pngMod.encode(img.w, img.h, img.rgba) });
+      const raw = b._painterRaw;
+      if (raw && raw.xml && raw.nib) {
+        // 来自 Painter 库：直接复用原 XML + nib，往返无损
+        files.push({ name: dir + '/' + nm + '.xml', data: raw.xml });
+        files.push({ name: dir + '/' + nm + '.nib', data: raw.nib });
+      } else {
+        files.push({ name: dir + '/' + nm + '.xml', data: util.utf8Encode(brushXml(b)) });
+        if (b.tip && b.tip.rgba) {
+          const img = { w: b.tip.w, h: b.tip.h, rgba: b.tip.rgba };
+          files.push({ name: dir + '/' + nm + '_tip.png', data: pngMod.encode(img.w, img.h, img.rgba) });
+        }
       }
     });
     return zipMod.write(files);

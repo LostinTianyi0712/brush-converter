@@ -1,4 +1,4 @@
-/* 极简 JPEG 解码器（baseline SOF0，8 位，任意采样率）
+﻿/* 极简 JPEG 解码器（baseline SOF0，8 位，任意采样率）
  * 用途：读取 Corel Painter .nib（30×30 JPEG）等小图。
  * 不支持 progressive/算术编码，遇到会抛错，由调用方回退。
  */
@@ -38,8 +38,10 @@
       if (m === 0xdb) {
         while (p < end) {
           const pq = bytes[p] >> 4, tq = bytes[p] & 15; p++;
+          const z = new Uint16Array(64);
+          for (let i = 0; i < 64; i++) z[i] = pq ? u16() : bytes[p++];
           const t = new Uint16Array(64);
-          for (let i = 0; i < 64; i++) t[i] = pq ? u16() : bytes[p++];
+          for (let i = 0; i < 64; i++) t[ZIGZAG[i]] = z[i];
           qt[tq] = t;
         }
       } else if (m === 0xc4) {
