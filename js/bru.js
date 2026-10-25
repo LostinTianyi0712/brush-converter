@@ -40,6 +40,13 @@
     }
     return out;
   }
+  // 画世界Pro 3.0 双笔刷引用消息模板（取自真实双笔刷 BRU 的 f121；只替换前两个 UUID）
+  const DUAL_LINK_TEMPLATE_B64 = 'CiRlMjliODQwOS1iNTE0LTRjODgtYTY0Ny05NDVkNDg0NGI1MzkSJGU1MjJjYTczLWE0NWItNDM1OC1hMmNlLTdlZGNjYTA2YzUxYRoG5bmy5p+TIglpY29ucy95emIoATIFcHQxMzI6BXBzMTE2RR6FB0JNAACwQV0AAIA/ZQAA+kNtAACAP3X1KNw+gAGAgID4//////8BjQEK16M9mAEBrQEAALRCtQEAAIA/vQEAAIA/xQEAAAA/zQEAAIA/1QG4HgU+4AEB6AEB+AEBiAL3//////////8BmALp//////////8BoAIBqAIfyAIB0gIAiAMBlQPMzEw+qAMVwAMByAMB1QMAAMA/2AMCiAQB0AQB3QQAAABB5QQBAABB7QQAAIA/9QQAAIA/+AQBjQUAAIA/kAWs4Lj4//////8BmAUBoAUN0AUBiAYBoAYBrQYAAIA/mAcCwgcWOWU0dXJaWkhTNmFsUlpKVThtb1FHQdAHAd0HUrheP4AIAZ0IAACAP6UIAAC0Q70IAACAP8UImpkZP+gIAYUJAACAP5AJAfUJAAC0Qg==';
+  function dualLinkTemplate() {
+    const bin = isNode ? new Uint8Array(Buffer.from(DUAL_LINK_TEMPLATE_B64, 'base64')) : (function () { const s2 = atob(DUAL_LINK_TEMPLATE_B64); const out = new Uint8Array(s2.length); for (let i = 0; i < s2.length; i++) out[i] = s2.charCodeAt(i); return out; })();
+    return bin;
+  }
+
   function tag(field, wt) { return encVarint(field * 8 + wt); }
   function fVarint(field, v) { return tag(field, 0).concat(encVarint(v)); }
   function fF32(field, v) {
@@ -138,8 +145,20 @@
       parts.push(u8arr(fBytes(120, uuidBytes)));
       if (b.bruDualRefUuid) {
         const u1 = uuidBytes, u2 = util.utf8Encode(b.bruDualRefUuid);
-        const msg = [0x0a, u1.length].concat(Array.from(u1), [0x12, u2.length], Array.from(u2));
-        parts.push(u8arr(fBytes(121, new Uint8Array(msg))));
+        const tpl = (b.bruLinkTemplate && b.bruLinkTemplate.length > 97) ? b.bruLinkTemplate : dualLinkTemplate();
+        const subName = util.utf8Encode(String(b.dualSubName || '第二支笔刷'));
+        const iconPath = util.utf8Encode('icons/yzb');
+        const msgParts = [];
+        msgParts.push(0x0a); msgParts.push(u1.length); msgParts.push.apply(msgParts, Array.from(u1));
+        msgParts.push(0x12); msgParts.push(u2.length); msgParts.push.apply(msgParts, Array.from(u2));
+        msgParts.push(0x1a); msgParts.push(subName.length); msgParts.push.apply(msgParts, Array.from(subName));
+        msgParts.push(0x22); msgParts.push(iconPath.length); msgParts.push.apply(msgParts, Array.from(iconPath));
+        msgParts.push(0x28, 2);
+        const msg = new Uint8Array(msgParts.concat(Array.from(tpl.subarray(97))));
+        parts.push(u8arr(fBytes(121, msg)));
+        // 真实双笔刷文件里还有 f87 / f158，一并写入（经验值，来自样本）
+        parts.push(u8arr(fVarint(87, 9629115)));
+        parts.push(u8arr(fF32(158, 90)));
       }
     }
     if (b.hollowPct !== undefined && b.hollowPct > 0) parts.push(u8arr(fF32(44, Math.max(0, Math.min(0.5, b.hollowPct / 100))))); // 中空度
@@ -410,7 +429,7 @@
       const colorHue = num(o[62], 0), colorSat = num(o[63], 0), colorVal = num(o[64], 0);
       const smoothingStrength = num(o[80], 0.2);                      // 平滑强度（f80）
       // 画世界Pro 3.0 双笔刷：f120=本笔刷 uuid，f121=关联消息（field1 本笔刷，field2 第二支笔刷）
-      let bruUuid = null, bruDualRef = null, bruLinkInfo = null;
+      let bruUuid = null, bruDualRef = null, bruLinkInfo = null, bruLinkTemplate = null;
       try {
         if (o[120] instanceof Uint8Array) bruUuid = util.utf8Decode(o[120]).replace(/ +$/, '');
         if (o[121] instanceof Uint8Array) {
@@ -427,6 +446,7 @@
           if (!bruUuid && u1) bruUuid = u1;
           if (u2 && u2 !== bruUuid) bruDualRef = u2;
           bruLinkInfo = { primary: u1, secondary: u2 };
+          bruLinkTemplate = new Uint8Array(o[121]);
         }
       } catch (e) { /* ignore */ }
       const hollowPct = o[44] === undefined ? undefined : num(o[44], 0.5) * 100;                        // 中空度（f44）
@@ -473,6 +493,7 @@
         bruUuid: bruUuid,
         bruDualRefUuid: bruDualRef,
         bruLinkInfo: bruLinkInfo,
+        bruLinkTemplate: bruLinkTemplate,
         hollowPct: hollowPct,
         antialiasLevel: antialiasLevel,
         borderOn: borderOn,

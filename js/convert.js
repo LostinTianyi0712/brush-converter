@@ -429,6 +429,7 @@
     const info = brush.dualBrush || {};
     const secUuid = genUuid();
     const priUuid = genUuid();
+    const pkgUuid = genUuid();
     const sec = Object.assign({}, brush, {
       name: (brush.name || 'brush') + ' · 双笔刷第二支',
       tip: tip,
@@ -443,21 +444,25 @@
       dualTip: undefined,
       dualBrush: undefined,
       bruUuid: secUuid,
-      bruDualRefUuid: null
+      bruDualRefUuid: null,
+      pkgId: pkgUuid
     });
     const primary = Object.assign({}, brush, {
       bruUuid: priUuid,
-      bruDualRefUuid: secUuid,
+      bruDualRefUuid: pkgUuid,
+      dualSubName: (brush.name || 'brush') + ' · 双笔刷第二支',
+      pkgId: pkgUuid,
       dualOn: false,
       dualTip: undefined
     });
-    return { primary: primary, secondary: sec, primaryUuid: priUuid, secondaryUuid: secUuid };
+    return { primary: primary, secondary: sec, primaryUuid: priUuid, secondaryUuid: secUuid, pkgUuid: pkgUuid };
   }
 
   function makeBruDualPair(brush, opts) {
     const pair = buildBruDualPairBrushes(brush);
     if (!pair) return null;
-    const made = makeBruPack([pair.primary, pair.secondary], opts);
+    const opts2 = Object.assign({}, opts, { pkgId: (opts && opts.pkgId) || genUuid() });
+    const made = makeBruPack([pair.primary, pair.secondary], opts2);
     return { bytes: made.bytes, count: 2, primaryUuid: pair.primaryUuid, secondaryUuid: pair.secondaryUuid };
   }
 
@@ -550,6 +555,7 @@
       colorJitterVal: brush.colorJitterVal,
       bruUuid: brush.bruUuid,
       bruDualRefUuid: brush.bruDualRefUuid,
+      bruLinkTemplate: brush.bruLinkTemplate,
       _rawMeta: opts.fidelity !== false ? brush._rawMeta : undefined
     };
     const bytes = bru.writeBrush(Object.assign({ png: pngBytes }, meta), opts);
