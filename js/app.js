@@ -588,14 +588,14 @@
     progressEl.querySelector('.ptext').textContent = text || '';
   }
 
-  async function convertAllOnce(sink) {
-    if (state.converting) return;
+  async function convertAllOnce(sink, force) {
+    if (state.converting && !force) return;
     const opts = getOpts();
     const records = state.files.filter(r => r.brushes && r.brushes.some(b => b.enabled !== false));
     const totalBrushes = records.reduce((s, r) => s + r.brushes.filter(b => b.enabled !== false).length, 0);
     if (!records.length || !totalBrushes) { toast('没有可转换的笔刷'); return; }
     state.converting = true;
-    state.cancelRequested = false;
+    if (!force) state.cancelRequested = false;
     if (typeof btnCancel !== 'undefined' && btnCancel) { btnCancel.style.display = ''; btnCancel.disabled = false; }
     render();
     const outFiles = [];
@@ -901,7 +901,7 @@
     if (sink) {
       // 分批模式：只把这一批的结果交出去，由外层统一保存
       sink.push({ payload: payload, warnings: warnings.slice(), doneCount: doneCount, failed: failed.slice(), fileCount: outFiles.length });
-      state.converting = false;
+      state.converting = !!force;   // 分批时保持转换中，防止重复点击
       setProgress(null);
       render();
       return;
@@ -967,13 +967,20 @@
     if (chunks.length <= 1) return convertAllOnce(null);
     const orig = state.files;
     const sink = [];
+    state.converting = true;
+    state.cancelRequested = false;
+    if (typeof btnCancel !== 'undefined' && btnCancel) { btnCancel.style.display = ''; btnCancel.disabled = false; }
+    render();
     try {
       for (let i = 0; i < chunks.length; i++) {
+        if (state.cancelRequested) break;
         state.files = chunks[i];
-        await convertAllOnce(sink);
+        await convertAllOnce(sink, true);
       }
     } finally {
       state.files = orig;
+      state.converting = false;
+      if (typeof btnCancel !== 'undefined' && btnCancel) btnCancel.style.display = 'none';
     }
     const all = [];
     sink.forEach(function (r) { r.payload.forEach(function (f) { all.push(f); }); });
@@ -1002,8 +1009,9 @@
     render();
     try {
       lastSavedFiles = all;
-      const savedMsg = await saveOutputs(all, { packOut: true });
-      let msg = '完成：' + sink.length + ' 个包（' + files + ' 个文件，共 ' + done + ' 支笔刷）';
+      const packOutMode = $('#optPack') ? $('#optPack').value !== 'files' : true;
+      const savedMsg = await saveOutputs(all, { packOut: packOutMode });
+      let msg = '完成：' + sink.length + (packOutMode ? ' 个包' : ' 批文件') + '（' + files + ' 个文件，共 ' + done + ' 支笔刷）';
       if (failedCount) msg += '，' + failedCount + ' 支失败';
       toast(msg + (savedMsg ? '｜' + savedMsg : ''), 9000);
       setOutputLocation(savedMsg);

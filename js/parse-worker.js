@@ -1,4 +1,4 @@
-/* 解析 Worker：把大文件解析放到后台线程，避免界面卡死
+﻿/* 解析 Worker：把大文件解析放到后台线程，避免界面卡死
    路径兼容两种布局：
    - 网页版/小工具包：js/parse-worker.js 与 core 文件同目录
    - 开发目录：app/parse-worker.js 与 ../core/*.js
@@ -7,8 +7,9 @@
 var CORE = [
   'pako.min.js', 'util.js', 'zlib.js', 'png.js', 'zip.js', 'plist.js',
   'descriptor.js', 'bplist.js', 'procreateDefaults.js',
-  'sqlite.js', 'csp.js', 'medibang.js', 'infpainter.js', 'gobrush.js', 'gobrushWrite.js',
-  'gimp.js', 'kritaPreview.js', 'sai2.js', 'mypaint.js', 'krita.js', 'genericbrush.js',
+  'sqlite.js', 'csp.js', 'medibang.js', 'medibangIni.js', 'infpainter.js', 'gobrush.js', 'gobrushWrite.js',
+  'gimp.js', 'kritaPreview.js', 'sai2.js', 'sai2read.js', 'mypaint.js', 'krita.js',
+  'jpeg.js', 'jpegEncode.js', 'genericbrush.js', 'painterlib.js',
   'abrUuidPool.js', 'abrPatternTemplate.js', 'pat.js', 'patRead.js', 'abr.js',
   'procreate.js', 'bru.js', 'convert.js'
 ];
