@@ -956,10 +956,14 @@
   /** Brush list -> Corel Painter .brushcategory XML (heuristic). */
   function makePainter(brushList, opts, name) {
     const painter = isNode ? require('./painterlib.js') : root.BC.painterlib;
+    // 没有真实笔尖的笔刷先合成一个，保证每支都能生成 .nib
+    const list = (brushList || []).map(function (b) {
+      try { return withTipRGBA(b, opts || {}); } catch (e) { return b; }
+    });
     try {
-      return { bytes: painter.writeLibrary(brushList, name || 'BrushConv'), count: brushList.length };
+      return { bytes: painter.writeLibrary(list, name || 'BrushConv'), count: list.length };
     } catch (e) {
-      return { bytes: genericBrush.writePainter(brushList, name || 'BrushConv'), count: brushList.length };
+      return { bytes: genericBrush.writePainter(list, name || 'BrushConv'), count: list.length };
     }
   }
 

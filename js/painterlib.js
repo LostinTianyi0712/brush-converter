@@ -176,6 +176,27 @@
 
   function esc(x) { return String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
 
+  /* 把笔尖 alpha 画成 Painter nib 约定：浅灰底 + 深色 dab，再编码成 JPEG */
+  function nibFromTip(tip, size) {
+    let jpegEncode;
+    try { jpegEncode = isNode ? require('./jpegEncode.js') : root.BC.jpegEncode; } catch (e) { return null; }
+    if (!jpegEncode || !tip || !tip.rgba) return null;
+    const n = size || 30;
+    const rgba = new Uint8Array(n * n * 4);
+    const src = tip.rgba, sw = tip.w, sh = tip.h;
+    for (let y = 0; y < n; y++) {
+      for (let x = 0; x < n; x++) {
+        const sx = Math.min(sw - 1, Math.floor(x * sw / n));
+        const sy = Math.min(sh - 1, Math.floor(y * sh / n));
+        const a = src[(sy * sw + sx) * 4 + 3] / 255;
+        const v = Math.round(220 - 220 * a);
+        const o = (y * n + x) * 4;
+        rgba[o] = v; rgba[o + 1] = v; rgba[o + 2] = v; rgba[o + 3] = 255;
+      }
+    }
+    try { return { w: n, h: n, bytes: jpegEncode.encode(n, n, rgba, 60) }; } catch (e) { return null; }
+  }
+
   function writeLibrary(brushes, categoryName) {
     const zipMod = isNode ? require('./zip.js') : root.BC.zip;
     const pngMod = isNode ? require('./png.js') : root.BC.png;
@@ -193,7 +214,9 @@
         files.push({ name: dir + '/' + nm + '.nib', data: raw.nib });
       } else {
         files.push({ name: dir + '/' + nm + '.xml', data: util.utf8Encode(brushXml(b)) });
-        if (b.tip && b.tip.rgba) {
+        const nib = nibFromTip(b.tip, 30);
+        if (nib) files.push({ name: dir + '/' + nm + '.nib', data: nib.bytes });
+        else if (b.tip && b.tip.rgba) {
           const img = { w: b.tip.w, h: b.tip.h, rgba: b.tip.rgba };
           files.push({ name: dir + '/' + nm + '_tip.png', data: pngMod.encode(img.w, img.h, img.rgba) });
         }
@@ -202,7 +225,7 @@
     return zipMod.write(files);
   }
 
-  const api = { isLibraryZip, parseLibrary, parseXml, nibAlpha, writeLibrary, brushXml };
+  const api = { isLibraryZip, parseLibrary, parseXml, nibAlpha, writeLibrary, brushXml, nibFromTip };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { painterlib: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);
