@@ -113,6 +113,12 @@
     const sizeJitV = Math.max(nv('dynamicsJitterSize'), nv('dynamicsTiltSize'));
     const pressureRound = nv('dynamicsPressureShapeRoundness');
     const dualBlendMode = Number(params.dualBlendMode) || 0;
+    const tiltSizeDyn = Math.max(0, Number(params.dynamicsTiltSize) || 0);
+    const tiltOpacityDyn = Math.max(0, Number(params.dynamicsTiltOpacity) || 0);
+    const tiltAngleDyn = Math.max(0, Number(params.dynamicsTiltAngle) || 0);
+    const tiltRoundnessDyn = Math.max(0, Number(params.dynamicsTiltShapeRoundness) || 0);
+    const speedSizeDyn = Math.max(0, Number(params.dynamicsSpeedSize) || 0);
+    const speedOpacityDyn = Math.max(0, Number(params.dynamicsSpeedOpacity) || 0);
     // 散布/数量：Procreate 的 shapeScatter（0~约2，对应 0~200%）、shapeCount（/16 为个数）
     let brushSubRaw = null;
     const scatterRaw = Number(params.shapeScatter) || 0;
@@ -146,6 +152,12 @@
       minSizeRatio,
       minOpacityRatio,
       procreateDualBlendMode: dualBlendMode,
+      tiltSizeDyn: tiltSizeDyn,
+      tiltOpacityDyn: tiltOpacityDyn,
+      tiltAngleDyn: tiltAngleDyn,
+      tiltRoundnessDyn: tiltRoundnessDyn,
+      speedSizeDyn: speedSizeDyn,
+      speedOpacityDyn: speedOpacityDyn,
       dualOn: dualOn || undefined,
       dualTip: dualTip || undefined,
       dualBlendMode: dualBlendNum || undefined,
@@ -420,6 +432,12 @@
       dynamicsPressureSize: brush.pressure && (brush.minSizeRatio === undefined || brush.minSizeRatio < 0.95) ? 1 : 0,
       dynamicsPressureOpacity: brush.pressureOpacity ? 1 : 0,
       dynamicsJitterSize: Math.max(0, Math.min(1, (brush.sizeJitterPct || 0) / 100)),
+      dynamicsTiltSize: Math.max(0, Math.min(1, Math.max(brush.tiltSizeDyn || 0, (brush.tiltJitterPct || 0) / 100, brush.dynamicsControlSize === 3 ? 1 : 0))),
+      dynamicsTiltOpacity: Math.max(0, Math.min(1, Math.max(brush.tiltOpacityDyn || 0, brush.dynamicsControlOpacity === 3 ? 1 : 0))),
+      dynamicsTiltAngle: Math.max(0, Math.min(1, Math.max(brush.tiltAngleDyn || 0, brush.dynamicsControlAngle === 3 ? (brush.angleJitterDeg || 0) / 180 : 0))),
+      dynamicsTiltShapeRoundness: Math.max(0, Math.min(1, Math.max(brush.tiltRoundnessDyn || 0, brush.dynamicsControlRoundness === 3 ? (brush.roundnessJitterPct || 0) / 100 : 0))),
+      dynamicsSpeedSize: Math.max(0, Math.min(1, brush.speedSizeDyn || 0)),
+      dynamicsSpeedOpacity: Math.max(0, Math.min(1, brush.speedOpacityDyn || 0)),
       minOpacity: brush.minOpacityRatio === undefined ? 0 : Math.max(0, Math.min(1, brush.minOpacityRatio)),
       grainDepth: brush.hasTexture ? Math.max(0, Math.min(1, brush.textureDepth === undefined ? (brush.grainStrength === undefined ? 0.6 : brush.grainStrength) : brush.textureDepth)) : 0,
       grainBlendMode: brush.hasTexture ? 0 : 1,

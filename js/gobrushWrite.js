@@ -173,7 +173,7 @@
 
   let EXTRA = null;
   /* 在属性块里写压力曲线 JSON（apply_preference_settings_pressure 的 tag 0x20） */
-  function setPressureCurve(propBytes, curve) {
+  function setPressureCurve(propBytes, curve, allCurveProps) {
     if (!curve || !curve.length) return propBytes;
     const le = function (b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; };
     const json = util.utf8Encode(JSON.stringify(curve));
@@ -198,7 +198,8 @@
           recs.push({ tag: t2, flag: inner[q + 1], payload: inner.subarray(q + 6, q + 6 + l2) });
           q += 6 + l2;
         }
-        if (name === 'apply_preference_settings_pressure') {
+        const match = allCurveProps ? /_PressureCurve$/.test(name) : (name === 'apply_preference_settings_pressure');
+        if (match) {
           const cand = JSON.stringify(curve);
           const newRec = { tag: 0x20, flag: 0xc0, payload: json };
           if (curveIdx >= 0) recs[curveIdx] = newRec;
@@ -258,7 +259,10 @@
     }
     const paramBlock = recordBytes(rec(0, 0xb0, concat(params)));
     let propBytes = patchUuid(b64ToBytes(T.propPayload), T.templateUuid, uuid);
-    if (EXTRA && EXTRA.pressureCurve) propBytes = setPressureCurve(propBytes, EXTRA.pressureCurve);
+    if (EXTRA && EXTRA.pressureCurve) {
+      propBytes = setPressureCurve(propBytes, EXTRA.pressureCurve, false);
+      propBytes = setPressureCurve(propBytes, EXTRA.pressureCurve, true);
+    }
     setPropField(propBytes, 'strokeSpacing', spacing);
     setPropField(propBytes, 'propertiesMaxSize', size);
     // 按原笔刷输出：最小尺寸/最小不透明度/流量/纹理深度都用源笔刷的真实值
@@ -297,7 +301,12 @@
     if (EXTRA.minSizeRatio === undefined) EXTRA.minSizeRatio = brush.minSizeRatio;
     if (EXTRA.minOpacityRatio === undefined) EXTRA.minOpacityRatio = brush.minOpacityRatio;
     if (EXTRA.flowPct === undefined) EXTRA.flowPct = brush.flowPct;
-    if (EXTRA.pressureCurve === undefined) EXTRA.pressureCurve = brush.gopaintPressureCurve;
+    if (EXTRA.pressureCurve === undefined) {
+      EXTRA.pressureCurve = brush.gopaintPressureCurve || (function () {
+        const min = EXTRA.minSizeRatio === undefined ? 0.5 : Math.max(0, Math.min(1, EXTRA.minSizeRatio));
+        return [{ x: 0, y: Math.round(min * 255) }, { x: 255, y: 255 }];
+      })();
+    }
     const uuid = makeUuid();
     const name = String(brush.name || 'brush').slice(0, 40) || 'brush';
     const size = Math.max(1, Math.min(1000, Math.round(brush.sizePx || 40)));

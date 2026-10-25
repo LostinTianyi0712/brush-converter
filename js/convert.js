@@ -618,6 +618,7 @@
   /** 取笔刷纹理的灰度数据（ABR patt 像素优先，其次 Procreate Grain） */
   function textureGray(brush) {
     if (!brush) return null;
+    const inv = !!brush.textureInverted;
     if (brush._patternPixels && brush._patternPixels.w > 0) {
       const pp = brush._patternPixels, w = pp.w, h = pp.h;
       const gray = new Uint8Array(w * h);
@@ -625,6 +626,7 @@
         if (pp.mode === 3) { const o = i * 3; gray[i] = Math.round((pp.data[o] + pp.data[o + 1] + pp.data[o + 2]) / 3); }
         else gray[i] = pp.data[i];
       }
+      if (inv) { for (let i = 0; i < gray.length; i++) gray[i] = 255 - gray[i]; }
       return { w: w, h: h, gray: gray };
     }
     if (brush._grainRgba && brush._grainRgba.w > 0) {

@@ -384,6 +384,7 @@
       const cdBri = desc.unitValue(desc.getItem(preset, 'Brgh'));
       const cdPur = desc.unitValue(desc.getItem(preset, 'purity'));
       const useTexture = desc.getItem(preset, 'useTexture');
+      const textureInverted = desc.getItem(preset, 'InvT') === true;
       const txtrRef = desc.getItem(preset, 'Txtr');
       const texDepth = desc.unitValue(desc.getItem(preset, 'textureDepth'));
       const texScale = desc.unitValue(desc.getItem(preset, 'textureScale'));
@@ -393,7 +394,7 @@
         const j = v && desc.getItem(v, 'jitter');
         return j && j.type === 'unit' ? j.value : 0;
       };
-      let controlSize = null, controlOpacity = null;
+      let controlSize = null, controlOpacity = null, controlAngle = null, controlRoundness = null;
       function readControl(v) {
         if (!v || v.type !== 'descriptor') return null;
         // 2 = Pen Pressure (Photoshop brVr control enum)
@@ -409,6 +410,8 @@
       if (useTipDynamics) {
         controlSize = readControl(szVr);
         controlOpacity = readControl(opVr);
+        controlAngle = readControl(angleVr);
+        controlRoundness = readControl(roundVr);
       }
       const name = desc.getItem(preset, 'Nm  ') || '';
       if (!diameter && tip) diameter = Math.max(tip.w, tip.h);
@@ -427,6 +430,10 @@
         pressureSize,
         pressureOpacity,
         pressure: pressureSize || pressureOpacity,
+        dynamicsControlSize: controlSize,
+        dynamicsControlOpacity: controlOpacity,
+        dynamicsControlAngle: controlAngle,
+        dynamicsControlRoundness: controlRoundness,
         minOpacityRatio: pressureOpacity ? 0.25 : 1,
         flipX: !!(flipX === true || (inner && desc.getItem(inner, 'flipX') === true)),
         flipY: !!(flipY === true || (inner && desc.getItem(inner, 'flipY') === true)),
@@ -447,6 +454,7 @@
         hasTexture: useTexture === true,
         textureDepth: texDepth === undefined ? undefined : texDepth / 100,
         textureScale: texScale === undefined ? undefined : texScale / 100,
+        textureInverted: textureInverted,
         textureName: txtrRef && desc.getItem(txtrRef, 'Nm  ') ? String(desc.getItem(txtrRef, 'Nm  ')).replace(/^.*=/, '') : undefined,
         textureId: txtrRef && desc.getItem(txtrRef, 'Idnt') ? String(desc.getItem(txtrRef, 'Idnt')) : undefined,
         dualBrush: dualInfo,
