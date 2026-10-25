@@ -237,7 +237,7 @@
       head.className = 'file-head';
       head.innerHTML = `
         <div class="fname" title="${esc(rec.name)}">${esc(rec.name)}</div>
-        <div class="badge ${rec.error ? 'err' : (rec.kind || 'parsing')}">${rec.error ? '无法识别' : (rec.kind ? (rec.kindLabel || rec.kind) : '解析中')}</div>
+        <div class="badge ${rec.error ? 'err' : (rec.kind || 'parsing')}">${rec.error ? '无法识别' : (rec.kind ? (rec.kindLabel || rec.kind) : (rec.parsing ? '解析中…' : '待解析'))}</div>
         <div class="fmeta">${rec.sizeBytes ? fmtSize(rec.sizeBytes) : (rec.bytes ? fmtSize(rec.bytes.length) : '')}</div>
         <div class="fmeta">${rec.brushes ? rec.brushes.length + ' 支笔刷' : (rec.error ? '出错' : '解析中…')}${rec.parseMs ? ' · ' + (rec.parseMs >= 1000 ? (rec.parseMs / 1000).toFixed(1) + 's' : rec.parseMs + 'ms') : ''}</div>
         ${rec.brushes && rec.brushes.length ? '<button class="btn tiny ghost selall" title="全选本文件笔刷">全选</button><button class="btn tiny ghost selnone" title="取消本文件笔刷">清空</button>' : ''}
@@ -391,7 +391,8 @@
   async function parseRecord(rec, displayName, bytes, opts) {
     try {
       const big = bytes && bytes.length > 8 * 1024 * 1024;
-      const useWorker = big && window.Worker && /^https?:/.test(location.protocol);
+      // 超大文件不用 Worker：结构化克隆会再复制一份，容易 OOM；改用主线程分块解析（会卡但更省内存）
+      const useWorker = big && bytes.length <= 100 * 1024 * 1024 && window.Worker && /^https?:/.test(location.protocol);
       if (useWorker) {
         try {
           setProgress(0, '后台解析：' + displayName);
@@ -453,49 +454,81 @@
   async function addFiles(fileList) {
     const arr = Array.from(fileList || []);
     for (const f of arr) {
-      const bytes = await readFileBytes(f).catch(() => null);
-      if (!bytes) {
-        const rec = makeRecord(f.name, null);
-        rec.error = '读取文件失败';
-        render();
-        continue;
-      }
-      if (bytes.length > 400 * 1024 * 1024) {
-        toast('文件超过 400MB，网页版可能内存不足；请用桌面版转换', 8000);
-      }
-      if (bytes.length > 150 * 1024 * 1024) {
-        window.__brushLogs = window.__brushLogs || [];
-        window.__brushLogs.push(new Date().toISOString() + ' 大文件 ' + f.name + ' ' + Math.round(bytes.length / 1048576) + 'MB');
-        toast('文件较大（' + Math.round(bytes.length / 1048576) + 'MB），解析可能占用较多内存', 5000);
-      }
-      const kind = BC.convert.detect(f.name, bytes);
-      let opts = null;
-      if (kind === 'sut' && f.path && window.BrushDesktop && window.BrushDesktop.sutDecrypted) {
+      let rec = null;
+      try {
+        const bytes = await readFileBytes(f).catch(function (e) { return null; });
+        if (!bytes) {
+          rec = makeRecord(f.name, null);
+          rec.error = '读取文件失败';
+          render();
+          continue;
+        }
+        const mb = Math.round(bytes.length / 1048576);
+        if (bytes.length > 400 * 1024 * 1024) toast('文件超过 400MB，网页版可能内存不足；若失败请用桌面版', 8000);
+        if (bytes.length > 150 * 1024 * 1024) {
+          window.__brushLogs = window.__brushLogs || [];
+          window.__brushLogs.push(new Date().toISOString() + ' 大文件 ' + f.name + ' ' + mb + 'MB');
+          toast('文件较大（' + mb + 'MB）：正在读取与解析，大文件可能需要 1~2 分钟', 5000);
+        }
+        let kind = null;
         try {
-          const dec = await window.BrushDesktop.sutDecrypted(f.path);
-          if (dec && dec.json) opts = { decrypted: dec };
-        } catch (e) { /* fall back to plain .sut */ }
-      }
-      if (!kind && BC.zip.isZip(bytes)) {
-        await addZip(f.name, bytes, 0);
-        continue;
-      }
-      const rec = makeRecord(f.name, bytes);
-      render();
-      await sleep(0);
-      if (!kind) {
-        rec.error = '无法识别的文件格式（支持 .abr/.bru/.brush/.brushset，或包含笔刷的 ZIP）';
+          kind = BC.convert.detect(f.name, bytes);
+        } catch (e) {
+          kind = null;
+        }
+        let opts = null;
+        if (kind === 'sut' && f.path && window.BrushDesktop && window.BrushDesktop.sutDecrypted) {
+          try {
+            const dec = await window.BrushDesktop.sutDecrypted(f.path);
+            if (dec && dec.json) opts = { decrypted: dec };
+          } catch (e) { /* fall back to plain .sut */ }
+        }
+        if (!kind && BC.zip.isZip(bytes)) {
+          try {
+            setProgress(null, '解压中：' + f.name + (mb > 100 ? '（大压缩包请稍候…）' : ''));
+            await sleep(0);
+            await addZip(f.name, bytes, 0);
+            setProgress(null);
+          } catch (e) {
+            rec = makeRecord(f.name, null);
+            rec.error = friendlyError(e.message) || '压缩包解析失败';
+            render();
+          }
+          continue;
+        }
+        // 先建卡片再解析：大文件解析要一会儿，界面能立刻看到进度
+        rec = makeRecord(f.name, null);
+        rec.sizeBytes = bytes.length;
+        rec.parsing = true;
         render();
-        continue;
+        await sleep(0);
+        if (!kind) {
+          rec.parsing = false;
+          rec.error = '无法识别的文件格式（支持 .abr/.bru/.brush/.brushset/.gobrush/.gbr/.myb/.kray 等，或包含笔刷的 ZIP）';
+          render();
+          continue;
+        }
+        const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+        setProgress(null, '解析中：' + f.name + (mb > 100 ? '（大文件，请稍候…）' : ''));
+        await sleep(0);
+        await parseRecord(rec, f.name, bytes);
+        rec.parsing = false;
+        rec.parseMs = Math.max(1, Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0));
+        setProgress(null);
+        render();
+        await sleep(0);
+      } catch (e) {
+        if (!rec) {
+          try { rec = makeRecord(f.name, null); } catch (e2) { rec = null; }
+        }
+        if (rec) {
+          rec.parsing = false;
+          rec.error = friendlyError(e && e.message ? e.message : String(e));
+          render();
+        }
+        setProgress(null);
+        toast('导入失败：' + (e && e.message ? e.message : e), 6000);
       }
-      const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
-      setProgress(null, '解析中：' + f.name);
-      await sleep(0);
-      await parseRecord(rec, f.name, bytes);
-      rec.parseMs = Math.max(1, Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0));
-      setProgress(null);
-      render();
-      await sleep(0);
     }
   }
 
