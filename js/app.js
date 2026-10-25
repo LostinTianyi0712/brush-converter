@@ -653,8 +653,9 @@
     const scatterScale = $('#optScatterScale') ? Number($('#optScatterScale').value) / 100 : 0.15;
     const autoBatch = $('#optAutoBatch') ? $('#optAutoBatch').value !== '0' : true;
     const dualBake = $('#optDualBake') ? $('#optDualBake').value !== '0' : true;
-    const dualCompanion = $('#optDualCompanion') ? $('#optDualCompanion').value !== '0' : true;
-    return { tipSize, sizeScale, spacingOverride, pressureMode, prefix, groupBySource, mode, target, packOut, goScatter, grainBake, fidelity, textureMode, scatterScale, autoBatch, dualBake, dualCompanion };
+    const dualCompanion = $('#optDualCompanion') ? $('#optDualCompanion').value !== '0' : false;
+    const dualPair = $('#optDualPair') ? $('#optDualPair').value !== '0' : true;
+    return { tipSize, sizeScale, spacingOverride, pressureMode, prefix, groupBySource, mode, target, packOut, goScatter, grainBake, fidelity, textureMode, scatterScale, autoBatch, dualBake, dualCompanion, dualPair };
   }
 
   function toast(msg, ms) {
@@ -900,8 +901,21 @@
                 outFiles.push({ name: uniqueFile(base, '.abr'), data: made.bytes });
               }
             } else {
-              const made = BC.convert.makeBruPack(list, commonOpts(rec));
+              let packList = list;
+              let pairNote = false;
+              if (opts.dualPair !== false && BC.convert.buildBruDualPairBrushes) {
+                packList = [];
+                for (const b of list) {
+                  if (b.dualOn && b.dualTip) {
+                    const pair = BC.convert.buildBruDualPairBrushes(b);
+                    if (pair) { packList.push(pair.primary, pair.secondary); pairNote = true; continue; }
+                  }
+                  packList.push(b);
+                }
+              }
+              const made = BC.convert.makeBruPack(packList, Object.assign({}, commonOpts(rec), { dualBake: false }));
               outFiles.push({ name: uniqueFile(base, '.bru'), data: made.bytes });
+              if (pairNote) warnings.push('画世界3.0 双笔刷：含双笔刷的笔刷已拆成「主笔 + 第二支」，主笔 f121 引用第二支（原生双重笔刷）');
             }
           } catch (e) {
             list.forEach(b => failed.push((b.name || '未命名') + '（.' + fmt + '）：' + e.message));
@@ -927,6 +941,14 @@
           try {
             if (fmt === 'brushset') continue;
             const co = commonOpts(rec);
+            if (fmt === 'bru' && opts.dualPair !== false && b.dualOn && b.dualTip && BC.convert.makeBruDualPair) {
+              const pair = BC.convert.makeBruDualPair(b, co);
+              if (pair) {
+                outFiles.push({ name: folder + uniqueFile(base + '_双笔刷对', '.bru'), data: pair.bytes });
+                warnings.push('双笔刷已输出为「主笔 + 第二支」一对 BRU（画世界3.0 原生双重笔刷）');
+                continue;
+              }
+            }
             const made = fmt === 'abr'
               ? BC.convert.makeAbrPack([b], co)
               : fmt === 'gopaint' ? BC.convert.makeGoPaintBrush(b, co)

@@ -400,6 +400,67 @@
    * Convert one parsed brush to a .bru file.
    * opts: { maxTipSize, sizeScale, spacingOverride, pressure }
    */
+  function genUuid() {
+    const hex = '0123456789abcdef';
+    let out = '';
+    const rnd = util.randomBytes ? util.randomBytes(16) : null;
+    for (let i = 0; i < 16; i++) {
+      const b = rnd ? rnd[i] : Math.floor(Math.random() * 256);
+      if (i === 4 || i === 6 || i === 8 || i === 10) out += '-';
+      out += hex[b >> 4] + hex[b & 15];
+    }
+    return out;
+  }
+
+  function buildBruDualPairBrushes(brush) {
+    const d = brush.dualTip;
+    if (!d || (!d.rgba && !d.data)) return null;
+    let tip;
+    if (d.rgba) tip = { w: d.w, h: d.h, rgba: d.rgba };
+    else {
+      const bpp = d.bpp || 1;
+      const rgba = new Uint8Array(d.w * d.h * 4);
+      for (let i = 0; i < d.w * d.h; i++) {
+        const a = bpp >= 3 ? Math.max(d.data[i * bpp], d.data[i * bpp + 1], d.data[i * bpp + 2]) : d.data[i];
+        rgba[i * 4] = 255; rgba[i * 4 + 1] = 255; rgba[i * 4 + 2] = 255; rgba[i * 4 + 3] = a;
+      }
+      tip = { w: d.w, h: d.h, rgba: rgba };
+    }
+    const info = brush.dualBrush || {};
+    const secUuid = genUuid();
+    const priUuid = genUuid();
+    const sec = Object.assign({}, brush, {
+      name: (brush.name || 'brush') + ' · 双笔刷第二支',
+      tip: tip,
+      sizePx: Math.max(1, Math.round(info.diameter || brush.sizePx || 100)),
+      spacingPct: info.spacing !== undefined ? info.spacing : (brush.spacingPct || 10),
+      opacity: 1,
+      minSizeRatio: 0,
+      minOpacityRatio: 1,
+      angle: info.angle || 0,
+      roundness: info.roundness === undefined ? 100 : info.roundness,
+      dualOn: false,
+      dualTip: undefined,
+      dualBrush: undefined,
+      bruUuid: secUuid,
+      bruDualRefUuid: null
+    });
+    const primary = Object.assign({}, brush, {
+      bruUuid: priUuid,
+      bruDualRefUuid: secUuid,
+      dualOn: false,
+      dualTip: undefined
+    });
+    return { primary: primary, secondary: sec, primaryUuid: priUuid, secondaryUuid: secUuid };
+  }
+
+  function makeBruDualPair(brush, opts) {
+    const pair = buildBruDualPairBrushes(brush);
+    if (!pair) return null;
+    const made = makeBruPack([pair.primary, pair.secondary], opts);
+    return { bytes: made.bytes, count: 2, primaryUuid: pair.primaryUuid, secondaryUuid: pair.secondaryUuid };
+  }
+
   function makeBru(brush, opts) {
     opts = opts || {};
     let tipImg = tipToRGBA(brush);
@@ -487,6 +548,8 @@
       colorJitterHue: brush.colorJitterHue,
       colorJitterSat: brush.colorJitterSat,
       colorJitterVal: brush.colorJitterVal,
+      bruUuid: brush.bruUuid,
+      bruDualRefUuid: brush.bruDualRefUuid,
       _rawMeta: opts.fidelity !== false ? brush._rawMeta : undefined
     };
     const bytes = bru.writeBrush(Object.assign({ png: pngBytes }, meta), opts);
@@ -1467,7 +1530,7 @@ Write-Host 'restart MediBang Paint Pro'
     ];
     const support = {
       abr: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','角度随机','散布','散布数量','纹理深度','锥度','湿边','混色/涂抹','颜色动态','平滑','双笔刷'],
-      bru: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','角度随机','散布','散布数量','纹理深度','锥度','湿边','混色/涂抹','颜色动态','平滑'],
+      bru: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','角度随机','散布','散布数量','纹理深度','锥度','湿边','混色/涂抹','颜色动态','平滑','双笔刷'],
       brushset: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','散布','散布数量','纹理深度','锥度','湿边','混色/涂抹','颜色动态','平滑'],
       brush: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','散布','散布数量','纹理深度','锥度','湿边','混色/涂抹','颜色动态','平滑'],
       kbundle: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','散布','纹理深度','混色/涂抹','颜色动态'],
@@ -1552,7 +1615,7 @@ Write-Host 'restart MediBang Paint Pro'
 
   const MANUAL_ADVICE = {
     abr: '纹理：先在 PS 图案面板导入配套 .pat；双笔刷：本格式原样保留，无需补',
-    bru: '散布：画世界刻度更小，可用「散布换算系数」微调；双笔刷：已按笔尖合成近似',
+    bru: '散布：画世界刻度更小，可用「散布换算系数」微调；双笔刷：默认输出「主笔+第二支」原生对（3.0）',
     brushset: '双笔刷：已合成进笔尖；倾斜/速度动态 Procreate 无对应字段',
     brush: '双笔刷：已合成进笔尖；倾斜/速度动态 Procreate 无对应字段',
     kbundle: '不透明度/流量曲线：在 Krita「画笔设置」里手动调；双笔刷：已合成近似',
@@ -1765,7 +1828,7 @@ Write-Host 'restart MediBang Paint Pro'
     });
   }
 
-  const api = { detect, parseFile, expandArchive, synthTip, makeBru, makeBruPack, makeAbrPack, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
+  const api = { detect, parseFile, expandArchive, synthTip, makeBru, makeBruPack, makeBruDualPair, buildBruDualPairBrushes, makeAbrPack, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { convert: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

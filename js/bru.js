@@ -133,6 +133,15 @@
     }
     parts.push(u8arr(fVarint(79, 1)));                          // TAPEREFFECT
     parts.push(u8arr(fF32(80, b.smoothingStrength === undefined ? 0.2 : Math.max(0, Math.min(1, b.smoothingStrength))))); // SMOOTHSTRENGTH
+    if (b.bruUuid || b.bruDualRefUuid) {
+      const uuidBytes = util.utf8Encode(b.bruUuid || ('bc-' + Date.now().toString(16) + '-0000-0000-0000-000000000000'));
+      parts.push(u8arr(fBytes(120, uuidBytes)));
+      if (b.bruDualRefUuid) {
+        const u1 = uuidBytes, u2 = util.utf8Encode(b.bruDualRefUuid);
+        const msg = [0x0a, u1.length].concat(Array.from(u1), [0x12, u2.length], Array.from(u2));
+        parts.push(u8arr(fBytes(121, new Uint8Array(msg))));
+      }
+    }
     if (b.hollowPct !== undefined && b.hollowPct > 0) parts.push(u8arr(fF32(44, Math.max(0, Math.min(0.5, b.hollowPct / 100))))); // 中空度
     if (b.antialiasLevel) parts.push(u8arr(fVarint(96, Math.max(1, Math.min(3, Math.round(b.antialiasLevel))))));
     if (b.borderOn) {
@@ -400,6 +409,26 @@
       const colorDynOn = !!o[61];                                     // 颜色动态（f61）
       const colorHue = num(o[62], 0), colorSat = num(o[63], 0), colorVal = num(o[64], 0);
       const smoothingStrength = num(o[80], 0.2);                      // 平滑强度（f80）
+      // 画世界Pro 3.0 双笔刷：f120=本笔刷 uuid，f121=关联消息（field1 本笔刷，field2 第二支笔刷）
+      let bruUuid = null, bruDualRef = null, bruLinkInfo = null;
+      try {
+        if (o[120] instanceof Uint8Array) bruUuid = util.utf8Decode(o[120]).replace(/ +$/, '');
+        if (o[121] instanceof Uint8Array) {
+          let q = 0; const d = o[121]; const msg = {};
+          while (q < d.length) {
+            const tag = d[q++];
+            let len = 0, sh = 0;
+            while (q < d.length) { const c = d[q++]; len += (c & 0x7f) * Math.pow(2, sh); if (!(c & 0x80)) break; sh += 7; }
+            if (q + len > d.length) break;
+            msg[tag] = d.subarray(q, q + len); q += len;
+          }
+          const u1 = msg[0x0a] ? util.utf8Decode(msg[0x0a]) : null;
+          const u2 = msg[0x12] ? util.utf8Decode(msg[0x12]) : null;
+          if (!bruUuid && u1) bruUuid = u1;
+          if (u2 && u2 !== bruUuid) bruDualRef = u2;
+          bruLinkInfo = { primary: u1, secondary: u2 };
+        }
+      } catch (e) { /* ignore */ }
       const hollowPct = o[44] === undefined ? undefined : num(o[44], 0.5) * 100;                        // 中空度（f44）
       const antialiasLevel = num(o[96], 0);                           // 抗锯齿（f96）
       const borderOn = !!o[92];                                       // 混边开关（f92）
@@ -441,6 +470,9 @@
         roundness: roundnessPct,
         hardness: hardnessPct / 100,
         smoothingStrength: smoothingStrength,
+        bruUuid: bruUuid,
+        bruDualRefUuid: bruDualRef,
+        bruLinkInfo: bruLinkInfo,
         hollowPct: hollowPct,
         antialiasLevel: antialiasLevel,
         borderOn: borderOn,
