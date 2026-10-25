@@ -231,7 +231,23 @@
       : (allBrushes.length ? '请至少勾选 1 支笔刷' : outText);
   }
 
-  /* 预览绘制排队：503 支时一次性画 canvas 会卡死，这里每帧画少量 */
+  /* 预览绘制排队：只画进入可视区域的卡片，每帧少量 */
+  let previewObserver = null;
+  function observePreview(cv, brush) {
+    if (typeof IntersectionObserver === 'undefined') { schedulePreview(cv, brush); return; }
+    if (!previewObserver) {
+      previewObserver = new IntersectionObserver(function (entries) {
+        for (const en of entries) {
+          if (!en.isIntersecting) continue;
+          const t = en.target;
+          previewObserver.unobserve(t);
+          if (t._brush) schedulePreview(t, t._brush);
+        }
+      }, { rootMargin: '300px 0px' });
+    }
+    cv._brush = brush;
+    previewObserver.observe(cv);
+  }
   let previewQueue = [];
   let previewScheduled = false;
   function schedulePreview(cv, brush) {
@@ -241,7 +257,7 @@
       const run = function () {
         const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
         let n = 0;
-        while (previewQueue.length && n < 6 && (typeof performance === 'undefined' || performance.now() - t0 < 12)) {
+        while (previewQueue.length && n < 3 && (typeof performance === 'undefined' || performance.now() - t0 < 8)) {
           const it = previewQueue.shift();
           try { strokePreview(it.brush, it.cv); } catch (e) { /* 忽略单支失败 */ }
           n++;
@@ -265,6 +281,44 @@
     updateConvertButton();
     refreshSelAllLabel();
     if (typeof updatePrecheck === 'function') { clearTimeout(state._precheckT); state._precheckT = setTimeout(updatePrecheck, 120); }
+  }
+
+  function makeBrushItem(rec, b, bi, fi) {
+    const item = document.createElement('div');
+    item.className = 'brush-item' + (b.enabled === false ? ' off' : '');
+    const tipCv = document.createElement('canvas');
+    tipCv.className = 'tip';
+    tipCv.width = 260; tipCv.height = 96;
+    observePreview(tipCv, b);
+    const info = document.createElement('div');
+    info.className = 'binfo';
+    const tags = [];
+    if (b.pressure) tags.push('<span class="tag">压感</span>');
+    if (b.tipSource === 'synth') tags.push('<span class="tag gray">合成圆头</span>');
+    if (b.hasGrain) tags.push('<span class="tag gray">纹理略</span>');
+    info.innerHTML = '<div class="bname" title="' + esc(b.name) + '">' + (esc(b.name) || '未命名') + '</div>' +
+      '<div class="bparams">尺寸 ' + Math.round(b.sizePx || 0) + 'px · 间距 ' + (b.spacingPct || 0).toFixed(1) + '% · 不透明度 ' +
+      Math.round((b.opacity === undefined ? 1 : b.opacity) * 100) + '% ' + tags.join(' ') + '</div>';
+    const toggle = document.createElement('label');
+    toggle.className = 'tog';
+    toggle.innerHTML = '<input type="checkbox" ' + (b.enabled === false ? '' : 'checked') + '><span>转换</span>';
+    toggle.querySelector('input').onchange = e => {
+      b.enabled = e.target.checked;
+      item.classList.toggle('off', !e.target.checked);
+      updateConvertButton();
+      refreshSelAllLabel();
+    };
+    item.appendChild(tipCv);
+    item.appendChild(info);
+    item.appendChild(toggle);
+    const uiKey = (rec.pkgId || ('f' + fi)) + ':' + bi;
+    state.__brushUI.set(uiKey, { item: item, input: toggle.querySelector('input'), brush: b });
+    return item;
+  }
+
+  function appendBrushItems(grid, rec, fi, start, count) {
+    const end = Math.min(rec.brushes.length, start + count);
+    for (let bi = start; bi < end; bi++) grid.appendChild(makeBrushItem(rec, rec.brushes[bi], bi, fi));
   }
 
   function render() {
@@ -320,38 +374,26 @@
       if (rec.brushes && rec.brushes.length) {
         const grid = document.createElement('div');
         grid.className = 'grid';
-        rec.brushes.forEach((b, bi) => {
-          const item = document.createElement('div');
-          item.className = 'brush-item' + (b.enabled === false ? ' off' : '');
-          const tipCv = document.createElement('canvas');
-          tipCv.className = 'tip';
-          tipCv.width = 260; tipCv.height = 96;
-          schedulePreview(tipCv, b);
-          const info = document.createElement('div');
-          info.className = 'binfo';
-          const tags = [];
-          if (b.pressure) tags.push('<span class="tag">压感</span>');
-          if (b.tipSource === 'synth') tags.push('<span class="tag gray">合成圆头</span>');
-          if (b.hasGrain) tags.push('<span class="tag gray">纹理略</span>');
-          info.innerHTML = `<div class="bname" title="${esc(b.name)}">${esc(b.name) || '未命名'}</div>
-            <div class="bparams">尺寸 ${Math.round(b.sizePx || 0)}px · 间距 ${(b.spacingPct || 0).toFixed(1)}% · 不透明度 ${Math.round((b.opacity === undefined ? 1 : b.opacity) * 100)}% ${tags.join(' ')}</div>`;
-          const toggle = document.createElement('label');
-          toggle.className = 'tog';
-          toggle.innerHTML = `<input type="checkbox" ${b.enabled === false ? '' : 'checked'}><span>转换</span>`;
-          toggle.querySelector('input').onchange = e => {
-            b.enabled = e.target.checked;
-            item.classList.toggle('off', !e.target.checked);
-            updateConvertButton();
-            refreshSelAllLabel();
-          };
-          const uiKey = (rec.pkgId || ('f' + fi)) + ':' + bi;
-          state.__brushUI.set(uiKey, { item: item, input: toggle.querySelector('input'), brush: b });
-          item.appendChild(tipCv);
-          item.appendChild(info);
-          item.appendChild(toggle);
-          grid.appendChild(item);
-        });
+        const LIMIT = 60;
+        appendBrushItems(grid, rec, fi, 0, LIMIT);
         card.appendChild(grid);
+        if (rec.brushes.length > LIMIT) {
+          const more = document.createElement('button');
+          more.className = 'btn ghost show-more';
+          let shown = LIMIT;
+          const upd = function () {
+            more.textContent = '显示更多（已显示 ' + shown + ' / ' + rec.brushes.length + ' 支）';
+            if (shown >= rec.brushes.length) more.style.display = 'none';
+          };
+          upd();
+          more.onclick = function () {
+            const next = Math.min(rec.brushes.length, shown + 80);
+            appendBrushItems(grid, rec, fi, shown, next - shown);
+            shown = next;
+            upd();
+          };
+          card.appendChild(more);
+        }
       }
       filesEl.appendChild(card);
     });
