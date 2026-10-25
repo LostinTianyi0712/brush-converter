@@ -37,7 +37,7 @@
       if (zentries) {
         if (zentries.some(e => /^brush2\.ini$/i.test(e.name.replace(/^.*\//, '')))) return 'mbini_set';
         if (zentries.some(e => /(^|\/)(brushform|brushtex|papertex|scatter|bristle)\.conf$/i.test(e.name))) return 'sai2pack';
-        if (painterlib.isLibraryZip(bytes)) return 'painterlib';
+        if (painterlib.isLibraryZip(bytes)) return 'painter';
         if (zentries.some(e => /Brush\.archive$/i.test(e.name))) return 'procreate';
         if (zentries.some(e => /^paintoppresets\/[^/]+\.kpp$/i.test(e.name))) return 'kbundle';
       }
@@ -205,7 +205,11 @@
     } else if (kind === 'myb') {
       result = mypaint.parseMyb(bytes, name);
     } else if (kind === 'painter') {
-      result = genericBrush.parsePainter(bytes, name);
+      if (zip.isZip(bytes)) {
+        result = painterlib.parseLibrary(bytes, name);
+      } else {
+        result = genericBrush.parsePainter(bytes, name);
+      }
     } else if (kind === 'gobrush') {
       result = gobrush.parse(bytes, name);
     } else if (kind === 'sut') {

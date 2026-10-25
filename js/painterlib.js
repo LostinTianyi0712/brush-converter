@@ -17,7 +17,7 @@
     const hasInner = entries.some(function (e) { return /\.(brushlibrary|brushcategory)$/i.test(e.name); });
     const hasXml = entries.some(function (e) { return /\.xml$/i.test(e.name); });
     const hasNib = entries.some(function (e) { return /\.nib$/i.test(e.name); });
-    return hasInner || (hasXml && hasNib);
+    return hasInner || hasXml || hasNib;
   }
 
   function attr(attrs, name) {
