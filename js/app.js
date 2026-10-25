@@ -149,7 +149,9 @@
   }
 
   /* 纹理遮罩画布（无纹理返回 null） */
+  const textureCache = new WeakMap();
   function textureCanvas(brush) {
+    if (textureCache.has(brush)) return textureCache.get(brush);
     let w = 0, h = 0, get = null;
     if (brush._grainRgba && brush._grainRgba.w) {
       w = brush._grainRgba.w; h = brush._grainRgba.h;
@@ -177,6 +179,7 @@
       }
     }
     c2.putImageData(img, 0, 0);
+    textureCache.set(brush, cv);
     return cv;
   }
 
@@ -228,8 +231,47 @@
       : (allBrushes.length ? '请至少勾选 1 支笔刷' : outText);
   }
 
+  /* 预览绘制排队：503 支时一次性画 canvas 会卡死，这里每帧画少量 */
+  let previewQueue = [];
+  let previewScheduled = false;
+  function schedulePreview(cv, brush) {
+    previewQueue.push({ cv: cv, brush: brush });
+    if (!previewScheduled) {
+      previewScheduled = true;
+      const run = function () {
+        const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+        let n = 0;
+        while (previewQueue.length && n < 6 && (typeof performance === 'undefined' || performance.now() - t0 < 12)) {
+          const it = previewQueue.shift();
+          try { strokePreview(it.brush, it.cv); } catch (e) { /* 忽略单支失败 */ }
+          n++;
+        }
+        if (previewQueue.length) requestAnimationFrame(run);
+        else previewScheduled = false;
+      };
+      requestAnimationFrame(run);
+    }
+  }
+
+  /* 批量选择后只同步已有 DOM，不重建整个列表 */
+  function syncSelectionUI() {
+    if (state.__brushUI) {
+      state.__brushUI.forEach(function (ui) {
+        const on = ui.brush.enabled !== false;
+        ui.input.checked = on;
+        ui.item.classList.toggle('off', !on);
+      });
+    }
+    updateConvertButton();
+    refreshSelAllLabel();
+    if (typeof updatePrecheck === 'function') { clearTimeout(state._precheckT); state._precheckT = setTimeout(updatePrecheck, 120); }
+  }
+
   function render() {
     filesEl.innerHTML = '';
+    previewQueue.length = 0;
+    previewScheduled = false;
+    state.__brushUI = new Map();
     const allBrushes = state.files.reduce((acc, f) => acc.concat(f.brushes || []), []);
     const total = allBrushes.filter(b => b.enabled !== false).length;
     emptyEl.style.display = state.files.length ? 'none' : 'block';
@@ -254,11 +296,11 @@
       };
       if (head.querySelector('.selall')) head.querySelector('.selall').onclick = () => {
         rec.brushes.forEach(b => { b.enabled = true; });
-        render();
+        syncSelectionUI();
       };
       if (head.querySelector('.selnone')) head.querySelector('.selnone').onclick = () => {
         rec.brushes.forEach(b => { b.enabled = false; });
-        render();
+        syncSelectionUI();
       };
       card.appendChild(head);
 
@@ -283,7 +325,8 @@
           item.className = 'brush-item' + (b.enabled === false ? ' off' : '');
           const tipCv = document.createElement('canvas');
           tipCv.className = 'tip';
-          strokePreview(b, tipCv);
+          tipCv.width = 260; tipCv.height = 96;
+          schedulePreview(tipCv, b);
           const info = document.createElement('div');
           info.className = 'binfo';
           const tags = [];
@@ -298,7 +341,11 @@
           toggle.querySelector('input').onchange = e => {
             b.enabled = e.target.checked;
             item.classList.toggle('off', !e.target.checked);
+            updateConvertButton();
+            refreshSelAllLabel();
           };
+          const uiKey = (rec.pkgId || ('f' + fi)) + ':' + bi;
+          state.__brushUI.set(uiKey, { item: item, input: toggle.querySelector('input'), brush: b });
           item.appendChild(tipCv);
           item.appendChild(info);
           item.appendChild(toggle);
@@ -1079,7 +1126,7 @@
       if (!all.length) { toast('还没有可选的笔刷'); return; }
       const anyOff = all.some(b => b.enabled === false);
       all.forEach(b => { b.enabled = anyOff ? true : false; });
-      render();
+      syncSelectionUI();
       toast(anyOff ? ('已全选 ' + all.length + ' 支笔刷') : '已取消全选');
     };
   }
