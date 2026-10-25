@@ -25,31 +25,32 @@
 
   function detect(name, bytes) {
     const lower = (name || '').toLowerCase();
+    const safe = function (fn) { try { return !!fn(); } catch (e) { return false; } };
     if (/\.params\.json$/.test(lower)) return 'csp-decrypted';
-    if (medibangIni.isIni(bytes)) return 'mbini';
-    if (sai2read.isToolnrm(bytes)) return 'sai2tool';
+    if (medibangIni && safe(function () { return medibangIni.isIni(bytes); })) return 'mbini';
+    if (sai2read && safe(function () { return sai2read.isToolnrm(bytes); })) return 'sai2tool';
     if (sai2read.isBrushIni(bytes)) return 'sai2ini';
-    if (bru.isBru(bytes)) return 'bru';
-    if (csp.isSut(bytes)) return 'sut';
-    if (gobrush.isGobrush(lower)) return 'gobrush';
-    if (zip.isZip(bytes)) {
+    if (bru && safe(function () { return bru.isBru(bytes); })) return 'bru';
+    if (csp && safe(function () { return csp.isSut(bytes); })) return 'sut';
+    if (gobrush && safe(function () { return gobrush.isGobrush(lower); })) return 'gobrush';
+    if (zip && safe(function () { return zip.isZip(bytes); })) {
       let zentries = null;
       try { zentries = zip.read(bytes); } catch (e) { /* ignore */ }
       if (zentries) {
         if (zentries.some(e => /^brush2\.ini$/i.test(e.name.replace(/^.*\//, '')))) return 'mbini_set';
         if (zentries.some(e => /(^|\/)(brushform|brushtex|papertex|scatter|bristle)\.conf$/i.test(e.name))) return 'sai2pack';
-        if (painterlib.isLibraryZip(bytes)) return 'painter';
+        if (painterlib && safe(function () { return painterlib.isLibraryZip(bytes); })) return 'painter';
         if (zentries.some(e => /Brush\.archive$/i.test(e.name))) return 'procreate';
         if (zentries.some(e => /^paintoppresets\/[^/]+\.kpp$/i.test(e.name))) return 'kbundle';
       }
       return null;
     }
     if (bytes && bytes.length > 10 && bytes[0] === 0x38 && bytes[1] === 0x42 && bytes[2] === 0x50 && bytes[3] === 0x54) return 'pat';
-    if (abr.isAbr(bytes)) return 'abr';
-    if (krita.isKpp(bytes)) return 'kpp';
-    if (gimp.isGbr(bytes)) return /.gih$/i.test(lower) ? 'gih' : 'gbr';
-    if (mypaint.isMyb(bytes)) return 'myb';
-    if (genericBrush.isPainterXml(bytes)) return 'painter';
+    if (abr && safe(function () { return abr.isAbr(bytes); })) return 'abr';
+    if (krita && safe(function () { return krita.isKpp(bytes); })) return 'kpp';
+    if (gimp && safe(function () { return gimp.isGbr(bytes); })) return /.gih$/i.test(lower) ? 'gih' : 'gbr';
+    if (mypaint && safe(function () { return mypaint.isMyb(bytes); })) return 'myb';
+    if (genericBrush && safe(function () { return genericBrush.isPainterXml(bytes); })) return 'painter';
     // extension fallbacks
     if (lower.endsWith('.abr')) return 'abr';
     if (lower.endsWith('.bru')) return 'bru';

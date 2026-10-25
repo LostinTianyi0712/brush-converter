@@ -504,7 +504,7 @@
         await sleep(0);
         if (!kind) {
           rec.parsing = false;
-          rec.error = '无法识别的文件格式（支持 .abr/.bru/.brush/.brushset/.gobrush/.gbr/.myb/.kray 等，或包含笔刷的 ZIP）';
+          rec.error = '无法识别的文件格式（支持 .abr/.bru/.brush/.brushset/.gobrush/.gbr/.gih/.myb/.kpp/.bundle/.brushcategory、toolnrm 等，或包含笔刷的 ZIP）';
           render();
           continue;
         }
