@@ -653,7 +653,8 @@
     const scatterScale = $('#optScatterScale') ? Number($('#optScatterScale').value) / 100 : 0.15;
     const autoBatch = $('#optAutoBatch') ? $('#optAutoBatch').value !== '0' : true;
     const dualBake = $('#optDualBake') ? $('#optDualBake').value !== '0' : true;
-    return { tipSize, sizeScale, spacingOverride, pressureMode, prefix, groupBySource, mode, target, packOut, goScatter, grainBake, fidelity, textureMode, scatterScale, autoBatch, dualBake };
+    const dualCompanion = $('#optDualCompanion') ? $('#optDualCompanion').value !== '0' : true;
+    return { tipSize, sizeScale, spacingOverride, pressureMode, prefix, groupBySource, mode, target, packOut, goScatter, grainBake, fidelity, textureMode, scatterScale, autoBatch, dualBake, dualCompanion };
   }
 
   function toast(msg, ms) {
@@ -806,7 +807,23 @@
       await new Promise(function (r) { setTimeout(r, 0); });
       const list = rec.brushes.filter(b => b.enabled !== false);
       if (!list.length) continue;
+      if (list.some(function (b) { return b.procreateDualBlendMode > 0; }) && opts.target !== 'brush' && opts.target !== 'brushset') {
+        warnings.push('Procreate 双笔刷（dualBlendMode>0）无法完整映射：第二支笔刷字段无公开样本，只按主笔尖转换');
+      }
       const targets = opts.target === 'all' ? ALL_FORMATS : [opts.target || 'bru'];
+      if (opts.dualCompanion !== false && targets.indexOf('bru') >= 0) {
+        const dualList = list.filter(function (b) { return b.dualOn; });
+        if (dualList.length) {
+          try {
+            const made = BC.convert.makeAbrPack(dualList, Object.assign({}, commonOpts(rec), { maxTipSize: opts.tipSize }));
+            outFiles.push({ name: '双笔刷_可直接导入画世界Pro3.0.abr', data: made.bytes });
+            warnings.push('含 ' + dualList.length + ' 支双笔刷：已额外附带 .abr（画世界Pro 3.0 可直接导入，保留原生双重笔刷）');
+          } catch (e) { warnings.push('双笔刷 ABR 附带失败：' + e.message); }
+        }
+      }
+      if ((opts.target === 'brush' || opts.target === 'brushset') && list.some(function (b) { return b.dualOn; })) {
+        warnings.push('Procreate 支持双笔刷，但 .brush 的第二支笔刷字段尚无公开样本；本次已把第二支笔尖合成进 Shape（近似）。如需原生，请提供一份 Procreate 双笔刷文件');
+      }
       if (opts.target === 'all' && opts.mode === 'pack') {
         warnings.push('全部格式：会生成 ' + ALL_FORMATS.length + ' 种格式，文件较多，请耐心等待');
       }

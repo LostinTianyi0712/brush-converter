@@ -105,6 +105,7 @@
     const briDyn = Math.max(nv('dynamicsPressureBrightness'), nv('dynamicsJitterLightness'), nv('dynamicsJitterStrokeLightness'));
     const sizeJitV = Math.max(nv('dynamicsJitterSize'), nv('dynamicsTiltSize'));
     const pressureRound = nv('dynamicsPressureShapeRoundness');
+    const dualBlendMode = Number(params.dualBlendMode) || 0;
     // 散布/数量：Procreate 的 shapeScatter（0~约2，对应 0~200%）、shapeCount（/16 为个数）
     const scatterRaw = Number(params.shapeScatter) || 0;
     const shapeCountRaw = Number(params.shapeCount) || 0;
@@ -124,6 +125,7 @@
       opacity,
       minSizeRatio,
       minOpacityRatio,
+      procreateDualBlendMode: dualBlendMode,
       pressure: pressSize > 0.05 || pressOpacity > 0.05,
       pressureSize: pressSize > 0.05,
       pressureOpacity: pressOpacity > 0.05,
