@@ -555,7 +555,7 @@
     progressEl.querySelector('.ptext').textContent = text || '';
   }
 
-  async function convertAll() {
+  async function convertAllOnce(sink) {
     if (state.converting) return;
     const opts = getOpts();
     const records = state.files.filter(r => r.brushes && r.brushes.some(b => b.enabled !== false));
@@ -865,6 +865,14 @@
         payload = [{ name: '画世界笔刷_' + stamp + '.zip', data: BC.zip.write(outFiles) }];
       }
     }
+    if (sink) {
+      // 分批模式：只把这一批的结果交出去，由外层统一保存
+      sink.push({ payload: payload, warnings: warnings.slice(), doneCount: doneCount, failed: failed.slice(), fileCount: outFiles.length });
+      state.converting = false;
+      setProgress(null);
+      render();
+      return;
+    }
     setProgress(0.995, opts.packOut === false ? '正在保存文件…' : '正在打包 ZIP…');
     let savedMsg = '';
     try {
@@ -890,6 +898,85 @@
     if (warnings.length) msg += '｜' + warnings[0] + (warnings.length > 1 ? ' 等 ' + warnings.length + ' 条提示' : '');
     toast(msg + (savedMsg ? '｜' + savedMsg : ''), 9000);
     setOutputLocation(savedMsg);
+  }
+
+  /* 每 N 支一个包 */
+  function buildBrushChunks(n) {
+    const flat = [];
+    state.files.forEach(function (rec, ri) {
+      const list = (rec.brushes || []).filter(function (b) { return b && b.enabled !== false; });
+      list.forEach(function (b) { flat.push({ ri: ri, b: b }); });
+    });
+    if (!flat.length) return [];
+    const chunks = [];
+    for (let i = 0; i < flat.length; i += n) {
+      const slice = flat.slice(i, i + n);
+      const byRec = new Map();
+      slice.forEach(function (it) {
+        if (!byRec.has(it.ri)) byRec.set(it.ri, { rec: state.files[it.ri], brushes: [] });
+        byRec.get(it.ri).brushes.push(it.b);
+      });
+      const records = [];
+      byRec.forEach(function (v) {
+        records.push(Object.assign({}, v.rec, { brushes: v.brushes }));
+      });
+      chunks.push(records);
+    }
+    return chunks;
+  }
+
+  async function convertAll() {
+    if (state.converting) return;
+    const sel = $('#optBatchN');
+    const n = sel ? Number(sel.value) || 0 : 0;
+    if (n <= 0) return convertAllOnce(null);
+    const chunks = buildBrushChunks(n);
+    if (chunks.length <= 1) return convertAllOnce(null);
+    const orig = state.files;
+    const sink = [];
+    try {
+      for (let i = 0; i < chunks.length; i++) {
+        state.files = chunks[i];
+        await convertAllOnce(sink);
+      }
+    } finally {
+      state.files = orig;
+    }
+    const all = [];
+    sink.forEach(function (r) { r.payload.forEach(function (f) { all.push(f); }); });
+    // 同名 ZIP 加序号
+    const seen = new Map();
+    all.forEach(function (f) {
+      const key = f.name;
+      const k = (seen.get(key) || 0) + 1;
+      seen.set(key, k);
+      if (k > 1) {
+        const m = f.name.match(/^(.*?)(\.[^.]+)$/);
+        if (m) f.name = m[1] + '_' + k + m[2];
+      }
+    });
+    const warns = [];
+    let done = 0, failedCount = 0, files = 0;
+    sink.forEach(function (r) {
+      r.warnings.forEach(function (w) { if (warns.indexOf(w) < 0) warns.push(w); });
+      done += r.doneCount || 0;
+      failedCount += (r.failed || []).length;
+      files += r.fileCount || 0;
+    });
+    if (warns.length) toast(warns[0], 6000);
+    state.converting = false;
+    setProgress(null);
+    render();
+    try {
+      lastSavedFiles = all;
+      const savedMsg = await saveOutputs(all, { packOut: true });
+      let msg = '完成：' + sink.length + ' 个包（' + files + ' 个文件，共 ' + done + ' 支笔刷）';
+      if (failedCount) msg += '，' + failedCount + ' 支失败';
+      toast(msg + (savedMsg ? '｜' + savedMsg : ''), 9000);
+      setOutputLocation(savedMsg);
+    } catch (e) {
+      toast('保存失败：' + (e && e.message ? e.message : e), 7000);
+    }
   }
 
   /* Output saving is delegated to the environment adapter (window.BCSaver):

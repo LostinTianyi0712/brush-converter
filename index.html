@@ -100,6 +100,16 @@
           </select>
         </div>
         <div class="opt">
+          <label>每 N 支一个包</label>
+          <select id="optBatchN">
+            <option value="0" selected>不拆分（全部一个包）</option>
+            <option value="20">20 支/包</option>
+            <option value="50">50 支/包</option>
+            <option value="100">100 支/包</option>
+            <option value="200">200 支/包</option>
+          </select>
+        </div>
+        <div class="opt">
           <label>大输出自动分卷（>200MB）</label>
           <select id="optAutoBatch">
             <option value="1" selected>是（自动拆成多个 ZIP）</option>

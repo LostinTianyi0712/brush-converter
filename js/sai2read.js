@@ -1,4 +1,4 @@
-/* PaintTool SAI 2 素材/笔刷读取
+﻿/* PaintTool SAI 2 素材/笔刷读取
  *  - init 素材包：brushform.conf / brushtex.conf / papertex.conf / scatter.conf / bristle.conf
  *    每行 "序号,文件夹\文件.bmp"，纹理解码为笔尖/纹理
  *  - 笔刷 ini（scatter 笔刷）：[Parameters] 里的 Density / AngleControl / Angle / Blur ... 
@@ -133,6 +133,71 @@
     };
   }
 
+  /* SAI2 笔刷预设文件（toolnrm）：INI 结构，每条笔刷一组 key=value
+    参考字段：id/name/desc/brpat_vsbpos/brwav/drawmode/bri/depth/f_prs2dp/f_prs2sz/
+             prsfeel/szmin/dpmin/dpmax/quality/blend/water/stretch/bfval/txval/
+             brfnam/texnam/brsize/brsizesc/smooth/edgehdns */
+  function isToolnrm(bytes) {
+    if (!bytes || bytes.length < 40 || bytes.length > 4 * 1024 * 1024) return false;
+    const head = util.utf8Decode(bytes.subarray(0, Math.min(bytes.length, 8192)));
+    return /brsize\s*=/.test(head) && /(szmin|depth|drawmode)\s*=/.test(head);
+  }
+
+  function parseToolnrm(bytes) {
+    const text = util.utf8Decode(bytes);
+    const lines = text.split(String.fromCharCode(10));
+    const records = [];
+    let cur = {};
+    let started = false;
+    const flush = function () {
+      if (started && Object.keys(cur).length) records.push(cur);
+      cur = {};
+      started = false;
+    };
+    for (const raw of lines) {
+      const t = raw.trim();
+      if (!t) { flush(); continue; }
+      if (t.charAt(0) === ';' || t.charAt(0) === '#') continue;
+      if (t.charAt(0) === '[') { flush(); started = true; cur.__section = t.slice(1, -1); continue; }
+      const eq = t.indexOf('=');
+      if (eq < 0) continue;
+      started = true;
+      cur[t.slice(0, eq).trim()] = t.slice(eq + 1).trim();
+    }
+    flush();
+    const brushes = [];
+    let idx = 0;
+    for (const r of records) {
+      if (r.name === undefined && r.brsize === undefined) continue;
+      idx++;
+      const size = Math.max(1, Math.min(5000, Number(r.brsize) || Number(r.brsizesc) || 30));
+      const szmin = Number(r.szmin);
+      const depth = Number(r.depth);
+      brushes.push({
+        name: r.name || ('SAI2 ' + idx),
+        tip: null,
+        sizePx: Math.round(size),
+        spacingPct: 10,
+        opacity: isFinite(depth) ? Math.max(0.01, Math.min(1, depth / 100)) : 1,
+        minSizeRatio: isFinite(szmin) ? Math.max(0, Math.min(1, szmin / 100)) : 0,
+        minOpacityRatio: Number(r.dpmin) ? Math.max(0, Math.min(1, Number(r.dpmin) / 100)) : 0,
+        pressureSize: r.f_prs2sz === '1',
+        pressureOpacity: r.f_prs2dp === '1',
+        hardness: Number(r.edgehdns) ? Math.max(0, Math.min(1, Number(r.edgehdns) / 100)) : 1,
+        angle: 0,
+        roundness: 100,
+        smudgeOn: Number(r.blend) > 0,
+        smudgeAmount: Number(r.blend) ? Math.max(0, Math.min(1, Number(r.blend) / 100)) : 0,
+        wetEdgesOn: Number(r.water) > 0,
+        wetEdgesAmount: Number(r.water) ? Math.max(0, Math.min(1, Number(r.water) / 100)) : 0,
+        smoothingStrength: Number(r.smooth) ? Math.max(0, Math.min(1, Number(r.smooth) / 100)) : 0,
+        source: 'sai2',
+        _sai2tool: r
+      });
+    }
+    return { brushes: brushes, warnings: brushes.length ? [] : ['toolnrm 里没有读到笔刷条目'] };
+  }
+
   function parsePack(bytes, fileName) {
     const entries = zip.read(bytes);
     const files = {};
@@ -184,7 +249,7 @@
     };
   }
 
-  const api = { isSai2Pack, isBrushIni, parsePack, parseBrushIni, decodeBmp };
+  const api = { isSai2Pack, isBrushIni, isToolnrm, parseToolnrm, parsePack, parseBrushIni, decodeBmp };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { sai2read: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

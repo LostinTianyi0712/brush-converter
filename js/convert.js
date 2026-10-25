@@ -27,6 +27,7 @@
     const lower = (name || '').toLowerCase();
     if (/\.params\.json$/.test(lower)) return 'csp-decrypted';
     if (medibangIni.isIni(bytes)) return 'mbini';
+    if (sai2read.isToolnrm(bytes)) return 'sai2tool';
     if (sai2read.isBrushIni(bytes)) return 'sai2ini';
     if (bru.isBru(bytes)) return 'bru';
     if (csp.isSut(bytes)) return 'sut';
@@ -82,6 +83,7 @@
       'mbini_set': 'MediBang 云笔刷包',
       sai2pack: 'SAI 2 素材包',
       sai2ini: 'SAI 2 笔刷 ini',
+      sai2tool: 'SAI 2 笔刷预设 toolnrm',
       pat: 'Photoshop 图案 PAT',
       gobrushSet: '天生会画笔刷组'
     }[kind] || kind;
@@ -194,6 +196,8 @@
       result = medibangIni.parseIni(text, files, name);
     } else if (kind === 'painterlib') {
       result = painterlib.parseLibrary(bytes, name);
+    } else if (kind === 'sai2tool') {
+      result = sai2read.parseToolnrm(bytes);
     } else if (kind === 'sai2pack') {
       result = sai2read.parsePack(bytes, name);
     } else if (kind === 'sai2ini') {
@@ -1665,7 +1669,13 @@ Write-Host 'restart MediBang Paint Pro'
 
   /** Brush list -> SAI2 scatter brush files (bmp + ini), zipped. */
   function makeSai2Pack(brushList, opts) {
-    return sai2.makeSai2Pack(brushList, opts || {});
+    const list = (brushList || []).map(function (b) {
+      try {
+        const tip = bakedTipFor(b, opts || {});
+        return Object.assign({}, b, { tip: { w: tip.w, h: tip.h, rgba: tip.rgba } });
+      } catch (e) { return b; }
+    });
+    return sai2.makeSai2Pack(list, opts || {});
   }
 
   function makeGoPaintAbr(brushList, opts) {
