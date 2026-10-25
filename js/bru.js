@@ -157,6 +157,7 @@
         const msg = new Uint8Array(msgParts.concat(Array.from(tpl.subarray(97))));
         parts.push(u8arr(fBytes(121, msg)));
         // 真实双笔刷文件里还有 f87 / f158，一并写入（经验值，来自样本）
+        parts.push(u8arr(fVarint(119, 1)));
         parts.push(u8arr(fVarint(87, 9629115)));
         parts.push(u8arr(fF32(158, 90)));
       }
