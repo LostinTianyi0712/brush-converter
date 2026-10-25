@@ -556,7 +556,20 @@
       refs.set(item.key, { id: p.id, name: p.name });
     }
     const bytes = patMod.buildPat(records);
-    return { bytes: bytes, count: records.length, refs: refs, ref: records[0] ? { id: records[0].id, name: records[0].name } : null, width: list[0].t.w, height: list[0].t.h };
+    // 自检：用内置 .pat 读取器回读，确认图案数量/尺寸与预期一致（不需要真实 PS）
+    let selfCheck = { ok: true, readCount: records.length, names: records.map(function (r) { return r.name; }) };
+    try {
+      const reader = isNode ? require('./patRead.js') : root.BC.patRead;
+      if (reader && reader.readPat) {
+        const back = reader.readPat(bytes);
+        selfCheck.readCount = back.length;
+        selfCheck.ok = back.length === records.length && back.every(function (pt, idx) {
+          return pt.width === list[idx].t.w && pt.height === list[idx].t.h;
+        });
+        selfCheck.names = back.map(function (x) { return x.name; });
+      }
+    } catch (e) { selfCheck.ok = false; selfCheck.error = e.message; }
+    return { bytes: bytes, count: records.length, refs: refs, ref: records[0] ? { id: records[0].id, name: records[0].name } : null, width: list[0].t.w, height: list[0].t.h, selfCheck: selfCheck };
   }
 
   function makeAbrPack(brushList, opts) {

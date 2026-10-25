@@ -299,9 +299,74 @@
     rec.origBrushes = parsed.brushes.length;
   }
 
+  /* 大文件用 Worker 解析（不卡界面）；失败自动回退到主线程分块解析 */
+  let workerSeq = 0;
+  let worker = null;
+  let workerBroken = false;
+  function workerUrl() {
+    const scripts = Array.from(document.scripts || []);
+    const inJsDir = scripts.some(function (sc) { return /\/js\/app\.js(\?|$)/.test(sc.src || ''); });
+    return inJsDir ? 'js/parse-worker.js' : 'parse-worker.js';
+  }
+  function parseViaWorker(name, bytes, opts) {
+    return new Promise(function (resolve, reject) {
+      if (!window.Worker || workerBroken) return reject(new Error('worker unavailable'));
+      try {
+        if (!worker) worker = new Worker(workerUrl());
+      } catch (e) { workerBroken = true; return reject(e); }
+      const id = ++workerSeq;
+      const timer = setTimeout(function () { cleanup(); reject(new Error('worker timeout')); }, 180000);
+      function cleanup() {
+        clearTimeout(timer);
+        worker.removeEventListener('message', onMsg);
+        worker.removeEventListener('error', onErr);
+      }
+      function onMsg(ev) {
+        const m = ev.data || {};
+        if (m.id !== id) return;
+        cleanup();
+        if (m.ok) resolve(m.result); else reject(new Error(m.error || '解析失败'));
+      }
+      function onErr(ev) {
+        cleanup();
+        workerBroken = true;
+        try { worker.terminate(); } catch (e) { /* ignore */ }
+        worker = null;
+        reject(new Error('worker error: ' + (ev.message || 'unknown')));
+      }
+      worker.addEventListener('message', onMsg);
+      worker.addEventListener('error', onErr);
+      const copy = bytes.slice ? bytes.slice() : new Uint8Array(bytes);
+      worker.postMessage({ id: id, name: name, bytes: copy, opts: opts || {} }, [copy.buffer]);
+    });
+  }
+
+  /* 把常见的英文技术报错翻译成中文提示（保留原文便于排查） */
+  function friendlyError(msg) {
+    const t = String(msg || '');
+    if (/worker timeout/i.test(t)) return '后台解析超时，请改用桌面版或拆分文件';
+    if (/not a zip|invalid zip|end of central directory/i.test(t)) return '压缩包结构异常或文件不完整（' + t + '）';
+    if (/out of memory|allocation failed|Array buffer allocation/i.test(t)) return '内存不足：文件太大，请用桌面版处理（' + t + '）';
+    if (/Unsupported|unsupported/i.test(t)) return '该文件的子类型暂不支持（' + t + '）';
+    if (/Cannot read|undefined is not/i.test(t)) return '文件内容不完整或格式变体未覆盖（' + t + '）';
+    if (/RangeError/i.test(t)) return '文件数据越界，可能已损坏（' + t + '）';
+    return t;
+  }
+
   async function parseRecord(rec, displayName, bytes, opts) {
     try {
       const big = bytes && bytes.length > 8 * 1024 * 1024;
+      const useWorker = big && window.Worker && /^https?:/.test(location.protocol);
+      if (useWorker) {
+        try {
+          setProgress(0, '后台解析：' + displayName);
+          const parsed = await parseViaWorker(displayName, bytes, opts);
+          setProgress(null);
+          adoptParsed(rec, bytes, parsed, displayName);
+          return;
+        } catch (e) { /* 回退到主线程 */ }
+        setProgress(null);
+      }
       if (big && BC.convert.parseFileAsync) {
         const parsed = await BC.convert.parseFileAsync(displayName, bytes, Object.assign({}, opts, {
           onProgress: function (p, text) { setProgress(p, text + '：' + displayName); }
@@ -314,7 +379,7 @@
       }
     } catch (e) {
       setProgress(null);
-      rec.error = e.message;
+      rec.error = friendlyError(e.message);
     }
   }
 
