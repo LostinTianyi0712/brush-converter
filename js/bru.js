@@ -153,7 +153,7 @@
         msgParts.push(0x12); msgParts.push(u2.length); msgParts.push.apply(msgParts, Array.from(u2));
         msgParts.push(0x1a); msgParts.push(subName.length); msgParts.push.apply(msgParts, Array.from(subName));
         msgParts.push(0x22); msgParts.push(iconPath.length); msgParts.push.apply(msgParts, Array.from(iconPath));
-        msgParts.push(0x28, 2);
+        msgParts.push(0x28, 1);
         const msg = new Uint8Array(msgParts.concat(Array.from(tpl.subarray(97))));
         parts.push(u8arr(fBytes(121, msg)));
         // 真实双笔刷文件里还有 f87 / f158，一并写入（经验值，来自样本）
