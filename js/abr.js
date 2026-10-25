@@ -505,7 +505,7 @@
           brush.dualBlendMode = brush.dualBrush.blend;
           const du = String(brush.dualBrush.uuid || '').toLowerCase();
           const de = du ? tipByUuid.get(du) : null;
-          if (de && de.tip) brush.dualTip = de.tip;
+          if (de && de.tip) { brush.dualTip = de.tip; usedTips.add(du); }
           if (brush.dualBrush.diameter && brush.sizePx) {
             brush.dualSizeRatio = Math.max(0.05, Math.min(4, brush.dualBrush.diameter / brush.sizePx));
           }
@@ -723,6 +723,30 @@
     return b;
   }
 
+  function buildDualObjc(o) {
+    o = o || {};
+    const blendMap = { normal: 'Nrml', darken: 'Drkn', multiply: 'Mltp', colorburn: 'CBrn', linearburn: 'lBrn', lighten: 'Lghn', screen: 'Scrn', colordodge: 'Cldg', hardmix: 'hMix', overlay: 'Ovrl', softlight: 'SftL', hardlight: 'HrdL', difference: 'Diff', exclusion: 'Xclu' };
+    const blend = blendMap[String(o.blend || 'hardMix').toLowerCase()] || 'hMix';
+    const brsh = _descObjc('', 'sampledBrush', [
+      _descItem('Dmtr', 'UntF', _descUntF('#Pxl', Math.max(1, Math.round(o.diameter || 100)))),
+      _descItem('Angl', 'UntF', _descUntF('#Ang', o.angle || 0)),
+      _descItem('Rndn', 'UntF', _descUntF('#Prc', o.roundness === undefined ? 100 : o.roundness)),
+      _descItem('Nm  ', 'TEXT', _descText(o.name || '第二支笔刷')),
+      _descItem('Spcn', 'UntF', _descUntF('#Prc', o.spacing === undefined ? 25 : o.spacing)),
+      _descItem('Intr', 'bool', _descBool(true)),
+      _descItem('flipX', 'bool', _descBool(!!o.flipX)),
+      _descItem('flipY', 'bool', _descBool(!!o.flipY)),
+      _descItem('sampledData', 'TEXT', _descText(o.uuid || ''))
+    ]);
+    const items = [
+      _descItem('useDualBrush', 'bool', _descBool(true)),
+      _descItem('Flip', 'bool', _descBool(!!o.flip)),
+      _descItem('Brsh', 'Objc', brsh),
+      _descItem('BlnM', 'enum', _descEnum('BlnM', blend))
+    ];
+    return _descObjc('', 'dualBrush', items);
+  }
+
   function _descEnum(typeId, valueId) {
     return util.concat([_descId(typeId), _descId(valueId)]);
   }
@@ -919,6 +943,75 @@
     return out;
   }
 
+  /* dualBrush 描述符模板（取自真实 ABR 双笔刷），运行时按需替换 uuid/尺寸/混合模式 */
+  const DUAL_OBJC_TEMPLATE_B64 = 'AAAAAQAAAAAACWR1YWxCcnVzaAAAAAkAAAAMdXNlRHVhbEJydXNoYm9vbAEAAAAARmxpcGJvb2wAAAAAAEJyc2hPYmpjAAAAAQAAAAAADHNhbXBsZWRCcnVzaAAAAAkAAAAARG10clVudEYjUHhsQF4AAAAAAAAAAAAAQW5nbFVudEYjQW5nAAAAAAAAAAAAAAAAUm5kblVudEYjUHJjQFkAAAAAAAAAAAAATm0gIFRFWFQAAAAJaDdnLHU7exQAIAAxADEANgAAAAAAAFNwY25VbnRGI1ByY0AoAAAAAAAAAAAAAEludHJib29sAQAAAAVmbGlwWGJvb2wAAAAABWZsaXBZYm9vbAAAAAALc2FtcGxlZERhdGFURVhUAAAAJQA5ADAAMgA0AGQANwAzADAALQBkAGUAMAA0AC0AMQAxADcANQAtAGEAZQBlAGIALQBmAGUANABlADIANgA1AGMAYQA1ADkAMQAAAAAAAEJsbk1lbnVtAAAAAEJsbk0AAAAHaGFyZE1peAAAAAp1c2VTY2F0dGVyYm9vbAEAAAAAQ250IGRvdWJAAAAAAAAAAAAAAAhib3RoQXhlc2Jvb2wBAAAADWNvdW50RHluYW1pY3NPYmpjAAAAAQAAAAAAAGJyVnIAAAAEAAAAAGJWVHlsb25nAAAAAAAAAABmU3RwbG9uZwAAABkAAAAGaml0dGVyVW50RiNQcmMAAAAAAAAAAAAAAABNbm0gVW50RiNQcmMAAAAAAAAAAAAAAA9zY2F0dGVyRHluYW1pY3NPYmpjAAAAAQAAAAAAAGJyVnIAAAAEAAAAAGJWVHlsb25nAAAAAAAAAABmU3RwbG9uZwAAABkAAAAGaml0dGVyVW50RiNQcmNAZ4AAAAAAAAAAAABNbm0gVW50RiNQcmMAAAAAAAAAAA==';
+
+  function _dualObjcTemplate() {
+    const bin = isNode ? new Uint8Array(Buffer.from(DUAL_OBJC_TEMPLATE_B64, 'base64')) : (function () {
+      const s2 = atob(DUAL_OBJC_TEMPLATE_B64); const out = new Uint8Array(s2.length);
+      for (let i = 0; i < s2.length; i++) out[i] = s2.charCodeAt(i);
+      return out;
+    })();
+    return bin;
+  }
+
+  function patchDualObjc(tpl, opts) {
+    const out = new Uint8Array(tpl);
+    const asciiIndex = function (needle, from) {
+      const n = needle.length;
+      for (let i = from || 0; i + n <= out.length; i++) {
+        let ok = true;
+        for (let k = 0; k < n; k++) if (out[i + k] !== needle.charCodeAt(k)) { ok = false; break; }
+        if (ok) return i;
+      }
+      return -1;
+    };
+    const writeUtf16 = function (at, str) { for (let k = 0; k < str.length; k++) { out[at + k * 2] = 0; out[at + k * 2 + 1] = str.charCodeAt(k); } };
+    // sampledData TEXT：'TEXT' + u32(len+1) + UTF-16BE 字符 + 0
+    let pos = 0;
+    while ((pos = asciiIndex('TEXT', pos)) >= 0) {
+      const lenOff = pos + 4;
+      const len = ((out[lenOff] << 24) | (out[lenOff + 1] << 16) | (out[lenOff + 2] << 8) | out[lenOff + 3]) >>> 0;
+      if (len === 37) {
+        const start = lenOff + 4;
+        if (opts.uuid && opts.uuid.length === 36) writeUtf16(start, opts.uuid);
+        break;
+      }
+      pos += 4;
+    }
+    // 名称
+    if (opts.name) {
+      const nm = asciiIndex('Nm  ');
+      if (nm >= 0) {
+        const t = asciiIndex('TEXT', nm);
+        if (t >= 0) {
+          const lenOff = t + 4;
+          const oldLen = ((out[lenOff] << 24) | (out[lenOff + 1] << 16) | (out[lenOff + 2] << 8) | out[lenOff + 3]);
+          const nameLen = Math.min(60, Math.max(1, opts.name.length));
+          if (nameLen === oldLen - 1) writeUtf16(lenOff + 4, opts.name.slice(0, nameLen));
+        }
+      }
+    }
+    // Dmtr：'Dmtr' + 'UntF' + '#Pxl' + f32
+    const dm = asciiIndex('Dmtr');
+    if (dm >= 0) {
+      const dv = new DataView(out.buffer, out.byteOffset);
+      const at = dm + 12;
+      if (opts.diameter) dv.setFloat32(at, opts.diameter, false);
+    }
+    const bl = asciiIndex('BlnM');
+    if (bl >= 0) {
+      const en = asciiIndex('enum', bl);
+      if (en >= 0) {
+        const valAt = en + 8;
+        const map = { normal: 'Nrml', darken: 'Drkn', multiply: 'Mltp', colorburn: 'CBrn', linearburn: 'lBrn', lighten: 'Lghn', screen: 'Scrn', colordodge: 'Cldg', hardmix: 'hMix', overlay: 'Ovrl', softlight: 'SftL', hardlight: 'HrdL', difference: 'Diff', exclusion: 'Xclu' };
+        const code = (opts.blend && map[String(opts.blend).toLowerCase()]) || 'hMix';
+        for (let k = 0; k < 4; k++) out[valAt + k] = code.charCodeAt(k);
+      }
+    }
+    return out;
+  }
+
   function _block8(type, data) {
     const pad = data.length & 1;
     return util.concat([_ascii4('8BIM'), _ascii4(type), _u32be(data.length), data, new Uint8Array(pad)]);
@@ -992,6 +1085,24 @@
       const body = util.concat([head, rect, pixelData]);
       const padLen = ((body.length + 3) & ~3) - body.length;
       sampParts.push(util.concat([_u32be(entryLen), body, new Uint8Array(padLen)]));
+      if (it.dualGray && it.dualW && it.dualH && it.dualUuid) {
+        const dh = new Uint8Array(301);
+        dh[0] = 0x24;
+        dh.set(util.utf8Encode(it.dualUuid).subarray(0, 36), 1);
+        dh[38] = 0x01; dh[44] = 0x03;
+        const dEntryLen = 301 + 19 + it.dualGray.length;
+        dh.set(_u32be(dEntryLen - 49), 45);
+        dh.set(_i32be(0), 49); dh.set(_i32be(0), 53);
+        dh.set(_i32be(it.dualH), 57); dh.set(_i32be(it.dualW), 61);
+        dh.set(_u32be(0x38), 65);
+        dh.set(_u32be(1), 289);
+        dh.set(_u32be(dEntryLen - 305), 293);
+        dh[300] = 0x08;
+        const dRect = util.concat([_i32be(0), _i32be(0), _i32be(it.dualH), _i32be(it.dualW), _u16be(8), new Uint8Array([0])]);
+        const dBody = util.concat([dh, dRect, it.dualGray]);
+        const dPad = ((dBody.length + 3) & ~3) - dBody.length;
+        sampParts.push(util.concat([_u32be(dEntryLen), dBody, new Uint8Array(dPad)]));
+      }
       presets.push({ it, uuid });
     }
     // 需要时补齐源文件里"被引用到的"其它采样（dualBrush 的第二个笔尖等）
@@ -1113,8 +1224,22 @@
       } else {
         presetItems.push(_descItem('useTexture', 'bool', _descBool(false)));
       }
+      let dualObjc = null;
+      if (it.rawDualObjc && it.dualOn) dualObjc = it.rawDualObjc;
+      else if (it.dualUuid) {
+        dualObjc = buildDualObjc({
+          uuid: it.dualUuid,
+          diameter: it.dualDiameter || 100,
+          blend: it.dualBlend || 'hardMix',
+          name: it.dualName || '第二支笔刷',
+          spacing: it.dualSpacing,
+          roundness: it.dualRoundness,
+          angle: it.dualAngle,
+          flip: it.dualFlip
+        });
+      }
       presetItems.push(
-        _descItem('dualBrush', 'Objc', (it.rawDualObjc && it.dualOn) ? it.rawDualObjc :
+        _descItem('dualBrush', 'Objc', dualObjc ||
           _descObjc('', 'dualBrush', [_descItem('useDualBrush', 'bool', _descBool(false))])),
         _descItem('brushGroup', 'Objc', _descObjc('', 'brushGroup', [
           _descItem('useBrushGroup', 'bool', _descBool(false))

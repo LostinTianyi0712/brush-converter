@@ -702,7 +702,8 @@
     brushList.forEach(function (brush, i) {
       let tipImg = tipToRGBA(brush);
       if (!tipImg) tipImg = synthTip(brush, 256, opts);
-      if (brush.source !== 'abr' && brush.dualOn && brush.dualTip && opts.dualBake !== false) tipImg = bakeDualTip(tipImg, brush);
+      const synthesizeDual = brush.source !== 'abr' && brush.dualOn && brush.dualTip && opts.dualBake !== true;
+      if (brush.source !== 'abr' && brush.dualOn && brush.dualTip && !synthesizeDual) tipImg = bakeDualTip(tipImg, brush);
       if (brush.source === 'abr') tipImg = bakeTipTransform(tipImg, brush);
       const maxTip = Math.max(64, Math.min(2048, opts.maxTipSize || 512));
       let w = tipImg.w, h = tipImg.h, rgba = tipImg.rgba;
@@ -743,6 +744,30 @@
         scatterCount: brush.scatterCount || 1,
         flowPct: brush.flowPct === undefined ? 1 : brush.flowPct,
         opacityPct: brush.opacity === undefined ? 1 : brush.opacity,
+        dualUuid: synthesizeDual ? genUuid() : undefined,
+        dualGray: synthesizeDual ? (function () {
+          let t2 = brush.dualTip;
+          if (t2 && !t2.rgba && t2.data) {
+            const bpp = t2.bpp || 1;
+            const rgba = new Uint8Array(t2.w * t2.h * 4);
+            for (let i = 0; i < t2.w * t2.h; i++) {
+              const a = bpp >= 3 ? Math.max(t2.data[i * bpp], t2.data[i * bpp + 1], t2.data[i * bpp + 2]) : t2.data[i];
+              rgba[i * 4] = 255; rgba[i * 4 + 1] = 255; rgba[i * 4 + 2] = 255; rgba[i * 4 + 3] = a;
+            }
+            t2 = { w: t2.w, h: t2.h, rgba: rgba };
+          }
+          return t2 && t2.rgba ? abr.maskFromRGBA(t2.rgba) : null;
+        })() : undefined,
+        dualW: synthesizeDual ? brush.dualTip.w : undefined,
+        dualH: synthesizeDual ? brush.dualTip.h : undefined,
+        dualDiameter: brush.dualBrush && brush.dualBrush.diameter ? brush.dualBrush.diameter : undefined,
+        dualBlend: (function () {
+          const m = brush.dualBlendMode;
+          const numMap = { 0: 'normal', 1: 'darken', 2: 'multiply', 3: 'colorBurn', 4: 'linearBurn', 5: 'lighten', 6: 'screen', 7: 'hardMix', 8: 'overlay', 9: 'softLight', 10: 'hardLight', 11: 'difference' };
+          if (typeof m === 'number') return numMap[m] || 'hardMix';
+          return m || 'hardMix';
+        })(),
+        dualName: (brush.dualBrush && brush.dualBrush.name) || ((brush.name || 'brush') + ' 2'),
         hardness: brush.hardness,
         wetEdgesOn: !!brush.wetEdgesOn,
         wetEdgesAmount: brush.wetEdgesAmount,

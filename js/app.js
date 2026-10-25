@@ -823,7 +823,7 @@
         }
       }
       if (opts.target === 'abr' && list.some(function (b) { return b.dualOn && !b._rawPreset; })) {
-        warnings.push('含 Procreate 双笔刷：ABR 双笔刷字段无法凭空生成，已把第二支笔尖合成进笔尖（PS 里为近似效果）');
+        warnings.push('含 Procreate 双笔刷：已生成 ABR 原生双笔刷（dualBrush 描述符 + 第二支采样），PS 里双笔刷可用');
       }
       if ((opts.target === 'brush' || opts.target === 'brushset') && list.some(function (b) { return b.dualOn; })) {
         warnings.push('Procreate 支持双笔刷，但 .brush 的第二支笔刷字段尚无公开样本；本次已把第二支笔尖合成进 Shape（近似）。如需原生，请提供一份 Procreate 双笔刷文件');
