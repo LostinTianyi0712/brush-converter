@@ -72,7 +72,9 @@
     for (const obj of objects) {
       offsets.push(pos);
       let bytes;
-      if (obj && obj.__dict) {
+      if (obj && obj.__raw) {
+        bytes = obj.__raw;
+      } else if (obj && obj.__dict) {
         const entries = obj.__dict;
         const body = new Uint8Array(entries.length * 2 * refSize);
         const dv = new DataView(body.buffer);
@@ -92,7 +94,7 @@
           else if (refSize === 2) dv.setUint16(i * 2, refs[i], false);
           else dv.setUint32(i * 4, refs[i], false);
         }
-        bytes = util.concat([lenMarker(0xa0, refs.length), body]);
+        bytes = util.concat([lenMarker(obj.__arrayType || 0xa0, refs.length), body]);
       } else {
         bytes = encodeValue(obj);
       }
@@ -134,7 +136,7 @@
       return idx;
     }
     // every archived object reference inside a dict must be a UID marker
-    function refMarker(targetIdx) { return addObj(new Uid(targetIdx), false); }
+    function refMarker(targetIdx) { return addObj(new Uid(archived.indexOf(targetIdx)), false); }
     const idxNull = addObj('$null', true);
     const idxRoot = addObj(null, true);
     const idxClass = addObj(null, true);
@@ -182,7 +184,48 @@
     return serialize(objects, archiveIdx);
   }
 
-  const api = { Uid, serialize, writeKeyedArchive };
+  // Patch root scalar values without flattening NSKeyedArchiver's object graph.
+  // Opaque primitive encodings, class objects, UIDs and unknown fields survive.
+  function patchKeyedArchive(bytes, changes) {
+    if(!Object.keys(changes).length)return new Uint8Array(bytes);
+    if(util.ascii(bytes,0,8)!=='bplist00' || bytes.length<40)throw Error('不能修改非二进制archive');
+    const t=bytes.length-32, os=bytes[t+6], rs=bytes[t+7];
+    function uint(at,n){let v=0;for(let i=0;i<n;i++)v=v*256+bytes[at+i];return v;}
+    const count=uint(t+8,8),top=uint(t+16,8),table=uint(t+24,8);
+    if(!os||os>8||!rs||rs>8||count>5000000||table+count*os>t)throw Error('archive对象表异常');
+    const offsets=Array.from({length:count},(_,i)=>uint(table+i*os,os));
+    const sorted=Array.from(new Set(offsets.concat(table))).sort((a,b)=>a-b),ends=new Map();
+    for(let i=0;i<sorted.length-1;i++)ends.set(sorted[i],sorted[i+1]);
+    function length(at){const info=bytes[at]&15;if(info<15)return {n:info,p:at+1};const size=1<<(bytes[at+1]&15);return {n:uint(at+2,size),p:at+2+size};}
+    const objects=offsets.map(at=>{
+      if(at<8||at>=table)throw Error('archive对象越界');
+      const type=bytes[at]>>4;
+      if(type===13){const q=length(at);return {__dict:Array.from({length:q.n},(_,i)=>[uint(q.p+i*rs,rs),uint(q.p+(q.n+i)*rs,rs)])};}
+      if(type>=10&&type<=12){const q=length(at);return {__array:Array.from({length:q.n},(_,i)=>uint(q.p+i*rs,rs)),__arrayType:type<<4};}
+      return {__raw:new Uint8Array(bytes.subarray(at,ends.get(at)))};
+    });
+    function textAt(i){if(typeof objects[i]==='string')return objects[i];const at=offsets[i];if(at===undefined)return null;const type=bytes[at]>>4,q=length(at);if(type===5)return util.ascii(bytes,q.p,q.n);if(type===6){let s='';for(let j=0;j<q.n;j++)s+=String.fromCharCode(uint(q.p+j*2,2));return s;}return null;}
+    function get(dict,key){const item=dict&&dict.__dict&&dict.__dict.find(e=>textAt(e[0])===key);return item&&item[1];}
+    const archived=objects[get(objects[top],'$objects')],wrapper=objects[get(objects[top],'$top')];
+    const rootRef=get(wrapper,'root'),uidAt=offsets[rootRef];
+    if(!archived||!archived.__array||uidAt===undefined||(bytes[uidAt]>>4)!==8)throw Error('archive根引用异常');
+    const root=objects[archived.__array[uint(uidAt+1,(bytes[uidAt]&15)+1)]];
+    if(!root||!root.__dict)throw Error('archive根字典异常');
+    function add(value){objects.push(value);return objects.length-1;}
+    for(const key of Object.keys(changes)){
+      const value=changes[key];
+      if(typeof value!=='number'&&typeof value!=='boolean'&&typeof value!=='string')throw Error('archive只支持局部修改标量');
+      let ref;
+      if(typeof value==='string'){
+        archived.__array.push(add(value));ref=add(new Uid(archived.__array.length-1));
+      }else ref=add(value);
+      const pair=root.__dict.find(e=>textAt(e[0])===key);
+      if(pair)pair[1]=ref;else root.__dict.push([add(key),ref]);
+    }
+    return serialize(objects,top);
+  }
+
+  const api = { Uid, serialize, writeKeyedArchive, patchKeyedArchive };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { bplist: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

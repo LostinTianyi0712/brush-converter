@@ -5,7 +5,6 @@
   function req(p) { return require(p); }
   const util = isNode ? req('./util.js') : root.BC.util;
   const desc = isNode ? req('./descriptor.js') : root.BC.descriptor;
-  const uuidPool = isNode ? req('./abrUuidPool.js') : (root.BC.abrUuidPool || { list: [] });
   const patternTpl = isNode ? req('./abrPatternTemplate.js') : (root.BC.abrPatternTemplate || null);
 
   function isAbr(bytes) {
@@ -332,6 +331,7 @@
       const roundness = desc.unitValue(desc.getItem(inner, 'Rndn'));
       const hardnessRaw = desc.unitValue(desc.getItem(inner, 'Hrdn'));
       const useTipDynamics = desc.getItem(preset, 'useTipDynamics');
+      const usePaintDynamics = desc.getItem(preset, 'usePaintDynamics');
       const szVr = desc.getItem(preset, 'szVr');
       const opVr = desc.getItem(preset, 'opVr');
       const minDiam = desc.unitValue(desc.getItem(preset, 'minimumDiameter'));
@@ -343,6 +343,8 @@
       const bothAxes = desc.getItem(preset, 'bothAxes');
       const angleVr = desc.getItem(preset, 'angleDynamics');
       const scatterVr = desc.getItem(preset, 'scatterDynamics');
+      const countVr = desc.getItem(preset, 'countDynamics');
+      const flowVr = desc.getItem(preset, 'prVr');
       const dual = desc.getItem(preset, 'dualBrush');
       const jit = function (vr) { try { return vr ? (desc.unitValue(desc.getItem(vr, 'jitter')) || 0) : 0; } catch (e) { return 0; } };
       const dualInfo = (function (d) {
@@ -409,24 +411,32 @@
       }
       if (useTipDynamics) {
         controlSize = readControl(szVr);
-        controlOpacity = readControl(opVr);
         controlAngle = readControl(angleVr);
         controlRoundness = readControl(roundVr);
       }
+      if (usePaintDynamics === true || (usePaintDynamics === undefined && useTipDynamics)) controlOpacity = readControl(opVr);
       const name = desc.getItem(preset, 'Nm  ') || '';
+      const toolOptions = desc.getItem(preset, 'toolOptions');
+      const toolRatio = function (key) {
+        const raw = desc.getItem(toolOptions, key);
+        const value = typeof raw === 'number' ? raw : desc.unitValue(raw);
+        return value === undefined ? undefined : Math.max(0, Math.min(1, value / 100));
+      };
       if (!diameter && tip) diameter = Math.max(tip.w, tip.h);
       const pressureSize = !!(useTipDynamics && controlSize === 2);
-      const pressureOpacity = !!(useTipDynamics && controlOpacity === 2);
+      const pressureOpacity = controlOpacity === 2;
       return {
         name: typeof name === 'string' ? name : '',
         uuid: tip && tip.uuid ? tip.uuid : undefined,
         tip: tip ? tip.tip : null,
         sizePx: diameter || (tip ? Math.max(tip.w, tip.h) : 100),
         spacingPct: spacing === undefined ? 25 : spacing,
+        flowPct: toolRatio('flow'),
+        opacity: toolRatio('Opct'),
         angle: angle || 0,
         roundness: roundness === undefined ? 100 : roundness,
         hardness: hardnessRaw === undefined ? undefined : Math.max(0, Math.min(1, hardnessRaw / 100)),
-        minSizeRatio: pressureSize ? Math.max(0.02, (minDiam === undefined ? 10 : minDiam) / 100) : 1,
+        minSizeRatio: controlSize ? Math.max(0, (minDiam === undefined ? 10 : minDiam) / 100) : 1,
         pressureSize,
         pressureOpacity,
         pressure: pressureSize || pressureOpacity,
@@ -434,7 +444,21 @@
         dynamicsControlOpacity: controlOpacity,
         dynamicsControlAngle: controlAngle,
         dynamicsControlRoundness: controlRoundness,
-        minOpacityRatio: pressureOpacity ? 0.25 : 1,
+        dynamicsControlScatter: useScatter ? readControl(scatterVr) : null,
+        dynamicsControlCount: useScatter ? readControl(countVr) : null,
+        dynamicsControlFlow: usePaintDynamics ? readControl(flowVr) : null,
+        dynamicsFadeSteps: (function () {
+          const steps = {};
+          const vars = {size:szVr,opacity:opVr,angle:angleVr,roundness:roundVr,
+            tilt:tiltVr,scatter:scatterVr,count:countVr,flow:flowVr};
+          Object.keys(vars).forEach(function (key) {
+            const value = desc.getItem(vars[key], 'fStp');
+            if (typeof value === 'number') steps[key] = value;
+          });
+          return steps;
+        })(),
+        minRoundnessRatio: minRound === undefined ? undefined : minRound / 100,
+        minOpacityRatio: controlOpacity ? Math.max(0, Math.min(1, (desc.unitValue(desc.getItem(opVr, 'Mnm ')) === undefined ? 25 : desc.unitValue(desc.getItem(opVr, 'Mnm '))) / 100)) : 1,
         flipX: !!(flipX === true || (inner && desc.getItem(inner, 'flipX') === true)),
         flipY: !!(flipY === true || (inner && desc.getItem(inner, 'flipY') === true)),
         noise: noiseFlag === true,
@@ -462,6 +486,9 @@
         scatterCount: typeof cntRaw === 'number' ? cntRaw : 1,
         scatterBothAxes: bothAxes === true,
         scatterPct: jitterOf(scatterVr),
+        countJitterPct: jitterOf(countVr),
+        flowJitterPct: jitterOf(flowVr),
+        opacityJitterPct: jitterOf(opVr),
         angleJitterDeg: jitterOf(angleVr),
         sizeJitterPct: jitterOf(szVr),
         tiltJitterPct: jitterOf(tiltVr),
@@ -555,7 +582,14 @@
     sampEntries.forEach(function (en) {
       if (en.uuid && en.body) sampleMap.set(en.uuid.toLowerCase(), en.body);
     });
-    brushes.forEach(function (b) { b._allRawSamples = allRawSamples; b._sampleMap = sampleMap; });
+    brushes.forEach(function (b) {
+      b._allRawSamples = allRawSamples; b._sampleMap = sampleMap;
+      b._rawNormalized={};Object.keys(b).forEach(function(k){const v=b[k];if(k[0]!=='_'&&(v===null||['number','boolean','string'].indexOf(typeof v)>=0))b._rawNormalized[k]=v;});
+      b._rawTipState=util.brushFingerprint({tip:b.tip});b._rawDualTipState=util.brushFingerprint({tip:b.dualTip});
+      b._rawDualState=util.brushFingerprint({dualBrush:b.dualBrush,dualOn:b.dualOn,dualBlendMode:b.dualBlendMode});
+      b._rawFadeState=JSON.stringify(b.dynamicsFadeSteps||{});
+      b._rawBrushState=util.brushFingerprint(b);
+    });
     if (!brushes.length) {
       for (const en of sampEntries) {
         if (!en.tip) continue;
@@ -660,11 +694,11 @@
        '8BIM' 'samp' len  data: per brush { u32 bodyLen (padded to 4),
             body: '$' + uuid36 + 0x00 + 263 zero bytes,
                   rect(top,left,bottom,right) i32x4, depth u16=8, compression u8=0,
-                  raw grayscale pixels }
-       '8BIM' 'patt' len 0
+                  grayscale pixels/RLE data + 8 absent-channel flag bytes }
+       optional nonempty '8BIM' 'patt' block
        '8BIM' 'desc' len  data: Photoshop Action Descriptor with brush presets
            (name / diameter / spacing / angle / roundness / sampledData uuid)
-     Only the tip bitmap + preset parameters are written; dynamics are not. */
+     Preset descriptors include supported dynamics and explicit tool settings. */
   function _u32be(n) {
     const b = new Uint8Array(4);
     new DataView(b.buffer).setUint32(0, n >>> 0, false);
@@ -700,12 +734,12 @@
     parts.push(new Uint8Array(2));
     return util.concat(parts);
   }
-  function _descId(s) {
-    if (s.length === 4) return util.concat([_u32be(0), _ascii4(s)]);
+  function _descId(s, stringId) {
+    if (s.length === 4 && !stringId) return util.concat([_u32be(0), _ascii4(s)]);
     return util.concat([_u32be(s.length), util.utf8Encode(s)]);
   }
-  function _descItem(key, tag, valueBytes) {
-    return util.concat([_descId(key), _ascii4(tag), valueBytes]);
+  function _descItem(key, tag, valueBytes, stringId) {
+    return util.concat([_descId(key, stringId), _ascii4(tag), valueBytes]);
   }
   function _descUntF(unit, value) {
     return util.concat([_ascii4(unit), _f64be(value)]);
@@ -726,7 +760,9 @@
   function buildDualObjc(o) {
     o = o || {};
     const blendMap = { normal: 'Nrml', darken: 'Drkn', multiply: 'Mltp', colorburn: 'CBrn', linearburn: 'lBrn', lighten: 'Lghn', screen: 'Scrn', colordodge: 'Cldg', hardmix: 'hMix', overlay: 'Ovrl', softlight: 'SftL', hardlight: 'HrdL', difference: 'Diff', exclusion: 'Xclu' };
-    const blend = blendMap[String(o.blend || 'hardMix').toLowerCase()] || 'hMix';
+    const aliases={nrml:'normal',mltp:'multiply',drkn:'darken',cbrn:'colorburn',lbrn:'linearburn',lghn:'lighten',scrn:'screen',cldg:'colordodge',hmix:'hardmix',ovrl:'overlay',sftl:'softlight',hrdl:'hardlight',diff:'difference',xclu:'exclusion'};
+    const mode=String(o.blend || 'hardMix').toLowerCase();
+    const blend = blendMap[aliases[mode]||mode] || 'hMix';
     const brsh = _descObjc('', 'sampledBrush', [
       _descItem('Dmtr', 'UntF', _descUntF('#Pxl', Math.max(1, Math.round(o.diameter || 100)))),
       _descItem('Angl', 'UntF', _descUntF('#Ang', o.angle || 0)),
@@ -744,6 +780,19 @@
       _descItem('Brsh', 'Objc', brsh),
       _descItem('BlnM', 'enum', _descEnum('BlnM', blend))
     ];
+    {
+      const variation = function (jitter) { return _descObjc('', 'brVr', [
+        _descItem('bVTy', 'long', _u32be(0)),
+        _descItem('fStp', 'long', _u32be(25)),
+        _descItem('jitter', 'UntF', _descUntF('#Prc', jitter || 0)),
+        _descItem('Mnm ', 'UntF', _descUntF('#Prc', 0))
+      ]); };
+      items.push(_descItem('useScatter', 'bool', _descBool(!!(o.useScatter || (o.count || 1)>1))),
+        _descItem('Cnt ', 'doub', _doube(o.count || 1)),
+        _descItem('bothAxes', 'bool', _descBool(!!o.bothAxes)),
+        _descItem('scatterDynamics', 'Objc', variation(o.scatterPct)),
+        _descItem('countDynamics', 'Objc', variation(o.countJitterPct)));
+    }
     return _descObjc('', 'dualBrush', items);
   }
 
@@ -751,16 +800,13 @@
     return util.concat([_descId(typeId), _descId(valueId)]);
   }
 
-  let _uuidCounter = 0;
-
   function _makeUuid() {
-    // 必须使用 PS 已知的 brush-id（实测随机 uuid / 递增 uuid 都会让 PS 忽略采样笔尖，
-    // 预览退回计算画笔、画出来是方块）。池子取自 Photoshop 自己导出的 ABR。
-    const list = uuidPool.list || [];
-    if (!list.length) return 'ced5f69b-b7b9-11da-bd31-b69727a98ef7';
-    const id = list[_uuidCounter % list.length];
-    _uuidCounter++;
-    return id;
+    // A fresh identity is essential across files: Photoshop caches sampled
+    // tips by UUID. Reusing IDs from unrelated presets substitutes old pixels.
+    const b = util.randomBytes(16);
+    b[6] = (b[6] & 15) | 64; b[8] = (b[8] & 63) | 128;
+    const hex = Array.from(b).map(function (v) { return ('0' + v.toString(16)).slice(-2); }).join('');
+    return hex.slice(0,8) + '-' + hex.slice(8,12) + '-' + hex.slice(12,16) + '-' + hex.slice(16,20) + '-' + hex.slice(20);
   }
 
   /**
@@ -1017,37 +1063,58 @@
     return util.concat([_ascii4('8BIM'), _ascii4(type), _u32be(data.length), data, new Uint8Array(pad)]);
   }
 
+  function patchesFromFresh(raw,fresh,paths) {
+    const original=desc.readDescriptor(raw),target=desc.readDescriptor(fresh),patches=[],seen=new Set();
+    for(const name of paths||[]){
+      const steps=name.split('.');let a=original,b=target;
+      for(let i=0;i<steps.length;i++){
+        const old=a&&a.items&&a.items.find(x=>x.key===steps[i]),next=b&&b.items&&b.items.find(x=>x.key===steps[i]);
+        if(!next)break;
+        if(!old || i===steps.length-1){
+          const path=steps.slice(0,i+1),key=path.join('.');
+          if(!seen.has(key)){seen.add(key);patches.push({path,tag:next.tag,header:fresh.subarray(next._span[0],next._valueSpan[0]),data:fresh.subarray(next._valueSpan[0],next._valueSpan[1])});}
+          break;
+        }
+        a=old.value;b=next.value;
+      }
+    }
+    return patches;
+  }
+
   function writeAbrV6(items, optsFromArgs) {
     if (!items || !items.length) throw new Error('没有可写入 ABR 的笔刷');
-    _uuidCounter = 0;
     const valid = [];
     for (const it of items) {
       if (it.w && it.h && it.gray && it.gray.length === it.w * it.h) valid.push(it);
     }
     if (!valid.length) throw new Error('没有有效的笔尖像素');
 
+    const reservedUuids = new Set();
+    valid.forEach(function (it) {
+      if (it.uuid) reservedUuids.add(it.uuid.toLowerCase());
+      if (it.rawSample && it.rawPreset) reservedUuids.add(util.utf8Decode(it.rawSample.subarray(1, 37)).toLowerCase());
+      (it.keepSampleUuids || []).forEach(function (id) { reservedUuids.add(String(id).toLowerCase()); });
+    });
+    function allocateUuid() {
+      let id;
+      do { id = _makeUuid(); } while (reservedUuids.has(id));
+      reservedUuids.add(id); return id;
+    }
+
     const sampParts = [];
     const presets = [];
     for (const it of valid) {
-      const uuid = it.uuid || _makeUuid();
+      const uuid = it.uuid || (it.rawSample && it.rawPreset ? util.utf8Decode(it.rawSample.subarray(1, 37)) : allocateUuid());
       // 原样样本：直接复用源 ABR 的采样条目字节（只重算长度派生字段），
       // 用于“部分导出也保留 PS 原版特性”
       if (it.rawSample && it.rawSample.length > 320) {
         const body = new Uint8Array(it.rawSample);
         const entryLenRaw = body.length;
-        if (body.length >= 301) {
-          body.set(_u32be(entryLenRaw - 49), 45);
-          if (entryLenRaw >= 305) body.set(_u32be(entryLenRaw - 305), 293);
-          if (uuid && body.length >= 37) {
-            const ub2 = util.utf8Encode(uuid);
-            body.set(ub2.subarray(0, 36), 1);
-          }
-        }
+        // Raw descriptors refer to the original UUID. Keep sample headers byte
+        // for byte, including legacy layouts; rewriting v6 offsets corrupts them.
         const padRaw = ((entryLenRaw + 3) & ~3) - entryLenRaw;
         sampParts.push(util.concat([_u32be(entryLenRaw), body, new Uint8Array(padRaw)]));
-        presets.push({ it, uuid });
-        continue;
-      }
+      } else {
       let gray = it.gray;
       if (it.flipY) {
         const gw = it.w, gh = it.h, tmp = new Uint8Array(gray.length);
@@ -1056,7 +1123,9 @@
       }
       const useRle = !!it.rle;
       const pixelData = useRle ? rleEncode(gray, it.w, it.h) : gray;
-      const entryLen = 301 + 19 + pixelData.length; // unpadded body length
+      // The VM array ends with two absent-channel u32 flags. Without these
+      // eight bytes PS rejects new UUIDs, while cached UUIDs can mask the bug.
+      const entryLen = 301 + 19 + pixelData.length + 8; // unpadded body length
       // 301-byte sampled-brush header, byte-compatible with Photoshop's own exports.
       // Verified field layout (offsets inside the 301-byte header):
       //   0='$', 1..37=uuid, 38=0x01, 44=0x03,
@@ -1082,17 +1151,18 @@
         _u16be(8), new Uint8Array([useRle ? 1 : 0])
       ]);
       // Length field stays UNPADDED (like real PS files); the reader rounds up to 4.
-      const body = util.concat([head, rect, pixelData]);
+      const body = util.concat([head, rect, pixelData, new Uint8Array(8)]);
       const padLen = ((body.length + 3) & ~3) - body.length;
       sampParts.push(util.concat([_u32be(entryLen), body, new Uint8Array(padLen)]));
+      }
       if (it.dualGray && it.dualW && it.dualH && it.dualUuid) {
-        const dualUuid = _makeUuid();
+        const dualUuid = allocateUuid();
         it._dualUuidResolved = dualUuid;
         const dh = new Uint8Array(301);
         dh[0] = 0x24;
         dh.set(util.utf8Encode(dualUuid).subarray(0, 36), 1);
         dh[38] = 0x01; dh[44] = 0x03;
-        const dEntryLen = 301 + 19 + it.dualGray.length;
+        const dEntryLen = 301 + 19 + it.dualGray.length + 8;
         dh.set(_u32be(dEntryLen - 49), 45);
         dh.set(_i32be(0), 49); dh.set(_i32be(0), 53);
         dh.set(_i32be(it.dualH), 57); dh.set(_i32be(it.dualW), 61);
@@ -1101,7 +1171,7 @@
         dh.set(_u32be(dEntryLen - 305), 293);
         dh[300] = 0x08;
         const dRect = util.concat([_i32be(0), _i32be(0), _i32be(it.dualH), _i32be(it.dualW), _u16be(8), new Uint8Array([0])]);
-        const dBody = util.concat([dh, dRect, it.dualGray]);
+        const dBody = util.concat([dh, dRect, it.dualGray, new Uint8Array(8)]);
         const dPad = ((dBody.length + 3) & ~3) - dBody.length;
         sampParts.push(util.concat([_u32be(dEntryLen), dBody, new Uint8Array(dPad)]));
       }
@@ -1135,7 +1205,7 @@
     const presetObjs = [];
     for (const p of presets) {
       const it = p.it;
-      if (it.rawPreset) {
+      if (it.rawPreset && !(it.rawPatchPaths && it.rawPatchPaths.length)) {
         presetObjs.push(util.concat([_ascii4('Objc'), new Uint8Array(it.rawPreset)]));
         continue;
       }
@@ -1149,8 +1219,8 @@
         _descItem('Nm  ', 'TEXT', _descText(it.name || '')),
         _descItem('Spcn', 'UntF', _descUntF('#Prc', it.spacingPct === undefined ? 25 : it.spacingPct)),
         _descItem('Intr', 'bool', _descBool(true)),
-        _descItem('flipX', 'bool', _descBool(false)),
-        _descItem('flipY', 'bool', _descBool(false)),
+        _descItem('flipX', 'bool', _descBool(!!it.brushFlipX)),
+        _descItem('flipY', 'bool', _descBool(!!it.brushFlipY)),
         _descItem('sampledData', 'TEXT', _descText(p.uuid))
       ].concat(it.hardness === undefined ? [] : [
         _descItem('Hrdn', 'UntF', _descUntF('#Prc', Math.round(Math.max(0, Math.min(1, it.hardness)) * 100)))
@@ -1160,44 +1230,47 @@
       const presetItems = [
         _descItem('Nm  ', 'TEXT', _descText(it.name || '')),
         _descItem('Brsh', 'Objc', inner),
-        _descItem('useTipDynamics', 'bool', _descBool(!!(it.pressureSize || it.pressureOpacity)))
+        _descItem('useTipDynamics', 'bool', _descBool(!!(it.pressureSize || it.dynamicsControlSize || it.dynamicsControlAngle || it.dynamicsControlRoundness || it.sizeJitterPct || it.angleJitterDeg || it.roundnessJitterPct || it.tiltJitterPct)))
       ];
-      const brv = (bVTy, jitter, mnm) => _descObjc('', 'brVr', [
-        _descItem('bVTy', 'long', new Uint8Array([0, 0, 0, bVTy])),
-        _descItem('fStp', 'long', new Uint8Array([0, 0, 0, 25])),
+      const brv = (bVTy, jitter, mnm, parameter) => _descObjc('', 'brVr', [
+        _descItem('bVTy', 'long', _u32be(bVTy)),
+        _descItem('fStp', 'long', _u32be(it.dynamicsFadeSteps && it.dynamicsFadeSteps[parameter] !== undefined
+          ? Math.max(0, Math.min(2147483647, Math.round(it.dynamicsFadeSteps[parameter]))) : 25)),
         _descItem('jitter', 'UntF', _descUntF('#Prc', Math.round(jitter || 0))),
         _descItem('Mnm ', 'UntF', _descUntF('#Prc', Math.round(mnm || 0)))
       ]);
       const sizeJitter = Math.max(0, Math.min(100, it.sizeJitterPct || 0));
-      if (it.pressureSize || sizeJitter > 0) {
+      const sizeControl = it.dynamicsControlSize == null ? (it.pressureSize ? 2 : 0) : it.dynamicsControlSize;
+      const opacityControl = it.dynamicsControlOpacity == null ? (it.pressureOpacity ? 2 : 0) : it.dynamicsControlOpacity;
+      const flowControl = it.dynamicsControlFlow || 0;
+      {
         const minD = Math.round(Math.max(0, Math.min(100, (it.minSizeRatio === undefined ? 0.1 : it.minSizeRatio) * 100)));
         presetItems.push(_descItem('minimumDiameter', 'UntF', _descUntF('#Prc', minD)));
-        presetItems.push(_descItem('minimumRoundness', 'UntF', _descUntF('#Prc', 25)));
-        presetItems.push(_descItem('szVr', 'Objc', brv(it.pressureSize ? 2 : 0, sizeJitter, 0)));
+        presetItems.push(_descItem('szVr', 'Objc', brv(sizeControl, sizeJitter, 0, 'size')));
       }
-      if ((it.angleJitterDeg || 0) > 0) {
-        presetItems.push(_descItem('angleDynamics', 'Objc', brv(0, it.angleJitterDeg, 0)));
+      if (sizeControl || sizeJitter > 0 || it.dynamicsControlRoundness || it.roundnessJitterPct || it.rawPreset)
+        presetItems.push(_descItem('minimumRoundness', 'UntF', _descUntF('#Prc', it.minRoundnessRatio === undefined ? 25 : Math.max(0, Math.min(100, it.minRoundnessRatio * 100)))));
+      if ((it.angleJitterDeg || 0) > 0 || it.dynamicsControlAngle || it.rawPreset) {
+        presetItems.push(_descItem('angleDynamics', 'Objc', brv(it.dynamicsControlAngle || 0, it.angleJitterDeg, 0, 'angle')));
       }
-      if ((it.roundnessJitterPct || 0) > 0) {
-        presetItems.push(_descItem('roundnessDynamics', 'Objc', brv(0, it.roundnessJitterPct, 0)));
+      if ((it.roundnessJitterPct || 0) > 0 || it.dynamicsControlRoundness || it.rawPreset) {
+        presetItems.push(_descItem('roundnessDynamics', 'Objc', brv(it.dynamicsControlRoundness || 0, it.roundnessJitterPct, 0, 'roundness')));
       }
-      if ((it.tiltJitterPct || 0) > 0) {
-        presetItems.push(_descItem('ttlVr', 'Objc', brv(3, it.tiltJitterPct, 0)));
+      if ((it.tiltJitterPct || 0) > 0 || it.rawPreset) {
+        presetItems.push(_descItem('ttlVr', 'Objc', brv(3, it.tiltJitterPct, 0, 'tilt')));
       }
-      if (it.scatterOn || (it.scatterCount || 1) > 1) {
-        presetItems.push(_descItem('useScatter', 'bool', _descBool(true)));
+      if (it.scatterOn || (it.scatterCount || 1) > 1 || it.dynamicsControlScatter || it.dynamicsControlCount || it.countJitterPct || it.rawPreset) {
+        presetItems.push(_descItem('useScatter', 'bool', _descBool(!!(it.scatterOn || (it.scatterCount||1)>1 || it.dynamicsControlScatter || it.dynamicsControlCount || it.countJitterPct))));
         presetItems.push(_descItem('Cnt ', 'doub', _doube(it.scatterCount || 1)));
         presetItems.push(_descItem('bothAxes', 'bool', _descBool(!!it.scatterBothAxes)));
-        presetItems.push(_descItem('scatterDynamics', 'Objc', brv(0, it.scatterPct || 0, 0)));
+        presetItems.push(_descItem('scatterDynamics', 'Objc', brv(it.dynamicsControlScatter || 0, it.scatterPct || 0, 0, 'scatter')));
+        presetItems.push(_descItem('countDynamics', 'Objc', brv(it.dynamicsControlCount || 0, it.countJitterPct || 0, 0, 'count')));
       }
-      if (it.pressureOpacity) {
-        presetItems.push(_descItem('opVr', 'Objc', _descObjc('', 'brVr', [
-          _descItem('bVTy', 'long', new Uint8Array([0, 0, 0, 2])),
-          _descItem('fStp', 'long', new Uint8Array([0, 0, 0, 25])),
-          _descItem('jitter', 'UntF', _descUntF('#Prc', 0)),
-          _descItem('Mnm ', 'UntF', _descUntF('#Prc', Math.round((it.minOpacityRatio === undefined ? 0.25 : it.minOpacityRatio) * 100)))
-        ])));
+      {
+        presetItems.push(_descItem('opVr', 'Objc', brv(opacityControl, it.opacityJitterPct, (it.minOpacityRatio === undefined ? 0.25 : it.minOpacityRatio) * 100, 'opacity')));
       }
+      if (flowControl || it.flowJitterPct || it.rawPreset)
+        presetItems.push(_descItem('prVr', 'Objc', brv(flowControl, it.flowJitterPct, 0, 'flow')));
       const pref = (it.patternRef && it.psTexture) ? it.patternRef : null;
       if (pref) {
         presetItems.push(_descItem('useTexture', 'bool', _descBool(true)));
@@ -1227,9 +1300,13 @@
         presetItems.push(_descItem('useTexture', 'bool', _descBool(false)));
       }
       let dualObjc = null;
-      if (it.rawDualObjc && it.dualOn) dualObjc = it.rawDualObjc;
+      if (it.rawDualObjc && it.dualOn && !it.rawDualChanged) dualObjc = it.rawDualObjc;
       else if (it.dualUuid) {
-        dualObjc = patchDualObjc(_dualObjcTemplate(), { uuid: it._dualUuidResolved || it.dualUuid });
+        dualObjc = buildDualObjc(Object.assign({}, it.dualInfo || {}, {
+          uuid: it._dualUuidResolved || it.dualUuid,
+          name: it.dualName, diameter: it.dualDiameter || (it.dualInfo && it.dualInfo.diameter) || it.sizePx,
+          blend: it.dualBlend
+        }));
       }
       presetItems.push(
         _descItem('dualBrush', 'Objc', dualObjc ||
@@ -1237,7 +1314,7 @@
         _descItem('brushGroup', 'Objc', _descObjc('', 'brushGroup', [
           _descItem('useBrushGroup', 'bool', _descBool(false))
         ])),
-        _descItem('usePaintDynamics', 'bool', _descBool(!!(it.pressureSize || it.pressureOpacity))),
+        _descItem('usePaintDynamics', 'bool', _descBool(!!(opacityControl || it.opacityJitterPct || flowControl || it.flowJitterPct))),
         _descItem('useColorDynamics', 'bool', _descBool(!!it.colorDynamicsOn)),
         _descItem('Wtdg', 'bool', _descBool(!!(it.wetEdgesOn || (it.wetEdgesAmount && it.wetEdgesAmount > 0)))),
         _descItem('Nose', 'bool', _descBool(!!it.noise)),
@@ -1267,17 +1344,25 @@
         presetItems.push(_descItem('purity', 'UntF', _descUntF('#Prc', prc(it.colorJitterPurity))));
         presetItems.push(_descItem('colorDynamicsPerTip', 'bool', _descBool(true)));
       }
-      const flowPct100 = it.flowPct === undefined ? 100 : Math.max(1, Math.min(100, Math.round(it.flowPct * 100)));
-      const opct100 = it.opacityPct === undefined ? 100 : Math.max(1, Math.min(100, Math.round(it.opacityPct * 100)));
-      if (flowPct100 < 100 || opct100 < 100) {
+      const flowPct100 = it.flowPct === undefined ? 100 : Math.max(0, Math.min(100, Math.round(it.flowPct * 100)));
+      const opct100 = it.opacityPct === undefined ? 100 : Math.max(0, Math.min(100, Math.round(it.opacityPct * 100)));
+      // Explicit 100% also matters: otherwise selecting this preset inherits
+      // the user's previous tool flow/opacity in Photoshop.
+      {
         presetItems.push(_descItem('toolOptions', 'Objc', _descObjc('', 'PbTl', [
           _descItem('brushPreset', 'bool', _descBool(true)),
-          _descItem('flow', 'long', new Uint8Array([0, 0, 0, flowPct100])),
+          // 'flow' is a four-letter stringID, not a legacy charID.
+          _descItem('flow', 'long', new Uint8Array([0, 0, 0, flowPct100]), true),
           _descItem('Opct', 'long', new Uint8Array([0, 0, 0, opct100]))
         ])));
       }
       const preset = _descObjc('', 'brushPreset', presetItems);
-      presetObjs.push(util.concat([_ascii4('Objc'), preset]));
+      if(it.rawPreset){
+        const patches=patchesFromFresh(it.rawPreset,preset,it.rawPatchPaths);
+        if(it.mainTipChanged && desc.getItem(desc.readDescriptor(it.rawPreset),'sampledData')!==undefined)
+          patches.push({path:['sampledData'],tag:'TEXT',data:_descText(p.uuid)});
+        presetObjs.push(util.concat([_ascii4('Objc'),desc.patchDescriptor(it.rawPreset,patches)]));
+      }else presetObjs.push(util.concat([_ascii4('Objc'), preset]));
     }
     const descItems = util.concat([
       _descItem('Brsh', 'VlLs', util.concat([_u32be(presetObjs.length)].concat(presetObjs)))

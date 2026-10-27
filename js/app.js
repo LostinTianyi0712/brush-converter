@@ -11,7 +11,8 @@
   const btnClear = $('#btnClear');
   const progressEl = $('#progress');
 
-  const state = { files: [], converting: false , cancelRequested: false };
+  const state = { files: [], converting: false, activeJob: false, saving: false, cancelRequested: false };
+  function isBusy() { return state.converting || state.activeJob || state.saving; }
 
   /* ---------------- helpers ---------------- */
   function fmtSize(n) {
@@ -200,7 +201,7 @@
     }
     if (!brushes.length || !BC.convert.brushLossReport) { el.style.display = 'none'; return; }
     try {
-      const txt = BC.convert.brushLossReport(brushes, [target]);
+      const txt = BC.convert.brushLossReport(brushes, [target], getOpts());
       const lines = txt.split(String.fromCharCode(10));
       const lostLines = lines.filter(function (l) { return l.indexOf('丢失：') >= 0; });
       const names = [];
@@ -225,7 +226,13 @@
     const fmtLabel = sel && sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex].text : '';
     const packMode = $('#optPack') ? $('#optPack').value !== 'files' : true;
     const outText = packMode ? '转换并下载 ZIP' : '转换并保存文件';
-    btnConvert.disabled = !total || state.converting;
+    const busy = isBusy();
+    btnConvert.disabled = !total || busy;
+    fileInput.disabled = busy;
+    btnClear.disabled = busy;
+    ['#btnLog', '#btnShare', '#btnSelectAll'].forEach(function (id) { const el=$(id); if(el)el.disabled=busy; });
+    document.querySelectorAll('#options input, #options select').forEach(function (el) { el.disabled=busy; });
+    dz.setAttribute('aria-disabled', String(busy));
     btnConvert.textContent = total
       ? outText + '（已选 ' + total + ' 支 · ' + fmtLabel + '）'
       : (allBrushes.length ? '请至少勾选 1 支笔刷' : outText);
@@ -764,7 +771,7 @@
         const cmpHtml = BC.convert.buildCompareHtml(
           records.reduce(function (acc, r) { return acc.concat(r.brushes.filter(function (b) { return b.enabled !== false; })); }, []),
           opts.target,
-          { fileName: records.map(function (r) { return r.name; }).join(' + ') }
+          { fileName: records.map(function (r) { return r.name; }).join(' + '), options: opts }
         );
         outFiles.push({ name: '参数对比.html', data: new TextEncoder().encode(cmpHtml) });
       }
@@ -808,8 +815,8 @@
       await new Promise(function (r) { setTimeout(r, 0); });
       const list = rec.brushes.filter(b => b.enabled !== false);
       if (!list.length) continue;
-      if (list.some(function (b) { return b.procreateDualBlendMode > 0; }) && opts.target !== 'brush' && opts.target !== 'brushset') {
-        warnings.push('Procreate 双笔刷（dualBlendMode>0）无法完整映射：第二支笔刷字段无公开样本，只按主笔尖转换');
+      if (list.some(function (b) { return b.dualOn && !b.dualTip; })) {
+        warnings.push('部分双笔刷缺少副笔图像，无法完整写出；请提供含主副笔资源的原始整包');
       }
       const targets = opts.target === 'all' ? ALL_FORMATS : [opts.target || 'bru'];
       if (opts.dualCompanion !== false && targets.indexOf('bru') >= 0) {
@@ -823,10 +830,10 @@
         }
       }
       if (opts.target === 'abr' && list.some(function (b) { return b.dualOn && !b._rawPreset; })) {
-        warnings.push('含 Procreate 双笔刷：已生成 ABR 原生双笔刷（dualBrush 描述符 + 第二支采样），PS 里双笔刷可用');
+        warnings.push('已生成 ABR 原生双笔刷结构，请在 Photoshop 验证导入与效果');
       }
       if ((opts.target === 'brush' || opts.target === 'brushset') && list.some(function (b) { return b.dualOn; })) {
-        warnings.push('Procreate 支持双笔刷，但 .brush 的第二支笔刷字段尚无公开样本；本次已把第二支笔尖合成进 Shape（近似）。如需原生，请提供一份 Procreate 双笔刷文件');
+        warnings.push('Procreate 双笔刷已写入独立 Sub01 副笔，未烘焙主笔；请在 Procreate 验证效果');
       }
       if (opts.target === 'all' && opts.mode === 'pack') {
         warnings.push('全部格式：会生成 ' + ALL_FORMATS.length + ' 种格式，文件较多，请耐心等待');
@@ -896,7 +903,9 @@
               // 源就是 .abr 且整包导出时：原样透传，100% 保留文件夹分组 / 动态 / 计算画笔
               const isAbrSource = /^abr$/i.test(rec.kind || '') || /\.abr$/i.test(rec.name || '');
               const allSelected = rec.brushes && list.length === rec.brushes.length;
-              if (isAbrSource && allSelected) {
+              const unchangedSettings=opts.sizeScale===1 && !(opts.spacingOverride>0) && opts.pressureMode==='auto' && opts.fidelity!==false;
+              const unchangedBrushes=list.every(function(b){return b._rawBrushState && b._rawBrushState===BC.util.brushFingerprint(b);});
+              if (isAbrSource && allSelected && unchangedSettings && unchangedBrushes) {
                 // 整包 ABR→ABR 等于复制文件，没必要产出；只有筛选子集/合并才需要重新打包
                 warnings.push((rec.name || 'ABR') + '：源文件已经是 .abr 且整包导出，跳过（如需筛选/拆分，请只勾选部分笔刷）');
               } else {
@@ -916,7 +925,7 @@
                   packList.push(b);
                 }
               }
-              const made = BC.convert.makeBruPack(packList, Object.assign({}, commonOpts(rec), { dualBake: false }));
+              const made = BC.convert.makeBruPack(packList, Object.assign({}, commonOpts(rec), { dualBake: pairNote ? false : opts.dualBake }));
               outFiles.push({ name: uniqueFile(base, '.bru'), data: made.bytes });
               if (pairNote) warnings.push('画世界3.0 双笔刷：含双笔刷的笔刷已拆成「主笔 + 第二支」，主笔 f121 引用第二支（原生双重笔刷）');
             }
@@ -967,7 +976,8 @@
               : fmt === 'medibang' ? BC.convert.makeMediBangBrush(b, co)
               : fmt === 'png' ? BC.convert.makeTipPng(b, co)
               : BC.convert.makeBru(b, co);
-            const extOut = { painter: '.brushcategory', kbundle: '.bundle', sai2: '.zip', medibang: '.zip', mbini: '.zip', gopaint_set: '.gobrushes' }[fmt] || ('.' + fmt);
+            const extOut = { painter: '.brushcategory', kbundle: '.bundle', sai2: '.zip', medibang: '.zip', mbini: '.zip',
+              gopaint: '.gobrush', gopaint_abr: '.abr', gopaint_set: '.gobrushes' }[fmt] || ('.' + fmt);
             outFiles.push({ name: folder + uniqueFile(base, extOut), data: made.bytes });
             if (fmt === 'png') {
               // PNG 笔尖旁边同时输出该笔刷的参数，方便在目标软件里手动还原设置
@@ -999,7 +1009,7 @@
         }
       }
       const reportBrushes = records.reduce(function (acc, r) { return acc.concat(r.brushes.filter(function (b) { return b.enabled !== false; })); }, []);
-      outFiles.push({ name: '转换报告.txt', data: BC.util.utf8Encode(BC.convert.brushLossReport(reportBrushes, allTargets)) });
+      outFiles.push({ name: '转换报告.txt', data: BC.util.utf8Encode(BC.convert.brushLossReport(reportBrushes, allTargets, opts)) });
     } catch (e) { warnings.push('安装说明/报告生成失败：' + e.message); }
 
     state.converting = false;
@@ -1104,7 +1114,7 @@
     return chunks;
   }
 
-  async function convertAll() {
+  async function convertAllBatches() {
     if (state.converting) return;
     const sel = $('#optBatchN');
     const n = sel ? Number(sel.value) || 0 : 0;
@@ -1157,12 +1167,34 @@
       lastSavedFiles = all;
       const packOutMode = $('#optPack') ? $('#optPack').value !== 'files' : true;
       const savedMsg = await saveOutputs(all, { packOut: packOutMode });
+      if (savedMsg === null) { toast('已取消保存'); return; }
+      if (savedMsg && String(savedMsg).indexOf('ERROR') === 0) throw new Error(String(savedMsg).slice(6));
       let msg = '完成：' + sink.length + (packOutMode ? ' 个包' : ' 批文件') + '（' + files + ' 个文件，共 ' + done + ' 支笔刷）';
       if (failedCount) msg += '，' + failedCount + ' 支失败';
       toast(msg + (savedMsg ? '｜' + savedMsg : ''), 9000);
       setOutputLocation(savedMsg);
     } catch (e) {
       toast('保存失败：' + (e && e.message ? e.message : e), 7000);
+    }
+  }
+
+  async function convertAll() {
+    if (isBusy()) return;
+    state.activeJob = true;
+    // Release the previous ZIP before allocating the next conversion output.
+    lastSavedFiles = null;
+    updateConvertButton();
+    try {
+      await convertAllBatches();
+    } catch (e) {
+      pushLog('CONVERT ' + (e && e.message ? e.message : e));
+      toast('转换失败：' + friendlyError(e && e.message ? e.message : e), 7000);
+    } finally {
+      state.activeJob = false;
+      state.converting = false;
+      if (btnCancel) btnCancel.style.display = 'none';
+      setProgress(null);
+      render();
     }
   }
 
@@ -1175,9 +1207,18 @@
       toast('当前环境不支持保存文件', 7000);
       return '';
     }
-    return await saver.save(files, saveOpts || {}, {
-      progress: function (p, text) { setProgress(0.99 + 0.009 * p, text); }
-    });
+    if (state.saving) throw new Error('上一批文件仍在保存，请等待完成');
+    state.saving = true;
+    updateConvertButton();
+    try {
+      return await saver.save(files, saveOpts || {}, {
+        progress: function (p, text) { setProgress(0.99 + 0.009 * p, text); }
+      });
+    } finally {
+      state.saving = false;
+      if (!state.activeJob) setProgress(null);
+      updateConvertButton();
+    }
   }
   /* ---------------- built-in sample brushes ---------------- */
   /* The minitool container can only pick images/videos, so the packaged
@@ -1225,7 +1266,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.14';
+  const APP_VERSION = '2.5.17';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {
@@ -1276,8 +1317,9 @@
   initNotice();
 
   /* ---------------- events ---------------- */
-  dz.addEventListener('click', () => fileInput.click());
+  dz.addEventListener('click', () => { if (!isBusy()) fileInput.click(); });
   fileInput.addEventListener('change', e => {
+    if (isBusy()) { fileInput.value = ''; return; }
     addFiles(e.target.files);
     fileInput.value = '';
   });
@@ -1288,6 +1330,7 @@
     dz.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); dz.classList.remove('over'); });
   });
   dz.addEventListener('drop', e => {
+    if (isBusy()) return;
     const dt = e.dataTransfer;
     if (dt && dt.files && dt.files.length) addFiles(dt.files);
   });
@@ -1297,13 +1340,17 @@
   window.addEventListener('error', function (e) { pushLog('ERROR ' + (e.message || e.type)); });
   window.addEventListener('unhandledrejection', function (e) { pushLog('REJECT ' + (e.reason && e.reason.message ? e.reason.message : e.reason)); });
   const btnLog = $('#btnLog');
-  if (btnLog) btnLog.addEventListener('click', function () {
+  if (btnLog) btnLog.addEventListener('click', async function () {
+    if (isBusy()) return;
     const NL = String.fromCharCode(10);
     const head = '笔刷转换器 ' + ($('#ver') ? $('#ver').textContent : '') + NL + 'UA: ' + navigator.userAgent + NL + '时间: ' + new Date().toISOString() + NL;
     const body = (window.__brushLogs || []).join(NL) || '(无日志)';
     const data = BC.util.utf8Encode(head + body);
     const saver = window.BCSaver;
-    if (saver && saver.save) saver.save([{ name: '运行日志.txt', data: data }], {});
+    if (saver && saver.save) {
+      try { await saveOutputs([{ name: '运行日志.txt', data: data }], {}); }
+      catch (e) { toast('保存日志失败：' + e.message); }
+    }
     else toast('当前环境不支持保存日志');
   });
   btnConvert.addEventListener('click', convertAll);
@@ -1375,6 +1422,6 @@
   document.addEventListener('dragover', e => e.preventDefault());
   document.addEventListener('drop', e => e.preventDefault());
 
-  $('#ver').textContent = 'v2.5.14 · 修复 Krita 预设（KPP 用 Krita 5 规范 + 新增 .bundle 含笔尖资源）· 纯本地';
+  $('#ver').textContent = 'v' + APP_VERSION + ' · 修复 Procreate / Photoshop / 画世界Pro 参数与双笔刷互转 · 纯本地';
   render();
 })();

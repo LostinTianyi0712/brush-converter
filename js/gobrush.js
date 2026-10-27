@@ -31,6 +31,19 @@
 
   function le32(b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; }
 
+  function infoBlock(info, flag) {
+    // Skip image records by length: high-resolution PNGs can precede parameters
+    // by many megabytes, and their compressed bytes are not TLV records.
+    let pos = 10;
+    while (pos + 6 <= info.length) {
+      const len = le32(info, pos + 2), end = pos + 6 + len;
+      if (end > info.length || ![0xb0, 0xc0, 0xd0].includes(info[pos + 1])) break;
+      if (info[pos] === 0 && info[pos + 1] === flag) return info.subarray(pos, end);
+      pos = end;
+    }
+    return info; // Retain compatibility with older unstructured samples.
+  }
+
   function walkTlv(buf, start, end, sink) {
     let pos = start;
     while (pos + 6 <= end) {
@@ -50,6 +63,7 @@
 
   /* brush name lives in the flag 0xB0 parameter block, sub-record tag 2 */
   function nameFromInfo(info) {
+    info = infoBlock(info, 0xb0);
     // scan for a sub-record [tag 0x02][flag 0xB0][u32 len][UTF-8 name]
     const limit = Math.min(info.length - 6, 2 * 1024 * 1024);
     for (let i = 0; i < limit; i++) {
@@ -70,6 +84,7 @@
          strokeSpacing -> spacing %, propertiesMaxAlpha -> opacity %,
          propertiesMaxSize -> size, shapeScatter -> scatter */
   function extractPropValues(info) {
+    info = infoBlock(info, 0xc0);
     const out = {};
     const le = function (b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; };
     const limit = Math.min(info.length - 6, 4 * 1024 * 1024);
@@ -106,7 +121,9 @@
   }
 
   function extractParams(info) {
-    const out = { size: 0, spacing: 0, opacity: 0, flow: 0, scatter: 0 };
+    const fullInfo = info;
+    info = infoBlock(info, 0xb0);
+    const out = { size: 0, spacing: 0, opacity: undefined, flow: undefined, scatter: 0 };
     const le = function (b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; };
     const limit = Math.min(info.length - 6, 2 * 1024 * 1024);
     for (let i = 0; i < limit; i++) {
@@ -125,11 +142,11 @@
       }
       if (!Object.keys(vals).length) continue;
       out.size = vals[5] || vals[6] || 0;
-      out.opacity = vals[8] || 0;
-      out.flow = vals[9] || 0;
+      out.opacity = vals[8];
+      out.flow = vals[9];
       break;
     }
-    const props = extractPropValues(info);
+    const props = extractPropValues(fullInfo);
     if (props.strokeSpacing !== undefined) out.spacing = props.strokeSpacing;
     if (props.propertiesMaxAlpha !== undefined) out.opacity = props.propertiesMaxAlpha;
     // propertiesMaxSize 量纲与 tag5 不同（1600 vs 35），尺寸仍以 tag5 为准
@@ -137,15 +154,17 @@
     if (props.grainDepth !== undefined) out.textureDepth = props.grainDepth / 100;
     if (props.renderingFlow !== undefined) out.flowPct = Math.max(0, Math.min(1, props.renderingFlow / 100));
     if (props.propertiesMaxSize > 0) {
-      if (props.propertiesMinSize !== undefined) out.minSizeRatio = Math.max(0.01, Math.min(1, props.propertiesMinSize / props.propertiesMaxSize));
-      if (props.propertiesMinAlpha !== undefined && props.propertiesMaxAlpha > 0) out.minOpacityRatio = Math.max(0.01, Math.min(1, props.propertiesMinAlpha / props.propertiesMaxAlpha));
+      if (props.propertiesMinSize !== undefined) out.minSizeRatio = Math.max(0, Math.min(1, props.propertiesMinSize / props.propertiesMaxSize));
+      if (props.propertiesMinAlpha !== undefined && props.propertiesMaxAlpha > 0) out.minOpacityRatio = Math.max(0, Math.min(1, props.propertiesMinAlpha / props.propertiesMaxAlpha));
     }
     return out;
   }
 
   /* 天生的压力曲线：属性块里 apply_preference_settings_pressure 的 tag 0x20 是 JSON 点集
      [{"x":0,"y":0},...,{"x":255,"y":255}]（x/y 0..255），全局压力响应曲线 */
-  function extractPressureCurve(info) {
+  function extractPressureCurves(info) {
+    info = infoBlock(info, 0xc0);
+    const result = { global: null, parameters: {} };
     const le = function (b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; };
     for (let i = 0; i + 6 < info.length; i++) {
       if (info[i] !== 0x10 || info[i + 1] !== 0xC0) continue;
@@ -161,22 +180,23 @@
         else if (tag === 0x20 && len > 1 && info[p + 6] === 0x5b) {
           try {
             const pts = JSON.parse(util.utf8Decode(info.subarray(p + 6, p + 6 + len)));
-            if (Array.isArray(pts) && pts.length) curve = pts;
+            if (Array.isArray(pts)) curve = pts;
           } catch (e) { /* ignore */ }
         }
         p += 6 + len;
       }
-      if (curve && name === 'apply_preference_settings_pressure') return curve;
+      if (curve && name === 'apply_preference_settings_pressure') result.global = curve;
+      else if (curve && /_PressureCurve$/.test(name)) result.parameters[name] = curve;
     }
-    return null;
+    return result;
   }
 
-  function decodePng(bytes) {
+  function decodePng(bytes, mask) {
     try {
       if (!png.isPng(bytes)) return null;
       const img = png.decode(bytes);
       if (!img.width || !img.height) return null;
-      return { w: img.width, h: img.height, rgba: png.toMaskRgba(img.rgba) };
+      return { w: img.width, h: img.height, rgba: mask === false ? img.rgba : png.toMaskRgba(img.rgba) };
     } catch (e) {
       return null;
     }
@@ -185,35 +205,34 @@
   function parseOne(bytes, fileName) {
     const warnings = [];
     const entries = zip.read(bytes);
-    let shape = null, grain = null, snapshot = null, infoFile = null;
+    let shape = null, grain = null, snapshot = null, infoFile = null, brushUuid = '';
     for (const e of entries) {
       if (e.dir) continue;
       const data = e.data();
       if (/^shape_.*\.png$/i.test(e.name)) shape = decodePng(data);
-      else if (/^grain_.*\.png$/i.test(e.name)) grain = decodePng(data);
+      else if (/^grain_.*\.png$/i.test(e.name)) grain = decodePng(data, false);
       else if (/^snapshot_light_.*\.png$/i.test(e.name)) snapshot = snapshot || decodePng(data);
       else if (/^snapshot_.*\.png$/i.test(e.name)) snapshot = snapshot || decodePng(data);
-      else if (/^brush_.*\.info$/i.test(e.name)) infoFile = data;
+      else if (/^brush_.*\.info$/i.test(e.name)) {
+        infoFile = data;
+        brushUuid = e.name.replace(/^brush_/, '').replace(/\.info$/i, '');
+      }
     }
     let name = infoFile ? nameFromInfo(infoFile) : '';
     if (!name) name = (fileName || 'gobrush').replace(/\.[^.]+$/, '');
-    const params = infoFile ? extractParams(infoFile) : { size: 0, spacing: 0, opacity: 0, flow: 0 };
-    const pressureCurve = infoFile ? extractPressureCurve(infoFile) : null;
+    const params = infoFile ? extractParams(infoFile) : { size: 0, spacing: 0 };
+    const pressureCurves = infoFile ? extractPressureCurves(infoFile) : {global:null,parameters:{}};
     if (!shape) warnings.push('该 .gobrush 没有 shape PNG，转换时会生成程序化笔尖');
     warnings.push('天生会画参数：间距已校准（tag5），尺寸/不透明度按参数块映射，笔尖形状图精确；可在界面用「整体尺寸倍数」微调');
-    // GoPaint shape images are small normalized masks (e.g. 10x10); upscale for other apps
-    let tip = shape;
-    if (tip && Math.max(tip.w, tip.h) < 64) {
-      const scale = 128 / Math.max(tip.w, tip.h);
-      const w = Math.max(8, Math.round(tip.w * scale)), h = Math.max(8, Math.round(tip.h * scale));
-      tip = { w: w, h: h, rgba: png.resize(tip.rgba, tip.w, tip.h, w, h) };
-    }
+    // Keep source pixels; logical brush diameter is independent of resolution.
+    const tip = shape;
     let sizePx = params.size > 0 && params.size < 3000 ? params.size : 100;
     let spacingPct = params.spacing >= 1 && params.spacing <= 1000 ? params.spacing : 25;
-    let opacity = params.opacity > 0 ? Math.max(0.02, Math.min(1, params.opacity / 100)) : 1;
+    let opacity = params.opacity === undefined ? 1 : Math.max(0, Math.min(1, params.opacity / 100));
     return {
       brush: {
         name: name,
+        gopaintUuid: brushUuid,
         tip: tip,
         grain: grain,
         sizePx: sizePx,
@@ -231,7 +250,8 @@
         scatterPct: params.scatter || 0,
         scatterCount: 1,
         scatterBothAxes: true,
-        gopaintPressureCurve: pressureCurve || undefined,
+        gopaintPressureCurve: pressureCurves.global || undefined,
+        gopaintPressureCurves: pressureCurves.parameters,
         hasTexture: (params.textureDepth || 0) > 0,
         textureDepth: params.textureDepth || 0,
         source: 'gopaint'
@@ -241,7 +261,9 @@
     };
   }
 
-  function parse(bytes, fileName) {
+  function parse(bytes, fileName, depth) {
+    depth = depth || 0;
+    if (depth > 16) throw new Error('GoPaint笔刷组嵌套过深');
     if (!zip.isZip(bytes)) throw new Error('.gobrush 不是 ZIP 容器（请提供样例以便适配）');
     const entries = zip.read(bytes);
     const inner = [];
@@ -292,24 +314,32 @@
     if (!inner.length) {
       const one = parseOne(bytes, fileName);
       one.brush._rawGobrush = bytes;
+      one.brush._rawBrushState = util.brushFingerprint(one.brush);
       return { brushes: [one.brush], warnings: one.warnings, snapshot: one.snapshot, groupName: '' };
     }
     const brushes = [], warnings = [];
     let snapshot = null;
     for (const ib of inner) {
       try {
-        const one = parseOne(ib.data, ib.name);
+        const one = parse(ib.data, ib.name, depth + 1);
         if (!snapshot && one.snapshot) snapshot = one.snapshot;
-        if (!one.brush.name) one.brush.name = groupName;
-        brushes.push(one.brush);
-        if (brushes.length === 1) warnings.push.apply(warnings, one.warnings);
+        one.brushes.forEach(function (b) {
+          if (!b.name) b.name = groupName;
+          if (!b.group && groupName) b.group = groupName;
+          brushes.push(b);
+        });
+        if (brushes.length === one.brushes.length) warnings.push.apply(warnings, one.warnings);
       } catch (err) {
         warnings.push(ib.name + ' 解析失败：' + err.message);
       }
     }
     if (!brushes.length) throw new Error('.gobrushes 中没有可解析的笔刷');
     if (groupName) warnings.push('笔刷集名称：' + groupName);
-    (brushes || []).forEach(function (b) { b._rawGobrush = bytes; });
+    const rawGroup = {bytes:bytes,count:brushes.length,name:groupName};
+    brushes.forEach(function (b, index) {
+      b._rawGoGroup = rawGroup; b._rawGoIndex = index;
+      b._rawBrushState = util.brushFingerprint(b);
+    });
     return { brushes: brushes, warnings: warnings, snapshot: snapshot, groupName: groupName };
   }
 

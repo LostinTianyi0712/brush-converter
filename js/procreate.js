@@ -54,7 +54,9 @@
     let name = typeof params.name === 'string' ? params.name.trim() : '';
     if (!name || name === '$null') name = '';
     let subArcEntry = null, subShapeEntry = null;
-    const subArcCandidates = entries.filter(function (e) { return /(^|\/)Sub\d+\/Brush\.archive$/.test(e.name); });
+    const subArcCandidates = entries.filter(function (e) {
+      return e.name.indexOf(prefix) === 0 && /^Sub\d+\/Brush\.archive$/.test(e.name.slice(prefix.length));
+    });
     if (subArcCandidates.length) {
       const subPrefix = subArcCandidates[0].name.replace(/Brush\.archive$/, '');
       subArcEntry = subArcCandidates[0];
@@ -63,13 +65,14 @@
     const shapeEntry = find('Shape.png');
     const grainEntry = find('Grain.png');
     const tipFromShape = decodeShape(shapeEntry);
-    const tipFromGrain = shapeEntry ? null : decodeShape(grainEntry);
+    // Grain is an independent texture, never a substitute for a bundled Shape.
+    const tipFromGrain = null;
     const tip = tipFromShape || tipFromGrain;
     let grainRgba = null;
     if (grainEntry) {
       try {
         const im = png.decode(grainEntry.data());
-        grainRgba = { w: im.width, h: im.height, rgba: png.toMaskRgba(im.rgba) };
+        grainRgba = { w: im.width, h: im.height, rgba: im.rgba };
       } catch (e) { grainRgba = null; }
     }
     const tipSource = tipFromShape ? 'shape' : (tipFromGrain ? 'grain' : 'none');
@@ -83,11 +86,11 @@
     const spacing = toRatio(params.plotSpacing, 0);
     // paintSize 是当前笔刷大小（×400≈像素），之前用 maxSize*120 会放大约 3~5 倍
     let sizePx = Math.round((Number(params.paintSize) > 0 ? Number(params.paintSize) : maxSize * 0.25) * 400);
-    if (!isFinite(sizePx) || sizePx < 4) sizePx = 40;
-    sizePx = Math.max(2, Math.min(3000, sizePx));
-    const opacity = Math.max(0.01, Math.min(1, paintOpacity * maxOpacity));
-    const minSizeRatio = pressSize > 0.05 ? Math.max(0.02, Math.min(1, minSize)) : 1;
-    const minOpacityRatio = pressOpacity > 0.05 ? Math.max(0.02, Math.min(1, minOpacity || 0.25)) : 1;
+    if (!isFinite(sizePx) || sizePx <= 0) sizePx = 40;
+    sizePx = Math.max(0.2, Math.min(3000, sizePx));
+    const opacity = Math.max(0, Math.min(1, paintOpacity * maxOpacity));
+    const minSizeRatio = pressSize > 0.05 ? Math.max(0, Math.min(1, minSize)) : 1;
+    const minOpacityRatio = pressOpacity > 0.05 ? Math.max(0, Math.min(1, minOpacity)) : 1;
     const nv = function (k, d) { const v = Number(params[k]); return isFinite(v) ? v : (d === undefined ? 0 : d); };
     const angleDeg = nv('shapeAngle');
     const roundnessPct = nv('shapeRoundness', 1) * 100;
@@ -110,7 +113,7 @@
     const hueDyn = Math.max(nv('dynamicsPressureHue'), nv('dynamicsJitterHue'), nv('dynamicsJitterStrokeHue'));
     const satDyn = Math.max(nv('dynamicsPressureSaturation'), nv('dynamicsJitterSaturation'), nv('dynamicsJitterStrokeSaturation'));
     const briDyn = Math.max(nv('dynamicsPressureBrightness'), nv('dynamicsJitterLightness'), nv('dynamicsJitterStrokeLightness'));
-    const sizeJitV = Math.max(nv('dynamicsJitterSize'), nv('dynamicsTiltSize'));
+    const sizeJitV = nv('dynamicsJitterSize');
     const pressureRound = nv('dynamicsPressureShapeRoundness');
     const dualBlendMode = Number(params.dualBlendMode) || 0;
     const tiltSizeDyn = Math.max(0, Number(params.dynamicsTiltSize) || 0);
@@ -124,21 +127,23 @@
     const scatterRaw = Number(params.shapeScatter) || 0;
     const shapeCountRaw = Number(params.shapeCount) || 0;
     const countJitterRaw = Number(params.shapeCountJitter) || 0;
-    let dualOn = false, dualTip = null, dualSubName = '', dualBlendNum = 0;
+    let dualOn = false, dualTip = null, dualSubName = '', dualBlendNum = 0, subBrush = null;
     if (subArcEntry) {
       try {
         const subParams = plist.unarchive(subArcEntry.data()) || {};
+        subBrush = readBrushFolder(entries, subArcEntry.name.slice(0, -'Brush.archive'.length));
         dualOn = true;
         dualSubName = typeof subParams.name === 'string' ? subParams.name : '';
         dualBlendNum = Number(params.dualBlendMode) || 0;
-        if (subShapeEntry) dualTip = decodeShape(subShapeEntry);
+        if (subBrush) dualTip = subBrush.tip;
+        if (!dualTip && subShapeEntry) dualTip = decodeShape(subShapeEntry);
         if (!dualTip) dualTip = roundTip(96);
         brushSubRaw = { archive: subArcEntry.data(), shape: subShapeEntry ? subShapeEntry.data() : null };
       } catch (e) { /* ignore */ }
     }
     const scatterPct = Math.max(0, Math.min(1000, scatterRaw * 100));
-    const scatterCount = shapeCountRaw > 0.001 ? Math.max(2, Math.round(shapeCountRaw * 16)) : 1;
-    return {
+    const scatterCount = shapeCountRaw > 0.001 ? Math.max(1, Math.round(shapeCountRaw * 16)) : 1;
+    const brush = {
       name,
       tip,
       tipSource,
@@ -160,10 +165,16 @@
       speedOpacityDyn: speedOpacityDyn,
       dualOn: dualOn || undefined,
       dualTip: dualTip || undefined,
-      dualBlendMode: dualBlendNum || undefined,
-      dualBrush: dualOn ? { enabled: true, name: dualSubName, blend: dualBlendNum, diameter: undefined } : undefined,
+      dualBlendMode: dualOn ? dualBlendNum : undefined,
+      dualBrush: dualOn ? Object.assign({}, subBrush || {}, {
+        enabled: true, name: dualSubName, blend: dualBlendNum,
+        diameter: subBrush ? subBrush.sizePx : undefined,
+        spacing: subBrush ? subBrush.spacingPct : undefined
+      }) : undefined,
+      dualSubBrush: subBrush || undefined,
       _rawSubArchive: brushSubRaw ? brushSubRaw.archive : undefined,
       _rawSubShape: brushSubRaw ? brushSubRaw.shape : undefined,
+      _rawSubGrain: subBrush ? subBrush._rawGrain : undefined,
       pressure: pressSize > 0.05 || pressOpacity > 0.05,
       pressureSize: pressSize > 0.05,
       pressureOpacity: pressOpacity > 0.05,
@@ -208,13 +219,20 @@
       dynamicsMixSoftening: nv('dynamicsMixSoftening'),
       blendMode: params.blendMode,
       _params: params,
-      scatterOn: scatterPct > 0.01,
+      scatterOn: scatterPct > 0.01 || scatterCount > 1,
       scatterPct: scatterPct,
       scatterCount: scatterCount,
       scatterBothAxes: true,
       countJitterPct: countJitterRaw * 100,
       source: 'procreate'
     };
+    brush._rawNormalized = {};
+    Object.keys(brush).forEach(function(key){const v=brush[key];if(key[0]!=='_' && (v===null || ['number','boolean','string'].indexOf(typeof v)>=0))brush._rawNormalized[key]=v;});
+    brush._rawTipState=util.brushFingerprint({tip:brush.tip});
+    brush._rawGrainState=util.brushFingerprint({tip:brush._grainRgba});
+    brush._rawBrushState=util.brushFingerprint(brush);
+    brush._rawEntries=entries.filter(e=>!e.dir && e.name.startsWith(prefix)).map(e=>({name:e.name.slice(prefix.length),data:e.data()}));
+    return brush;
   }
 
   function parse(bytes, fileName) {
@@ -401,7 +419,7 @@
     return png.encode(gw, gh, grainRgba);
   }
 
-  function buildArchive(brush, opts) {
+  function archiveParams(brush, opts) {
     const D = defaultsApi.defaults();
     const params = Object.assign(D, {
       version: 2,
@@ -409,8 +427,8 @@
       // paintSize 是当前大小（×400≈像素），maxSize 是上限；往返尺寸才一致
       paintSize: Math.max(0.0005, Math.min(4, (brush.sizePx || 100) / 400)),
       maxSize: Math.max(0.02, Math.min(16, ((brush.sizePx || 100) / 400) * 1.6)),
-      minSize: Math.max(0.01, Math.min(1, brush.minSizeRatio === undefined ? 0.05 : brush.minSizeRatio)),
-      maxOpacity: Math.max(0.01, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity)),
+      minSize: Math.max(0, Math.min(1, brush.minSizeRatio === undefined ? 0.05 : brush.minSizeRatio)),
+      maxOpacity: Math.max(0, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity)),
       minOpacity: 0,
       paintOpacity: 1,
       plotSpacing: Math.max(0.001, Math.min(1.0, (brush.spacingPct || 10) / 100)),
@@ -429,21 +447,22 @@
       textureRotation: brush.textureRotation || 0,
       shapeOrientation: 1,
       previewSize: 0.08,
-      dynamicsPressureSize: brush.pressure && (brush.minSizeRatio === undefined || brush.minSizeRatio < 0.95) ? 1 : 0,
+      dynamicsPressureSize: (brush.pressureSize === undefined ? brush.pressure : brush.pressureSize) ? 1 : 0,
       dynamicsPressureOpacity: brush.pressureOpacity ? 1 : 0,
       dynamicsJitterSize: Math.max(0, Math.min(1, (brush.sizeJitterPct || 0) / 100)),
-      dynamicsTiltSize: Math.max(0, Math.min(1, Math.max(brush.tiltSizeDyn || 0, (brush.tiltJitterPct || 0) / 100, brush.dynamicsControlSize === 3 ? 1 : 0))),
-      dynamicsTiltOpacity: Math.max(0, Math.min(1, Math.max(brush.tiltOpacityDyn || 0, brush.dynamicsControlOpacity === 3 ? 1 : 0))),
+      dynamicsTiltSize: Math.max(0, Math.min(1, brush.tiltSizeDyn === undefined ? Math.max((brush.tiltJitterPct || 0) / 100, brush.dynamicsControlSize === 3 ? 1 - (brush.minSizeRatio === undefined ? 0 : brush.minSizeRatio) : 0) : brush.tiltSizeDyn)),
+      dynamicsTiltOpacity: Math.max(0, Math.min(1, brush.tiltOpacityDyn === undefined ? (brush.dynamicsControlOpacity === 3 ? 1 - (brush.minOpacityRatio === undefined ? 0 : brush.minOpacityRatio) : 0) : brush.tiltOpacityDyn)),
       dynamicsTiltAngle: Math.max(0, Math.min(1, Math.max(brush.tiltAngleDyn || 0, brush.dynamicsControlAngle === 3 ? (brush.angleJitterDeg || 0) / 180 : 0))),
       dynamicsTiltShapeRoundness: Math.max(0, Math.min(1, Math.max(brush.tiltRoundnessDyn || 0, brush.dynamicsControlRoundness === 3 ? (brush.roundnessJitterPct || 0) / 100 : 0))),
       dynamicsSpeedSize: Math.max(0, Math.min(1, brush.speedSizeDyn || 0)),
       dynamicsSpeedOpacity: Math.max(0, Math.min(1, brush.speedOpacityDyn || 0)),
       minOpacity: brush.minOpacityRatio === undefined ? 0 : Math.max(0, Math.min(1, brush.minOpacityRatio)),
       grainDepth: brush.hasTexture ? Math.max(0, Math.min(1, brush.textureDepth === undefined ? (brush.grainStrength === undefined ? 0.6 : brush.grainStrength) : brush.textureDepth)) : 0,
-      grainBlendMode: brush.hasTexture ? 0 : 1,
+      grainBlendMode: brush.grainBlendMode === undefined ? (brush.hasTexture ? 0 : 1) : brush.grainBlendMode,
+      textureInverted: !!brush.textureInverted,
       taperSize: brush.taperOn ? Math.max(0, Math.min(1, brush.taperSize === undefined ? 0.5 : brush.taperSize)) : 0,
       taperOpacity: brush.taperOn ? Math.max(0, Math.min(1, brush.taperOpacity === undefined ? 0.5 : brush.taperOpacity)) : 0,
-      taperStartLength: brush.taperOn ? Math.max(0, Math.min(1, brush.taperStartLength || 0.2)) : 0,
+      taperStartLength: brush.taperOn ? Math.max(0, Math.min(1, brush.taperStartLength === undefined ? 0.2 : brush.taperStartLength)) : 0,
       taperEndLength: brush.taperOn ? Math.max(0, Math.min(1, brush.taperEndLength === undefined ? 0.3 : brush.taperEndLength)) : 0,
       wetEdgesAmount: brush.wetEdgesOn ? Math.max(0, Math.min(1, brush.wetEdgesAmount === undefined ? 0.4 : brush.wetEdgesAmount)) : 0,
       smudgeSize: brush.smudgeOn ? Math.max(0, Math.min(1, brush.smudgeAmount === undefined ? 0.3 : brush.smudgeAmount)) : 0,
@@ -455,13 +474,47 @@
       dualBlendMode: (function () {
         if (typeof brush.dualBlendMode === 'number') return brush.dualBlendMode;
         const nm = String(brush.dualBlendMode || (brush.dualBrush && brush.dualBrush.blend) || '').toLowerCase().replace(/[^a-z]/g, '');
-        const map = { nrml: 0, drkn: 1, mltp: 2, cbrn: 3, linearburn: 4, lghn: 5, scrn: 6, hmix: 7, hardmix: 7, ovrl: 8, sftl: 9, hrdl: 10 };
+          const map = { nrml: 0, normal: 0, drkn: 1, darken: 1, mltp: 2, multiply: 2,
+            cbrn: 3, colorburn: 3, linearburn: 4, lghn: 5, lighten: 5, scrn: 6, screen: 6,
+            hmix: 7, hardmix: 7, ovrl: 8, overlay: 8, sftl: 9, softlight: 9,
+            hrdl: 10, hardlight: 10, dfrn: 11, difference: 11 };
         return map[nm] || 0;
       })(),
       importedFromABR: brush.source === 'abr',
       name: brush.name || 'brush'
     });
-    return bplist.writeKeyedArchive(params, 'SilicaBrush', ['SilicaBrush', 'ValkyrieBrush', 'NSObject']);
+    return params;
+  }
+  function buildArchive(brush, opts) {
+    return bplist.writeKeyedArchive(archiveParams(brush,opts), 'SilicaBrush', ['SilicaBrush', 'ValkyrieBrush', 'NSObject']);
+  }
+
+  function unchanged(brush,opts) {
+    opts=opts||{};
+    return opts.fidelity!==false && !opts.forceRebuild && !!brush._rawArchive &&
+      brush._rawBrushState===util.brushFingerprint(brush) &&
+      brush._rawGrainState===util.brushFingerprint({tip:brush._grainRgba});
+  }
+
+  function patchArchive(brush,opts) {
+    const before=brush._rawNormalized||{},params=archiveParams(brush,opts),changes={};
+    const mapping={sizePx:['paintSize'],spacingPct:['plotSpacing'],name:['name'],opacity:['maxOpacity','paintOpacity'],
+      minSizeRatio:['minSize'],minOpacityRatio:['minOpacity'],angle:['shapeAngle'],roundness:['shapeRoundness'],
+      pressure:['dynamicsPressureSize'],pressureSize:['dynamicsPressureSize'],pressureOpacity:['dynamicsPressureOpacity'],
+      scatterOn:['shapeScatter','shapeCount'],scatterPct:['shapeScatter'],scatterCount:['shapeCount'],
+      countJitterPct:['shapeCountJitter'],spacingJitterPct:['plotJitter'],smoothingStrength:['plotSmoothing'],
+      sizeJitterPct:['dynamicsJitterSize'],tiltSizeDyn:['dynamicsTiltSize'],tiltOpacityDyn:['dynamicsTiltOpacity'],
+      tiltAngleDyn:['dynamicsTiltAngle'],tiltRoundnessDyn:['dynamicsTiltShapeRoundness'],speedSizeDyn:['dynamicsSpeedSize'],
+      speedOpacityDyn:['dynamicsSpeedOpacity'],hasTexture:['grainDepth'],textureDepth:['grainDepth'],textureScale:['textureScale'],
+      textureBrightness:['textureBrightness'],textureContrast:['textureContrast'],textureRotation:['textureRotation'],
+      textureInverted:['textureInverted'],grainBlendMode:['grainBlendMode'],dualBlendMode:['dualBlendMode'],
+      taperOn:['taperSize','taperOpacity','taperStartLength','taperEndLength'],taperSize:['taperSize'],taperOpacity:['taperOpacity'],
+      wetEdgesOn:['wetEdgesAmount'],wetEdgesAmount:['wetEdgesAmount'],smudgeOn:['smudgeSize','smudgeOpacity'],
+      smudgeAmount:['smudgeSize','smudgeOpacity'],colorJitterHue:['dynamicsJitterHue'],colorJitterSat:['dynamicsJitterSaturation'],
+      colorJitterVal:['dynamicsJitterLightness']};
+    Object.keys(mapping).forEach(function(key){if(brush[key]!==before[key])mapping[key].forEach(k=>{changes[k]=params[k];});});
+    if(changes.paintSize!==undefined){const old=plist.unarchive(brush._rawArchive);if(old.maxSize<changes.paintSize)changes.maxSize=changes.paintSize;}
+    return bplist.patchKeyedArchive(brush._rawArchive,changes);
   }
 
   function convGrainNoise(w, h, seed, scale) {
@@ -469,18 +522,43 @@
     return root.BC.convert.grainNoise(w, h, seed, scale);
   }
 
+  function secondaryBrush(brush) {
+    const sub = brush.dualSubBrush || {};
+    const info = brush.dualBrush || {};
+    return Object.assign({}, info, sub, {
+      name: info.name || sub.name || (brush.name + ' 2'),
+      tip: brush.dualTip,
+      sizePx: info.diameter === undefined ? (sub.sizePx || brush.sizePx || 100) : info.diameter,
+      spacingPct: info.spacing === undefined ? (sub.spacingPct === undefined ? 25 : sub.spacingPct) : info.spacing,
+      scatterOn: info.useScatter === undefined ? !!(sub.scatterOn || info.scatterOn) : !!info.useScatter,
+      scatterCount: info.count === undefined ? (sub.scatterCount || info.scatterCount || 1) : info.count,
+      scatterBothAxes: info.bothAxes === undefined ? !!(sub.scatterBothAxes || info.scatterBothAxes) : !!info.bothAxes,
+      scatterPct: info.scatterPct === undefined ? sub.scatterPct : info.scatterPct,
+      dualOn: false, dualTip: undefined, dualSubBrush: undefined,
+      _rawArchive: sub._rawArchive || brush._rawSubArchive,
+      _rawShape: sub._rawShape || brush._rawSubShape,
+      _rawGrain: sub._rawGrain || brush._rawSubGrain
+    });
+  }
+
   function writeBrush(brush, opts) {
     opts = opts || {};
+    function subBrush(){const b=secondaryBrush(brush);
+      if(opts.spacingOverride>0)b.spacingPct=opts.spacingOverride;
+      if(opts.pressure!==undefined){b.pressureSize=!!opts.pressure;b.pressureOpacity=opts.pressure===false?false:!!b.pressureOpacity;b.pressure=b.pressureSize||b.pressureOpacity;}
+      return b;}
     // 还原优先：源就是 Procreate 且没有改过参数时，原样复用 archive/Shape/Grain
     if (opts.fidelity !== false && brush._rawArchive && !opts.forceRebuild) {
-      const entries = [{ name: 'Brush.archive', data: new Uint8Array(brush._rawArchive) }];
-      if (brush._rawShape) entries.push({ name: 'Shape.png', data: new Uint8Array(brush._rawShape) });
-      if (brush._rawGrain) entries.push({ name: 'Grain.png', data: new Uint8Array(brush._rawGrain) });
-      if (brush._rawSubArchive) {
-        entries.push({ name: 'Sub01/Brush.archive', data: new Uint8Array(brush._rawSubArchive) });
-        if (brush._rawSubShape) entries.push({ name: 'Sub01/Shape.png', data: new Uint8Array(brush._rawSubShape) });
-      }
-      let tipRaw = brush._rawShape ? decodeShape({ data: () => new Uint8Array(brush._rawShape) }) : null;
+      const entries = (brush._rawEntries||[]).filter(e=>!['Brush.archive','Shape.png','Grain.png','QuickLook/Thumbnail.png'].includes(e.name)&&!e.name.startsWith('Sub01/'));
+      entries.push({name:'Brush.archive',data:patchArchive(brush,opts)});
+      const sameTip=brush._rawTipState===util.brushFingerprint({tip:brush.tip});
+      if(sameTip && brush._rawShape)entries.push({name:'Shape.png',data:new Uint8Array(brush._rawShape)});
+      else if(!sameTip && brush.tip)entries.push({name:'Shape.png',data:shapePng(tipRGBA(brush,opts),opts.maxTipSize||512).png});
+      const sameGrain=brush._rawGrainState===util.brushFingerprint({tip:brush._grainRgba});
+      if(sameGrain && brush._rawGrain)entries.push({name:'Grain.png',data:new Uint8Array(brush._rawGrain)});
+      else if(brush.hasTexture)entries.push({name:'Grain.png',data:grainPng(brush)});
+      if(brush.dualOn && brush.dualTip)zip.read(writeBrush(subBrush(),opts)).forEach(e=>entries.push({name:'Sub01/'+e.name,data:e.data()}));
+      let tipRaw = brush.tip ? tipRGBA(brush,opts) : null;
       if (!tipRaw) tipRaw = roundTip(brush.sizePx || 128);
       entries.push({ name: 'QuickLook/Thumbnail.png', data: thumbPng(tipRaw, { spacingPct: brush.spacingPct, opacity: brush.opacity }) });
       return zip.write(entries);
@@ -499,22 +577,9 @@
       entries.push({ name: 'Grain.png', data: grainPng(brush) });
     }
     if (brush.dualOn && brush.dualTip) {
-      const subArchive = buildArchive(Object.assign({}, brush, {
-        name: (brush.dualBrush && brush.dualBrush.name) || (brush.name + ' 2'),
-        dualOn: false
-      }), opts);
-      entries.push({ name: 'Sub01/Brush.archive', data: subArchive });
-      let dtip = brush.dualTip;
-      if (dtip && !dtip.rgba && dtip.data) {
-        const bpp = dtip.bpp || 1;
-        const rgba = new Uint8Array(dtip.w * dtip.h * 4);
-        for (let i = 0; i < dtip.w * dtip.h; i++) {
-          const a = bpp >= 3 ? Math.max(dtip.data[i * bpp], dtip.data[i * bpp + 1], dtip.data[i * bpp + 2]) : dtip.data[i];
-          rgba[i * 4] = 255; rgba[i * 4 + 1] = 255; rgba[i * 4 + 2] = 255; rgba[i * 4 + 3] = a;
-        }
-        dtip = { w: dtip.w, h: dtip.h, rgba: rgba };
-      }
-      if (dtip && dtip.rgba) entries.push({ name: 'Sub01/Shape.png', data: shapePng(dtip, opts.maxTipSize || 512).png });
+      zip.read(writeBrush(subBrush(), opts)).forEach(function (e) {
+        entries.push({ name: 'Sub01/' + e.name, data: e.data() });
+      });
     }
     return zip.write(entries);
   }
@@ -525,48 +590,9 @@
     brushList.forEach(function (brush, i) {
       const uuid = proUuid();
       const folder = uuid + '/';
-      if (opts.fidelity !== false && brush._rawArchive && !opts.forceRebuild) {
-        files.push({ name: folder + 'Brush.archive', data: new Uint8Array(brush._rawArchive) });
-        if (brush._rawShape) files.push({ name: folder + 'Shape.png', data: new Uint8Array(brush._rawShape) });
-        if (brush._rawGrain) files.push({ name: folder + 'Grain.png', data: new Uint8Array(brush._rawGrain) });
-        if (brush._rawSubArchive) {
-          files.push({ name: folder + 'Sub01/Brush.archive', data: new Uint8Array(brush._rawSubArchive) });
-          if (brush._rawSubShape) files.push({ name: folder + 'Sub01/Shape.png', data: new Uint8Array(brush._rawSubShape) });
-        }
-        let tp = brush._rawShape ? decodeShape({ data: () => new Uint8Array(brush._rawShape) }) : null;
-        if (!tp) tp = roundTip(brush.sizePx || 128);
-        files.push({ name: folder + 'QuickLook/Thumbnail.png', data: thumbPng(tp, { spacingPct: brush.spacingPct, opacity: brush.opacity }) });
-        return;
-      }
-      const tip = tipRGBA(brush);
-      if (!tip) return;
-      const shape = shapePng(tip, opts.maxTipSize || 512);
-      const thumb = thumbPng(tip, { spacingPct: brush.spacingPct, opacity: brush.opacity });
-      const archive = buildArchive(brush, opts);
-      files.push({ name: folder + 'Brush.archive', data: archive });
-      files.push({ name: folder + 'Shape.png', data: shape.png });
-      files.push({ name: folder + 'QuickLook/Thumbnail.png', data: thumb });
-      if (brush.hasTexture && !opts.noTextureBake) {
-        files.push({ name: folder + 'Grain.png', data: grainPng(brush) });
-      }
-      if (brush.dualOn && brush.dualTip) {
-        let dtip = brush.dualTip;
-        if (dtip && !dtip.rgba && dtip.data) {
-          const bpp = dtip.bpp || 1;
-          const rgba = new Uint8Array(dtip.w * dtip.h * 4);
-          for (let k = 0; k < dtip.w * dtip.h; k++) {
-            const a = bpp >= 3 ? Math.max(dtip.data[k * bpp], dtip.data[k * bpp + 1], dtip.data[k * bpp + 2]) : dtip.data[k];
-            rgba[k * 4] = 255; rgba[k * 4 + 1] = 255; rgba[k * 4 + 2] = 255; rgba[k * 4 + 3] = a;
-          }
-          dtip = { w: dtip.w, h: dtip.h, rgba: rgba };
-        }
-        const subArchive = buildArchive(Object.assign({}, brush, {
-          name: (brush.dualBrush && brush.dualBrush.name) || (brush.name + ' 2'),
-          dualOn: false
-        }), opts);
-        files.push({ name: folder + 'Sub01/Brush.archive', data: subArchive });
-        if (dtip && dtip.rgba) files.push({ name: folder + 'Sub01/Shape.png', data: shapePng(dtip, opts.maxTipSize || 512).png });
-      }
+      zip.read(writeBrush(brush, opts)).forEach(function (e) {
+        files.push({ name: folder + e.name, data: e.data() });
+      });
     });
     if (!files.length) throw new Error('没有可写入 Procreate 的笔刷（都缺少笔尖图像）');
     return zip.write(files);
@@ -583,7 +609,7 @@
     return s;
   }
 
-  const api = { isProcreate, parse, writeBrush, writeBrushset, buildArchive, shapePng, thumbPng };
+  const api = { isProcreate, parse, writeBrush, writeBrushset, buildArchive, shapePng, thumbPng, unchanged };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { procreate: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

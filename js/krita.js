@@ -84,10 +84,10 @@
 
   function parseBrushDefinition(raw) {
     if (!raw) return null;
-    const brushM = /<Brush\b([^>]*)>([\s\S]*?)<\/Brush>/.exec(raw);
+    const brushM = /<Brush\b([^>]*?)(?:\s*\/>|>([\s\S]*?)<\/Brush>)/.exec(raw);
     if (!brushM) return null;
     const attrs = brushM[1];
-    const inner = brushM[2];
+    const inner = brushM[2] || '';
     const maskM = /<MaskGenerator\b([^>]*)\/?>/.exec(inner);
     const maskAttrs = maskM ? maskM[1] : '';
     function attr(s, name) {
@@ -99,12 +99,13 @@
       angle: attr(attrs, 'angle'),
       density: attr(attrs, 'density'),
       randomness: attr(attrs, 'randomness'),
-      type: attr(maskAttrs, 'type'),
+      type: attr(maskAttrs, 'type') || attr(attrs, 'type'),
       diameter: attr(maskAttrs, 'diameter'),
       ratio: attr(maskAttrs, 'ratio'),
       hfade: attr(maskAttrs, 'hfade'),
       vfade: attr(maskAttrs, 'vfade'),
-      filename: attr(maskAttrs, 'filename')
+      filename: attr(attrs, 'filename') || attr(maskAttrs, 'filename'),
+      scale: attr(attrs, 'scale')
     };
   }
 
@@ -167,8 +168,14 @@
     }
     roundnessPct = clamp(roundnessPct, 5, 100);
 
-    const sizeDyn = pick(params, [/pressure.*size/i, /size.*pressure/i, /sizesensor/i]);
-    const opDyn = pick(params, [/pressure.*opacity/i, /opacity.*pressure/i, /opacitysensor/i]);
+    function pressureEnabled(flag, useCurve, sensor) {
+      const explicit=params[flag];
+      if(explicit)return /^(true|1)$/i.test(explicit.text.trim());
+      return !!(params[useCurve] && /^(true|1)$/i.test(params[useCurve].text.trim()) &&
+        params[sensor] && /pressure/i.test(params[sensor].raw));
+    }
+    const sizeDyn = pressureEnabled('PressureSize','SizeUseCurve','SizeSensor');
+    const opDyn = pressureEnabled('PressureOpacity','OpacityUseCurve','OpacitySensor');
 
     // brush tip: embedded brush resource (Krita 4/5), else preview image
     let tip = null;
@@ -223,6 +230,9 @@
         tip = { w: img.width, h: img.height, rgba: png.toMaskRgba(img.rgba) };
         warnings.push('该 KPP 未内嵌笔尖资源，使用预设缩略图作为笔尖（可能偏小）');
       } catch (e) { /* no tip */ }
+    }
+    if (tip && bd && /^(png|gbr)_brush$/.test(bd.type) && Number(bd.scale)>0) {
+      sizePx=clamp(Math.max(tip.w,tip.h)*Number(bd.scale),1,4000);
     }
     if (!bd) warnings.push('未找到 Krita 5 的 brush_definition，按旧版参数尽力解析');
     return {
@@ -494,50 +504,10 @@
     return { w: n, h: n, data: out };
   }
 
-  /* Remove tiny isolated specks, keep every real stroke/fibre, then crop+center.
-     Keeping only the largest connected blob (the old behaviour) destroyed
-     textured tips such as fur/brush-hair presets, turning them into one solid
-     blob -> the painted stroke looked like a flat bar. */
+  // Source speckles and low-alpha fibres may be intentional. Preserve them,
+  // along with the source canvas and offset; do not guess which pixels are dirt.
   function prepareTipMask(tip) {
-    const w = tip.w, h = tip.h, data = tip.data;
-    const thr = 10;
-    const minArea = Math.max(4, Math.round(w * h * 0.0002));
-    const seen = new Uint8Array(w * h);
-    const stack = [];
-    const keep = new Uint8Array(w * h);
-    for (let i = 0; i < w * h; i++) {
-      if (seen[i] || data[i] <= thr) continue;
-      stack.length = 0; stack.push(i); seen[i] = 1;
-      const cells = [];
-      while (stack.length) {
-        const idx = stack.pop(); cells.push(idx);
-        const y = Math.floor(idx / w), x = idx % w;
-        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-          const nx = x + dx, ny = y + dy;
-          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-          const ni = ny * w + nx;
-          if (seen[ni] || data[ni] <= thr) continue;
-          seen[ni] = 1; stack.push(ni);
-        }
-      }
-      if (cells.length < minArea) continue; // drop only genuine specks
-      for (const idx of cells) keep[idx] = data[idx];
-    }
-    let minX = w, minY = h, maxX = -1, maxY = -1;
-    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-      if (keep[y * w + x] <= thr) continue;
-      if (x < minX) minX = x; if (x > maxX) maxX = x;
-      if (y < minY) minY = y; if (y > maxY) maxY = y;
-    }
-    if (maxX < 0) return { w: w, h: h, data: keep };
-    const cw = maxX - minX + 1, ch = maxY - minY + 1;
-    const side = Math.max(cw, ch);
-    const out = new Uint8Array(side * side);
-    const ox = Math.floor((side - cw) / 2), oy = Math.floor((side - ch) / 2);
-    for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) {
-      out[(oy + y) * side + (ox + x)] = keep[(minY + y) * w + (minX + x)];
-    }
-    return { w: side, h: side, data: out };
+    return {w:tip.w,h:tip.h,data:new Uint8Array(tip.data)};
   }
 
   function pngTipPng(tip) {
@@ -581,8 +551,8 @@
     const spacing = Math.max(0.005, Math.min(5, (brush.spacingPct || 10) / 100));
     const opacity = Math.max(0.01, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity));
     const angleRad = ((isFinite(brush.angle) ? brush.angle : 0) * Math.PI / 180).toFixed(6);
-    const tipW = Math.max(1, tipWidth || 200);
-    const scale = Math.max(0.01, Math.min(10, (brush.sizePx || 40) / tipW));
+    const tipSide = Math.max(1, tipWidth || 200, tipHeight || tipWidth || 200);
+    const scale = Math.max(0.01, Math.min(10, (brush.sizePx || 40) / tipSide));
     const def = '<Brush type="png_brush" BrushVersion="2" filename="' + tipName + '" scale="' + scale.toFixed(6) +
       '" spacing="' + spacing.toFixed(4) + '" angle="' + angleRad + '" useAutoSpacing="0"/>';
     let xml = tpl.replace(/name="[^"]*"/, 'name="' + xmlEsc(brush.name || 'brush') + '"');
@@ -593,6 +563,12 @@
     xml = setParam(xml, 'CompositeOp', 'normal');
     xml = setParam(xml, 'OpacityValue', opacity.toFixed(3));
     xml = setParam(xml, 'FlowValue', opacity.toFixed(3));
+    const pressureSize=brush.pressureSize===undefined?!!brush.pressure:!!brush.pressureSize;
+    const pressureOpacity=!!brush.pressureOpacity;
+    xml = setParam(xml,'PressureSize',String(pressureSize));
+    xml = setParam(xml,'SizeUseCurve',String(pressureSize));
+    xml = setParam(xml,'PressureOpacity',String(pressureOpacity));
+    xml = setParam(xml,'OpacityUseCurve',String(pressureOpacity));
     if (brush.scatterOn) {
       xml = setParam(xml, 'ScatterValue', Math.max(0, Math.min(10, (brush.scatterPct || 0) / 100)).toFixed(3));
       xml = setParam(xml, 'Scatter/Enabled', 'true');
@@ -658,12 +634,36 @@
       const base = brush.name || 'brush';
       const asciiBase = 'converted_' + (++bundleIndex);
       // 还原优先：源是 .kpp 时直接复用它的预设 XML（只替换笔尖文件名）
-      if (opts.fidelity !== false && brush._rawXml && brush.tip) {
+      if (opts.fidelity !== false && !opts.forceRebuild && brush._rawXml && brush.tip) {
         const tipName = asciiBase + '_tip.png';
         const tipBytes = pngTipPng(prepareTipMask(grayTip(brush.tip)));
         files.push({ name: 'brushes/' + tipName, data: tipBytes });
         manifest.push({ path: 'brushes/' + tipName, type: 'brushes', md5: util.md5(tipBytes) });
         let xml = brush._rawXml;
+        // Apply only explicit export overrides; retain other native XML fields.
+        const scaleOverride=Number.isFinite(opts.sizeScale) && opts.sizeScale>0 && opts.sizeScale!==1;
+        const spacingOverride=Number.isFinite(opts.spacingOverride) && opts.spacingOverride>0;
+        const definition=collectParams(xml).brush_definition;
+        if(definition && (scaleOverride || spacingOverride)) {
+          const patched=definition.raw.replace(/<(?:Brush|MaskGenerator)\b[^>]*>/g,function(tag){
+            if(scaleOverride){
+              tag=tag.replace(/(\bdiameter=")([0-9.eE+-]+)(")/g,function(_,a,n,c){return a+(Number(n)*opts.sizeScale).toFixed(3)+c;});
+              tag=tag.replace(/(\bscale=")([0-9.eE+-]+)(")/g,function(_,a,n,c){return a+(Number(n)*opts.sizeScale).toFixed(6)+c;});
+            }
+            if(spacingOverride){
+              tag=tag.replace(/(\bspacing=")[^"]*(")/g,function(_,a,c){return a+(opts.spacingOverride/100).toFixed(4)+c;});
+              tag=tag.replace(/\buseAutoSpacing="[^"]*"/g,'useAutoSpacing="0"');
+            }
+            return tag;
+          });
+          xml=setParam(xml,'brush_definition',patched);
+        }
+        if(opts.pressure!==undefined) {
+          xml=setParam(xml,'PressureSize',String(!!brush.pressureSize));
+          xml=setParam(xml,'SizeUseCurve',String(!!brush.pressureSize));
+          xml=setParam(xml,'PressureOpacity',String(!!brush.pressureOpacity));
+          xml=setParam(xml,'OpacityUseCurve',String(!!brush.pressureOpacity));
+        }
         const oldName = (function () {
           const m = /requiredBrushFile">\s*<!\[CDATA\[([^\]]*)\]\]/.exec(xml) || /requiredBrushFile">([^<]*)</.exec(xml);
           return m ? m[1].trim() : '';

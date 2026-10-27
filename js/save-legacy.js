@@ -25,22 +25,33 @@
     setTimeout(function () { document.body.removeChild(a); URL.revokeObjectURL(url); }, 4000);
   }
 
-  function saveViaAndroid(name, bytes, mime) {
+  async function saveViaAndroid(name, bytes, mime, onChunk) {
     var BN = window.BrushNative;
     if (!BN) return null;
     try {
       if (typeof BN.beginFile === 'function') {
-        if (!BN.beginFile(name, mime || 'application/octet-stream')) return 'ERROR: beginFile';
+        if (!BN.beginFile(name, mime || 'application/octet-stream')) {
+          if (typeof BN.abortFile === 'function') BN.abortFile();
+          return 'ERROR: beginFile';
+        }
         var CHUNK = 700000;
         for (var off = 0; off < bytes.length; off += CHUNK) {
-          if (!BN.appendChunk(base64FromBytes(bytes.subarray(off, off + CHUNK)))) return 'ERROR: appendChunk';
+          if (!BN.appendChunk(base64FromBytes(bytes.subarray(off, off + CHUNK)))) {
+            if (typeof BN.abortFile === 'function') BN.abortFile();
+            return 'ERROR: appendChunk';
+          }
+          if (onChunk) onChunk(Math.min(1, (off + CHUNK) / bytes.length));
+          await sleep(0);
         }
-        return BN.endFile();
+        var result = BN.endFile();
+        if ((!result || String(result).indexOf('ERROR') === 0) && typeof BN.abortFile === 'function') BN.abortFile();
+        return result;
       }
       if (typeof BN.saveData === 'function' && bytes.length < 4 * 1024 * 1024) {
         return BN.saveData(name, base64FromBytes(bytes), mime || 'application/octet-stream');
       }
     } catch (e) {
+      try { if (typeof BN.abortFile === 'function') BN.abortFile(); } catch (ignored) { }
       return 'ERROR: ' + e.message;
     }
     return null;
@@ -57,21 +68,39 @@
         var last = '';
         for (i = 0; i < files.length; i++) {
           progress(i / files.length, '正在保存 ' + (i + 1) + '/' + files.length + '：' + files[i].name);
-          var res = saveViaAndroid(files[i].name, files[i].data, 'application/octet-stream');
-          if (res && String(res).indexOf('ERROR') !== 0) last = res;
+          var index = i;
+          var res = await saveViaAndroid(files[i].name, files[i].data, 'application/octet-stream', function (p) {
+            progress((index + p) / files.length, '正在保存 ' + (index + 1) + '/' + files.length + '：' + files[index].name);
+          });
+          if (!res) return 'ERROR: 原生保存不可用：' + files[i].name;
+          if (String(res).indexOf('ERROR') === 0) {
+            return 'ERROR: ' + files[i].name + '：' + String(res).replace(/^ERROR:\s*/, '');
+          }
+          last = res;
           await sleep(0);
         }
         return last ? '已保存到 ' + last.replace(/\/[^/]+$/, '/') : '已保存';
       }
 
-      // 2) Electron desktop bridge: native folder picker + fs write (direct file mode)
-      if (window.BrushDesktop && typeof window.BrushDesktop.chooseFolder === 'function' && !opts.packOut) {
+      // Desktop ZIPs and loose files share one awaited native save operation.
+      if (window.BrushDesktop && typeof window.BrushDesktop.chooseFolder === 'function') {
         var dir = await window.BrushDesktop.chooseFolder();
         if (!dir) return null;
         for (i = 0; i < files.length; i++) {
           progress(i / files.length, '正在写入 ' + (i + 1) + '/' + files.length + '：' + files[i].name);
-          var w = await window.BrushDesktop.writeFile(dir, files[i].name, base64FromBytes(files[i].data));
-          if (w && String(w).indexOf('ERROR') === 0) throw new Error(String(w).slice(6));
+          var bytes = files[i].data;
+          if (typeof window.BrushDesktop.writeFileBytes === 'function') {
+            var CHUNK = 1024 * 1024;
+            for (var off = 0; off < bytes.length || off === 0; off += CHUNK) {
+              var w = await window.BrushDesktop.writeFileBytes(dir, files[i].name, bytes.subarray(off, off + CHUNK), off > 0);
+              if (w !== 'OK') throw new Error(String(w || '文件写入未完成').replace(/^ERROR:\s*/, ''));
+              progress((i + Math.min(1, (off + CHUNK) / Math.max(1, bytes.length))) / files.length, '正在写入：' + files[i].name);
+              await sleep(0);
+            }
+          } else {
+            var w = await window.BrushDesktop.writeFile(dir, files[i].name, base64FromBytes(bytes));
+            if (w !== 'OK') throw new Error(String(w || '文件写入未完成').replace(/^ERROR:\s*/, ''));
+          }
         }
         return '已保存到 ' + dir;
       }

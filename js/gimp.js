@@ -93,6 +93,7 @@
     const one = brushOf(h, tip, h.name || (fileName || '').replace(/\.[^.]+$/, ''));
     one._rawFile = bytes;
     one._rawKind = 'gbr';
+    one._rawBrushState = util.brushFingerprint(one);
     return { brushes: [one], warnings: warnings };
   }
 
@@ -122,7 +123,12 @@
       pos = h.dataStart + h.width * h.height * h.bpp;
     }
     if (!brushes.length) warnings.push('GIH 中没有可用笔刷');
-    brushes.forEach(function (b) { b._rawFile = bytes; b._rawKind = 'gih'; });
+    const rawGroup = {bytes:bytes,count:brushes.length,name:pipeName};
+    brushes.forEach(function (b, index) {
+      b._rawFile = bytes; b._rawKind = 'gih';
+      b._rawGroup = rawGroup; b._rawGroupIndex = index;
+      b._rawBrushState = util.brushFingerprint(b);
+    });
     return { brushes: brushes, warnings: warnings, pipeName: pipeName };
   }
 
@@ -171,15 +177,12 @@
     return { w: tip.w, h: tip.h, data: gray };
   }
 
-  function resizeGray(t, nw, nh) {
+  function padGray(t, nw, nh) {
     if (t.w === nw && t.h === nh) return t.data;
     const out = new Uint8Array(nw * nh);
-    for (let y = 0; y < nh; y++) {
-      const sy = nh <= 1 ? 0 : Math.min(t.h - 1, Math.round((y * (t.h - 1)) / (nh - 1)));
-      for (let x = 0; x < nw; x++) {
-        const sx = nw <= 1 ? 0 : Math.min(t.w - 1, Math.round((x * (t.w - 1)) / (nw - 1)));
-        out[y * nw + x] = t.data[sy * t.w + sx];
-      }
+    const left = Math.floor((nw - t.w) / 2), top = Math.floor((nh - t.h) / 2);
+    for (let y = 0; y < t.h; y++) {
+      out.set(t.data.subarray(y * t.w, (y + 1) * t.w), (top + y) * nw + left);
     }
     return out;
   }
@@ -212,12 +215,13 @@
     const line1 = util.utf8Encode(String(pipeName || 'brushconv'));
     const line2 = util.utf8Encode(
       n + ' ncells:' + n + ' cellwidth:' + w + ' cellheight:' + h +
-      ' step:' + spacing + ' dim:1 cols:1 rows:1 placement:constant rank0:1 sel0:incremental'
+      ' step:' + spacing + ' dim:1 cols:1 rows:1 placement:constant rank0:' + n + ' sel0:incremental'
     );
     const parts = [line1, LF, line2, LF];
     for (let i = 0; i < n; i++) {
-      const data = resizeGray(tips[i], w, h);
-      parts.push(buildGbrGray(brushes[i].name, w, h, spacing, data));
+      const data = padGray(tips[i], w, h);
+      const cellSpacing = Math.max(1, Math.min(1000, Math.round(brushes[i].spacingPct || 10)));
+      parts.push(buildGbrGray(brushes[i].name, w, h, cellSpacing, data));
     }
     return util.concat(parts);
   }

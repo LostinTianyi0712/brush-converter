@@ -120,16 +120,43 @@
 
   function readDescriptorBody(r, depth) {
     if (depth > MAX_DEPTH) throw new Error('descriptor 嵌套过深');
+    const start=r.p;
     const name = readUnicode(r);
     const classId = readId(r);
+    const countAt=r.p;
     const n = r.u32();
     const items = [];
     for (let i = 0; i < n; i++) {
+      const itemStart=r.p;
       const key = readId(r);
       const tag = readTypeTag(r);
-      items.push({ key, tag, value: readValue(r, tag, depth + 1) });
+      const valueStart=r.p,value=readValue(r,tag,depth+1);
+      items.push({key,tag,value,_span:[itemStart,r.p],_valueSpan:[valueStart,r.p]});
     }
-    return { type: 'descriptor', name, classId, items };
+    return { type: 'descriptor', name, classId, items, _span:[start,r.p], _countAt:countAt };
+  }
+
+  // Replacement payloads are already encoded by the ABR writer. Preserve every
+  // unrelated item byte-for-byte, including its original charID/stringID form.
+  function patchDescriptor(bytes, patches) {
+    const r=new Reader(bytes,0),root=readDescriptorBody(r,0),u=util();
+    function id(key){const b=u.utf8Encode(key);return u.concat([be32(key.length===4?0:b.length),b]);}
+    function be32(n){return new Uint8Array([(n>>>24)&255,(n>>>16)&255,(n>>>8)&255,n&255]);}
+    function apply(node,list){
+      const parts=[],seen=new Set();
+      for(const it of node.items){
+        const local=list.filter(p=>p.path[0]===it.key);local.forEach(p=>seen.add(p.path[0]));
+        const direct=local.find(p=>p.path.length===1);
+        if(direct)parts.push(u.concat([bytes.subarray(it._span[0],it._valueSpan[0]-4),u.utf8Encode(direct.tag),direct.data]));
+        else if(local.length && it.value && it.value.type==='descriptor'){
+          parts.push(u.concat([bytes.subarray(it._span[0],it._valueSpan[0]),apply(it.value,local.map(p=>Object.assign({},p,{path:p.path.slice(1)})))]));
+        }else parts.push(bytes.subarray(it._span[0],it._span[1]));
+      }
+      const additions=list.filter(p=>p.path.length===1&&!seen.has(p.path[0]));
+      for(const p of additions)parts.push(u.concat([p.header || u.concat([id(p.path[0]),u.utf8Encode(p.tag)]),p.data]));
+      return u.concat([bytes.subarray(node._span[0],node._countAt),be32(node.items.length+additions.length)].concat(parts));
+    }
+    return apply(root,patches);
   }
 
   /* Parse the ABR desc block into a list of brush presets. */
@@ -176,7 +203,8 @@
     return undefined;
   }
 
-  const api = { parseDescBlock, getItem, unitValue, Reader };
+  const api = { parseDescBlock, getItem, unitValue, Reader, patchDescriptor,
+    readDescriptor:function(bytes){return readDescriptorBody(new Reader(bytes,0),0);} };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { descriptor: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

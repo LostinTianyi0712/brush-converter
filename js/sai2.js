@@ -60,58 +60,20 @@
     return { w: w, h: h, data: g };
   }
 
-  function trimCenter(g) {
-    let minX = g.w, minY = g.h, maxX = -1, maxY = -1;
-    for (let y = 0; y < g.h; y++) for (let x = 0; x < g.w; x++) {
-      if (g.data[y * g.w + x] <= 4) continue;
-      if (x < minX) minX = x; if (x > maxX) maxX = x;
-      if (y < minY) minY = y; if (y > maxY) maxY = y;
+  // SAI2 uses square shapes. Pad the original canvas instead of cropping it
+  // or deleting disconnected components that may be deliberate brush fibres.
+  function squareAndSize(g, target) {
+    const side=Math.max(g.w,g.h), padded=new Uint8Array(side*side);
+    const left=Math.floor((side-g.w)/2),top=Math.floor((side-g.h)/2);
+    for(let y=0;y<g.h;y++)padded.set(g.data.subarray(y*g.w,(y+1)*g.w),(top+y)*side+left);
+    const n=Math.max(8,Math.min(500,Math.round(target||64)));
+    if(n===side)return {w:n,h:n,data:padded};
+    const out=new Uint8Array(n*n);
+    for(let y=0;y<n;y++)for(let x=0;x<n;x++){
+      const sx=Math.min(side-1,Math.floor(x*side/n)),sy=Math.min(side-1,Math.floor(y*side/n));
+      out[y*n+x]=padded[sy*side+sx];
     }
-    if (maxX < 0) return g;
-    const cw = maxX - minX + 1, ch = maxY - minY + 1, side = Math.max(cw, ch);
-    const out = new Uint8Array(side * side);
-    const ox = ((side - cw) / 2) | 0, oy = ((side - ch) / 2) | 0;
-    for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++)
-      out[(oy + y) * side + (ox + x)] = g.data[(minY + y) * g.w + (minX + x)];
-    return { w: side, h: side, data: out };
-  }
-
-  /* Keep only the largest connected blob (removes stray specks that otherwise
-     draw an extra thin line), then nearest-resize to the final brush pixel size
-     so SAI2 does not smooth the grain away when down-scaling. */
-  function cleanAndSize(g, target) {
-    const thr = 8;
-    const w = g.w, h = g.h, d = g.data;
-    const seen = new Uint8Array(w * h);
-    let best = null;
-    for (let i = 0; i < w * h; i++) {
-      if (seen[i] || d[i] <= thr) continue;
-      const stack = [i]; seen[i] = 1; const cells = [];
-      while (stack.length) {
-        const idx = stack.pop(); cells.push(idx);
-        const y = (idx / w) | 0, x = idx % w;
-        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-          const nx = x + dx, ny = y + dy;
-          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-          const ni = ny * w + nx;
-          if (seen[ni] || d[ni] <= thr) continue;
-          seen[ni] = 1; stack.push(ni);
-        }
-      }
-      if (!best || cells.length > best.length) best = cells;
-    }
-    const keep = new Uint8Array(w * h);
-    if (best) for (const idx of best) keep[idx] = d[idx];
-    const n = Math.max(8, Math.min(500, Math.round(target || 64)));
-    const out = new Uint8Array(n * n);
-    for (let y = 0; y < n; y++) {
-      const sy = Math.min(h - 1, Math.floor(y * h / n));
-      for (let x = 0; x < n; x++) {
-        const sx = Math.min(w - 1, Math.floor(x * w / n));
-        out[y * n + x] = keep[sy * w + sx];
-      }
-    }
-    return { w: n, h: n, data: out };
+    return {w:n,h:n,data:out};
   }
 
   function buildIni(brush) {
@@ -159,7 +121,7 @@
     const tip = tipGray(brush.tip);
     if (!tip) throw new Error('该笔刷没有笔尖形状，无法写成 SAI2 笔刷形状 BMP');
     const target = Math.max(8, Math.min(500, Math.round(brush.sizePx || 40)));
-    const g = cleanAndSize(trimCenter(tip), target);
+    const g = squareAndSize(tip, target);
     const bmp = encodeBmp8(g.w, g.h, g.data);
     const ini = buildIni(brush);
     const name = sanitize(brush.name);

@@ -195,6 +195,30 @@
   /* ---------- misc ---------- */
   u.clamp = function (v, a, b) { return Math.max(a, Math.min(b, v)); };
 
+  // Compare editable brush content, including nested curves and in-place pixel
+  // edits. Raw containers/bookkeeping are excluded to avoid hashing whole packs.
+  // The resulting string also survives Worker structured-clone boundaries.
+  u.brushFingerprint = function (brush) {
+    function value(v) {
+      if (!v || typeof v !== 'object') return v;
+      if (ArrayBuffer.isView(v)) {
+        return ['bytes', v.constructor.name, v.byteLength,
+          u.md5(new Uint8Array(v.buffer, v.byteOffset, v.byteLength))];
+      }
+      if (v instanceof ArrayBuffer) return ['buffer', v.byteLength, u.md5(new Uint8Array(v))];
+      if (Array.isArray(v)) return v.map(value);
+      const out = {};
+      Object.keys(v).sort().forEach(function (key) {
+        // The app adds selection/preview state after parsing. Nested enabled
+        // flags (e.g. a secondary brush) still affect brush contents.
+        if (v === brush && (key === 'enabled' || key === 'tipSource')) return;
+        if (key.charAt(0) !== '_') out[key] = value(v[key]);
+      });
+      return out;
+    }
+    return JSON.stringify(value(brush));
+  };
+
   u.fmtSize = function (n) {
     if (n < 1024) return n + ' B';
     if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';

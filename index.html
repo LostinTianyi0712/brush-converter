@@ -52,6 +52,7 @@
         <option value="384">384 px</option>
         <option value="512" selected>512 px（推荐）</option>
         <option value="1024">1024 px（最清晰）</option>
+          <option value="2048">2048 px（保留更多细节，文件更大）</option>
       </select>
     </div>
     <div class="opt">
@@ -63,7 +64,7 @@
       <input id="optSpacing" type="number" min="1" max="1000" step="1" placeholder="保持原样">
         <label>天生会画·默认散布</label>
         <select id="optGoScatter">
-          <option value="auto">自动（有纹理=30）</option>
+          <option value="auto">跟随原笔刷散布</option>
           <option value="0">0</option>
           <option value="15">15</option>
           <option value="30">30</option>
@@ -116,8 +117,8 @@
         <div class="opt">
           <label>双笔刷合成（近似）</label>
           <select id="optDualBake">
-            <option value="1" selected>开启（其它格式合成进笔尖）</option>
-            <option value="0">关闭（只保留 ABR 原样）</option>
+              <option value="1" selected>开启（无原生双笔刷的目标使用近似）</option>
+              <option value="0">关闭（无原生支持时仅保留主笔）</option>
           </select>
         </div>
         <div class="opt">
@@ -237,6 +238,7 @@
 <script src="./js/gimp.js"></script>
 <script src="./js/mypaint.js"></script>
 <script src="./js/kritaPreview.js"></script>
+<script src="./js/kritaPresetTemplate.js"></script>
 <script src="./js/krita.js"></script>
 <script src="./js/sai2.js"></script>
 <script src="./js/sai2read.js"></script>

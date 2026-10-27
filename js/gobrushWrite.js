@@ -85,6 +85,32 @@
   function resize(img, w, h) {
     return { w: w, h: h, rgba: png.resize(img.rgba, img.w, img.h, w, h) };
   }
+  function limitImage(img, maximum) {
+    const side = Math.max(img.w, img.h);
+    if (side <= maximum) return img;
+    return resize(img, Math.max(1, Math.round(img.w * maximum / side)), Math.max(1, Math.round(img.h * maximum / side)));
+  }
+  function grainImage(brush) {
+    const g = brush.grain;
+    if (!g || !g.w || !g.h) return null;
+    if (g.rgba) return {w:g.w,h:g.h,rgba:g.rgba};
+    if (!g.data) return null;
+    const rgba = new Uint8Array(g.w * g.h * 4), bpp = g.bpp || 1;
+    for (let i = 0; i < g.w * g.h; i++) {
+      const at = i * bpp;
+      rgba.set([g.data[at], bpp >= 3 ? g.data[at + 1] : g.data[at], bpp >= 3 ? g.data[at + 2] : g.data[at], bpp === 4 ? g.data[at + 3] : 255], i * 4);
+    }
+    return {w:g.w,h:g.h,rgba:rgba};
+  }
+  function grainPng(img) {
+    // Native grain resources are RGB textures, not white-RGB alpha masks.
+    const rgb = new Uint8Array(img.w * img.h * 3);
+    for (let i = 0; i < img.w * img.h; i++) {
+      const a = img.rgba[i * 4 + 3] / 255;
+      for (let k = 0; k < 3; k++) rgb[i * 3 + k] = Math.round(img.rgba[i * 4 + k] * a + 255 * (1 - a));
+    }
+    return png.encodeRgb(img.w, img.h, rgb);
+  }
   function renderSnapshot(img, light, brush) {
     const W = 600, H = 200;
     const rgba = new Uint8Array(W * H * 4);
@@ -173,10 +199,9 @@
 
   let EXTRA = null;
   /* 在属性块里写压力曲线 JSON（apply_preference_settings_pressure 的 tag 0x20） */
-  function setPressureCurve(propBytes, curve, allCurveProps) {
-    if (!curve || !curve.length) return propBytes;
+  function setPressureCurve(propBytes, curve, allCurveProps, parameterCurves) {
+    if (!Array.isArray(curve)) return propBytes;
     const le = function (b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; };
-    const json = util.utf8Encode(JSON.stringify(curve));
     const outers = [];
     let p = 0;
     let hit = false;
@@ -198,10 +223,12 @@
           recs.push({ tag: t2, flag: inner[q + 1], payload: inner.subarray(q + 6, q + 6 + l2) });
           q += 6 + l2;
         }
-        const match = allCurveProps ? /_PressureCurve$/.test(name) : (name === 'apply_preference_settings_pressure');
+        const match = allCurveProps
+          ? /_PressureCurve$/.test(name) && parameterCurves && Object.prototype.hasOwnProperty.call(parameterCurves, name)
+          : (name === 'apply_preference_settings_pressure');
         if (match) {
-          const cand = JSON.stringify(curve);
-          const newRec = { tag: 0x20, flag: 0xc0, payload: json };
+          const selected = allCurveProps ? parameterCurves[name] : curve;
+          const newRec = { tag: 0x20, flag: 0xc0, payload: util.utf8Encode(JSON.stringify(selected)) };
           if (curveIdx >= 0) recs[curveIdx] = newRec;
           else {
             // 插到 0x21（结束标记）之前，没有就追加
@@ -220,27 +247,17 @@
     return concat(outers);
   }
 
-  function buildInfo(uuid, name, size, spacing, opacity, tip) {
+  function buildInfo(uuid, name, size, spacing, opacity, tip, grain, shapeBytes, grainBytes) {
     const res = [];
     for (const r of T.resources) {
-      // grain 用纯白（不留纹理），否则稀疏毛刷笔尖当 grain 用会把笔迹切碎成一段一段
-      let img;
-      if (/^grain_/.test(r.name)) {
-        if (EXTRA && EXTRA.grainMode === 'tip') {
-          img = resize(tip, r.w, r.h);
-        } else {
-          img = { w: r.w, h: r.h, rgba: new Uint8Array(r.w * r.h * 4) };
-          for (let i = 0; i < r.w * r.h; i++) { img.rgba[i * 4] = 255; img.rgba[i * 4 + 1] = 255; img.rgba[i * 4 + 2] = 255; img.rgba[i * 4 + 3] = 255; }
-        }
-      } else {
-        img = resize(tip, r.w, r.h);
-      }
-      const pngBytes = png.encode(img.w, img.h, img.rgba);
+      const isGrain = /^grain_/.test(r.name);
+      const img = isGrain ? grain : tip;
+      const pngBytes = isGrain ? grainBytes : shapeBytes;
       const fileName = r.name.replace(T.templateUuid, uuid);
       const body = concat([
         recordBytes(rec(0x11, 0xd0, util.utf8Encode(fileName))),
-        recordBytes(rec(0x12, 0xd0, s32(r.w))),
-        recordBytes(rec(0x13, 0xd0, s32(r.h))),
+        recordBytes(rec(0x12, 0xd0, s32(img.w))),
+        recordBytes(rec(0x13, 0xd0, s32(img.h))),
         recordBytes(rec(0x14, 0xd0, s32(r.type))),
         recordBytes(rec(0x15, 0xd0, pngBytes))
       ]);
@@ -261,25 +278,26 @@
     let propBytes = patchUuid(b64ToBytes(T.propPayload), T.templateUuid, uuid);
     if (EXTRA && EXTRA.pressureCurve) {
       propBytes = setPressureCurve(propBytes, EXTRA.pressureCurve, false);
-      propBytes = setPressureCurve(propBytes, EXTRA.pressureCurve, true);
+      // A global response curve is not a hue/grain/etc. parameter curve.
+      // Keep each template default unless that parameter has an explicit curve.
+      if (EXTRA.pressureCurves) propBytes = setPressureCurve(propBytes, EXTRA.pressureCurve, true, EXTRA.pressureCurves);
     }
     setPropField(propBytes, 'strokeSpacing', spacing);
     setPropField(propBytes, 'propertiesMaxSize', size);
     // 按原笔刷输出：最小尺寸/最小不透明度/流量/纹理深度都用源笔刷的真实值
-    const minSizeRatio = (EXTRA && EXTRA.minSizeRatio) ? Math.max(0, Math.min(1, EXTRA.minSizeRatio)) : 0.1;
-    const minAlphaRatio = (EXTRA && EXTRA.minOpacityRatio) ? Math.max(0, Math.min(1, EXTRA.minOpacityRatio)) : 1;
+    const minSizeRatio = (EXTRA && EXTRA.minSizeRatio !== undefined) ? Math.max(0, Math.min(1, EXTRA.minSizeRatio)) : 0.1;
+    const minAlphaRatio = (EXTRA && EXTRA.minOpacityRatio !== undefined) ? Math.max(0, Math.min(1, EXTRA.minOpacityRatio)) : 1;
     const flow = (EXTRA && EXTRA.flowPct !== undefined) ? Math.round(EXTRA.flowPct * 100) : 100;
-    setPropField(propBytes, 'propertiesMinSize', Math.max(1, Math.round(size * minSizeRatio)));
+    setPropField(propBytes, 'propertiesMinSize', Math.max(0, Math.round(size * minSizeRatio)));
     setPropField(propBytes, 'propertiesMaxAlpha', opacity);
-    setPropField(propBytes, 'propertiesMinAlpha', Math.max(1, Math.round(opacity * minAlphaRatio)));
-    setPropField(propBytes, 'renderingFlow', Math.max(1, Math.min(100, flow)));
-    if (EXTRA && EXTRA.hasTexture) {
-      const depth = Math.round(((EXTRA.textureDepth === undefined ? 0.5 : EXTRA.textureDepth)) * 100);
-      if (!setPropField(propBytes, 'grainDepth', Math.max(0, Math.min(100, depth)))) { /* 模板没有该属性则跳过 */ }
-    }
+    setPropField(propBytes, 'propertiesMinAlpha', Math.max(0, Math.round(opacity * minAlphaRatio)));
+    setPropField(propBytes, 'renderingFlow', Math.max(0, Math.min(100, flow)));
+    const depth = EXTRA && EXTRA.hasTexture
+      ? Math.round((EXTRA.textureDepth === undefined ? 0.5 : EXTRA.textureDepth) * 100) : 0;
+    setPropField(propBytes, 'grainDepth', Math.max(0, Math.min(100, depth)));
     const scatter = (EXTRA && EXTRA.scatter !== undefined && EXTRA.scatter !== null)
       ? Math.max(0, Math.min(100, Math.round(EXTRA.scatter)))
-      : (EXTRA && EXTRA.hasTexture ? 30 : 0);
+      : 0;
     setPropField(propBytes, 'shapeScatter', scatter);
     if (EXTRA && EXTRA.prop18) {
       for (const k of Object.keys(EXTRA.prop18)) setPropField(propBytes, k, EXTRA.prop18[k]);
@@ -295,12 +313,13 @@
   function makeGobrush(brush, opts) {
     opts = opts || {};
     EXTRA = Object.assign({}, opts);
-    if (EXTRA.scatter === undefined) EXTRA.scatter = brush.hasTexture ? 30 : 0;
+    if (EXTRA.scatter === undefined) EXTRA.scatter = brush.scatterOn === false ? 0 : (brush.scatterPct === undefined ? 0 : brush.scatterPct);
     EXTRA.hasTexture = !!brush.hasTexture;
     if (EXTRA.textureDepth === undefined) EXTRA.textureDepth = brush.textureDepth;
     if (EXTRA.minSizeRatio === undefined) EXTRA.minSizeRatio = brush.minSizeRatio;
     if (EXTRA.minOpacityRatio === undefined) EXTRA.minOpacityRatio = brush.minOpacityRatio;
     if (EXTRA.flowPct === undefined) EXTRA.flowPct = brush.flowPct;
+    if (EXTRA.pressureCurves === undefined) EXTRA.pressureCurves = brush.gopaintPressureCurves;
     if (EXTRA.pressureCurve === undefined) {
       EXTRA.pressureCurve = brush.gopaintPressureCurve || (function () {
         const min = EXTRA.minSizeRatio === undefined ? 0.5 : Math.max(0, Math.min(1, EXTRA.minSizeRatio));
@@ -309,19 +328,28 @@
     }
     const uuid = makeUuid();
     const name = String(brush.name || 'brush').slice(0, 40) || 'brush';
-    const size = Math.max(1, Math.min(1000, Math.round(brush.sizePx || 40)));
-    const spacing = Math.max(1, Math.min(1000, Math.round(brush.spacingPct || 25)));
-    const opacity = Math.max(1, Math.min(100, Math.round((brush.opacity === undefined ? 1 : brush.opacity) * 100)));
-    const tip = whiteShape(tipRgba(brush));
-    const shape10 = resize(tip, 10, 10);
-    const grain10 = resize(tip, 10, 10);
+    const size = Math.max(1, Math.min(1000, Math.round((brush.sizePx || 40) * (opts.sizeScale === undefined ? 1 : opts.sizeScale))));
+    const spacing = Math.max(1, Math.min(1000, Math.round(opts.spacingOverride > 0 ? opts.spacingOverride : (brush.spacingPct === undefined ? 25 : brush.spacingPct))));
+    const opacity = Math.max(0, Math.min(100, Math.round((brush.opacity === undefined ? 1 : brush.opacity) * 100)));
+    const tip = limitImage(whiteShape(tipRgba(brush)), Math.max(1, Math.min(2048, opts.maxTipSize || 2048)));
+    let grain = grainImage(brush);
+    if (EXTRA.grainMode === 'tip') {
+      grain = {w:tip.w,h:tip.h,rgba:new Uint8Array(tip.rgba)};
+      for (let i = 0; i < grain.rgba.length; i += 4) {
+        const coverage = grain.rgba[i + 3];
+        grain.rgba.set([coverage, coverage, coverage, 255], i);
+      }
+    }
+    if (!grain) grain = {w:800,h:800,rgba:new Uint8Array(800 * 800 * 4).fill(255)};
+    grain = limitImage(grain, Math.max(1, Math.min(2048, opts.maxTextureSize || 2048)));
+    const shapeBytes = png.encode(tip.w, tip.h, tip.rgba), grainBytes = grainPng(grain);
     const snapshot = renderSnapshot(tip, false, brush);
     const snapshotLight = renderSnapshot(tip, true, brush);
-    const info = buildInfo(uuid, name, size, spacing, opacity, tip);
+    const info = buildInfo(uuid, name, size, spacing, opacity, tip, grain, shapeBytes, grainBytes);
     const files = [
       { name: 'info.json', data: util.utf8Encode(T.infoJson) },
-      { name: 'grain_' + uuid + '.png', data: png.encode(grain10.w, grain10.h, grain10.rgba) },
-      { name: 'shape_' + uuid + '.png', data: png.encode(shape10.w, shape10.h, shape10.rgba) },
+      { name: 'grain_' + uuid + '.png', data: grainBytes },
+      { name: 'shape_' + uuid + '.png', data: shapeBytes },
       { name: 'brush_' + uuid + '.info', data: info },
       { name: 'snapshot_' + uuid + '.png', data: png.encode(snapshot.w, snapshot.h, snapshot.rgba) },
       { name: 'snapshot_light_' + uuid + '.png', data: png.encode(snapshotLight.w, snapshotLight.h, snapshotLight.rgba) }
@@ -331,13 +359,26 @@
   }
 
   /** 整套笔刷 -> 单个 .gobrushes（真实结构：N 个 <uuid>.gobrush + brushgroup.info 二进制，无 info.json） */
-  function makeGobrushes(brushList, opts) {
+  function makeGobrushes(brushList, opts, writeBrush) {
     opts = opts || {};
     const groupName = String(opts.groupName || '').slice(0, 40) || '笔刷组';
     const groupUuid = makeUuid();
     const files = [];
+    const usedIds = new Set();
     for (let i = 0; i < brushList.length; i++) {
-      const made = makeGobrush(brushList[i], opts);
+      let made = writeBrush ? writeBrush(brushList[i]) : makeGobrush(brushList[i], opts);
+      if (made.uuid && usedIds.has(made.uuid) && made.passthrough) {
+        // Duplicating a native brush needs a fresh identity, not template defaults.
+        const oldUuid = made.uuid, uuid = makeUuid();
+        const entries = zip.read(made.bytes).filter(e => !e.dir).map(e => ({
+          name: e.name.split(oldUuid).join(uuid),
+          data: /\.(info|json)$/i.test(e.name)
+            ? patchUuid(new Uint8Array(e.data()), oldUuid, uuid) : e.data()
+        }));
+        made = {bytes:zip.writeGopaint(entries, uuid), uuid:uuid};
+      }
+      if (!made.uuid || usedIds.has(made.uuid)) made = makeGobrush(brushList[i], opts);
+      usedIds.add(made.uuid);
       files.push({ name: made.uuid + '.gobrush', data: made.bytes });
     }
     // brushgroup.info = u16(3,2,9) + u32(restLen) + [tag0 flagA0: [tag1 uuid][tag2 name][tag3 u32=0]]

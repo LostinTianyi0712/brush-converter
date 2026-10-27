@@ -7,6 +7,25 @@
 
   const MAGIC = 'hsjbru';
 
+  // Android 3.4.5 dual-brush menu order. Native exports establish f122:
+  // normal omits it (0); changing only to Hard Mix adds d0 07 08 (122 = 8).
+  const DUAL_BLEND_NAMES = ['normal', 'multiply', 'darken', 'colorBurn', 'linearBurn',
+    'lighten', 'colorDodge', 'overlay', 'hardMix', 'difference', 'subtract', 'divide', 'linearHeight'];
+  const PRO_DUAL_BLEND_NAMES = ['normal', 'darken', 'multiply', 'colorBurn', 'linearBurn',
+    'lighten', 'screen', 'hardMix', 'overlay', 'softLight', 'hardLight', 'difference'];
+  function dualBlendName(value) {
+    return DUAL_BLEND_NAMES[value];
+  }
+  function dualBlendValue(value, fallback) {
+    if (typeof value === 'number') value = PRO_DUAL_BLEND_NAMES[value];
+    const aliases = { nrml: 'normal', mltp: 'multiply', drkn: 'darken', cbrn: 'colorburn',
+      lghn: 'lighten', cddg: 'colordodge', ovrl: 'overlay', hmix: 'hardmix', dfrn: 'difference' };
+    let key = String(value === undefined ? '' : value).toLowerCase().replace(/[^a-z]/g, '');
+    key = aliases[key] || key;
+    const index = DUAL_BLEND_NAMES.findIndex(function (name) { return name.toLowerCase() === key; });
+    return index >= 0 ? index : (typeof fallback === 'number' ? fallback : 0);
+  }
+
   /* ---------- protobuf primitives ---------- */
   /* Varint for protobuf uint64. No BigInt / BigInt literals: must stay
      parseable by Chrome 61 (ES2017). Negative numbers are encoded as their
@@ -70,18 +89,19 @@
     parts.push(u8arr(fVarint(5, 1)));                           // ISVISIBLE
     parts.push(u8arr(fBytes(7, util.utf8Encode(b.texId))));     // MASKTEXPATH (image id)
     const size = Math.max(1, Math.min(5000, b.sizePx || 100));
-    const minSize = Math.max(0.01, Math.min(1, b.minSizeRatio === undefined ? 1 : b.minSizeRatio));
-    const opacity = Math.max(0.01, Math.min(1, b.opacity === undefined ? 1 : b.opacity));
-    const minOp = Math.max(0.01, Math.min(1, b.minOpacityRatio === undefined ? 1 : b.minOpacityRatio));
+    const maxSize=Math.max(size,b.maxSizePx||500);
+    const minSize = Math.max(0, Math.min(1, b.minSizeRatio === undefined ? 1 : b.minSizeRatio));
+    const opacity = Math.max(0, Math.min(1, b.opacity === undefined ? 1 : b.opacity));
+    const minOp = Math.max(0, Math.min(1, b.minOpacityRatio === undefined ? 1 : b.minOpacityRatio));
     parts.push(u8arr(fF32(8, size)));                           // WIDTH
     parts.push(u8arr(fF32(9, size * minSize)));                 // SMALLWIDTH (零压感宽度)
     parts.push(u8arr(fF32(50, minSize)));                       // MINWIDTHPERCENT（最小直径，App 用这个字段）
     parts.push(u8arr(fF32(11, 1)));                             // MINWIDTH
-    parts.push(u8arr(fF32(12, Math.max(500, size))));           // MAXWIDTH
+    parts.push(u8arr(fF32(12, maxSize)));                      // MAXWIDTH
     parts.push(u8arr(fF32(13, opacity)));                       // ALPHA
     parts.push(u8arr(fF32(14, opacity * minOp)));               // SMALLALPHA
     parts.push(u8arr(fVarint(16, -1)));                         // COLOR (white)
-    const spacing = Math.max(0.01, Math.min(10, (b.spacingPct || 10) / 100));
+    const spacing = Math.max(0.001, Math.min(10, (b.spacingPct === undefined ? 10 : b.spacingPct) / 100));
     parts.push(u8arr(fF32(17, spacing)));                       // SPACING
     parts.push(u8arr(fVarint(19, 1)));                          // ROTFLOWFINGER
     const roundness = Math.max(0.01, Math.min(1, (b.roundness === undefined ? 100 : b.roundness) / 100));
@@ -90,16 +110,16 @@
     parts.push(u8arr(fF32(23, hardness)));                      // HARDNESS
     const texScale = Math.max(0.01, Math.min(20, b.textureScale === undefined ? 1 : b.textureScale));
     parts.push(u8arr(fF32(24, texScale)));                      // TEXSCALE
-    const flow = Math.max(0.01, Math.min(1, b.flowPct === undefined ? 1 : b.flowPct));
+    const flow = Math.max(0, Math.min(1, b.flowPct === undefined ? 1 : b.flowPct));
     parts.push(u8arr(fF32(25, flow)));                          // BRUSHFLOW
-    const minFlow = Math.max(0.01, Math.min(1, b.minFlowRatio === undefined ? Math.min(1, flow * 0.13 + 0.01) : b.minFlowRatio));
+    const minFlow = Math.max(0, Math.min(1, b.minFlowRatio === undefined ? Math.min(1, flow * 0.13 + 0.01) : b.minFlowRatio));
     parts.push(u8arr(fF32(26, flow * minFlow)));                // SMALLBRUSHFLOW
     parts.push(u8arr(fVarint(31, 1)));                          // USESHAPE
     if (b.hasTexture) parts.push(u8arr(fVarint(28, 1)));        // TEXTURE ON
     parts.push(u8arr(fF32(35, Math.max(0, Math.min(100, b.textureBrightness === undefined ? 51 : b.textureBrightness))))); // TEXBRIGHTNESS
     parts.push(u8arr(fVarint(33, Math.max(0, Math.min(200, Math.round(b.textureContrast === undefined ? 100 : b.textureContrast)))))); // CONTRAST
     if (b.textureDepth) parts.push(u8arr(fF32(123, Math.max(0, Math.min(1, b.textureDepth))))); // TEXTUREDEPTH
-    if (b.pressure || b.pressureSize) parts.push(u8arr(fVarint(36, 1))); // SUPPORTPRESSURE
+    if (b.pressureSize === undefined ? b.pressure : b.pressureSize) parts.push(u8arr(fVarint(36, 1))); // SUPPORTPRESSURE
     if (b.pressureOpacity) parts.push(u8arr(fVarint(47, 1)));   // TRANSFER
     if (b.sizeJitterPct) parts.push(u8arr(fF32(10, Math.min(1, b.sizeJitterPct / 100)))); // SIZE JITTER
     if (b.spacingJitterPct) parts.push(u8arr(fF32(18, Math.min(10, b.spacingJitterPct / 100)))); // SPACING JITTER
@@ -145,19 +165,21 @@
       parts.push(u8arr(fBytes(120, uuidBytes)));
       if (b.bruDualRefUuid) {
         const u1 = uuidBytes, u2 = util.utf8Encode(b.bruDualRefUuid);
-        const tpl = (b.bruLinkTemplate && b.bruLinkTemplate.length > 97) ? b.bruLinkTemplate : dualLinkTemplate();
+        const sub = b.bruDualSubBrush;
+        const tpl = sub ? metadataFor(Object.assign({}, sub, {
+          bruDualRefUuid: null, bruDualSubBrush: null, texId: sub.texId || sub.oldTexId || ''
+        }),{}) : (b.bruLinkTemplate || dualLinkTemplate());
         const subName = util.utf8Encode(String(b.dualSubName || '第二支笔刷'));
         const iconPath = util.utf8Encode('icons/yzb');
-        const msgParts = [];
-        msgParts.push(0x0a); msgParts.push(u1.length); msgParts.push.apply(msgParts, Array.from(u1));
-        msgParts.push(0x12); msgParts.push(u2.length); msgParts.push.apply(msgParts, Array.from(u2));
-        msgParts.push(0x1a); msgParts.push(subName.length); msgParts.push.apply(msgParts, Array.from(subName));
-        msgParts.push(0x22); msgParts.push(iconPath.length); msgParts.push.apply(msgParts, Array.from(iconPath));
-        msgParts.push(0x28, 1);
-        const msg = new Uint8Array(msgParts.concat(Array.from(tpl.subarray(97))));
+        const tail = readFields(tpl, 0, tpl.length).filter(function (f) { return f.f > 5; });
+        const msg = util.concat([
+          u8arr(fBytes(1, u1)), u8arr(fBytes(2, u2)), u8arr(fBytes(3, subName)),
+          u8arr(fBytes(4, iconPath)), u8arr(fVarint(5, 1)), encodeFields(tail)
+        ]);
         parts.push(u8arr(fBytes(121, msg)));
         // 真实双笔刷文件里还有 f87 / f158，一并写入（经验值，来自样本）
-        parts.push(u8arr(fVarint(119, 1)));
+        parts.push(u8arr(fVarint(119, b.bruDualEnabled === false ? 0 : 1)));
+        parts.push(u8arr(fVarint(122, dualBlendValue(b.dualBlendMode, b.bruDualBlendMode))));
         parts.push(u8arr(fVarint(87, 9629115)));
         parts.push(u8arr(fF32(158, 90)));
       }
@@ -166,22 +188,21 @@
     if (b.antialiasLevel) parts.push(u8arr(fVarint(96, Math.max(1, Math.min(3, Math.round(b.antialiasLevel))))));
     if (b.borderOn) {
       parts.push(u8arr(fVarint(92, 1)));
-      if (b.borderBlend) parts.push(u8arr(fVarint(95, Math.round(b.borderBlend))));
-      if (b.borderBrightness !== undefined) parts.push(u8arr(fF32(93, Math.max(0, Math.min(1, b.borderBrightness / 100)))));
-      if (b.borderStrength !== undefined) parts.push(u8arr(fF32(94, Math.max(0, Math.min(1, b.borderStrength / 100)))));
     }
     if (b.speedPressure) parts.push(u8arr(fVarint(43, 1)));
     parts.push(u8arr(fF32(81, 1)));                             // HOLLOWALPHA
     parts.push(u8arr(fVarint(82, -1)));                         // HOLLOWCOLOR
     parts.push(u8arr(fVarint(83, 1)));                          // HOLALPIND
     parts.push(u8arr(fVarint(90, 1)));                          // NEWSPACECALTYPE
-    parts.push(u8arr(fF32(93, 1)));                             // BORDERWIDTH
-    parts.push(u8arr(fF32(94, 1)));                             // BORDERSTRENGTH
-    parts.push(u8arr(fVarint(95, 4)));                          // BORDERBLENDMODE
+    // Write each field once, including when the effect is disabled: its stored
+    // settings must survive toggling it back on. Zero is an explicit value.
+    parts.push(u8arr(fF32(93, b.borderBrightness === undefined ? 1 : Math.max(0, Math.min(1, b.borderBrightness / 100)))));
+    parts.push(u8arr(fF32(94, b.borderStrength === undefined ? 1 : Math.max(0, Math.min(1, b.borderStrength / 100)))));
+    parts.push(u8arr(fVarint(95, b.borderBlend === undefined ? 4 : Math.max(0, Math.round(b.borderBlend)))));
     parts.push(u8arr(fVarint(97, Math.max(1, Math.round(b.renderCount || 1))))); // RENDERCOUNT
     parts.push(u8arr(fVarint(115, 1)));                         // SHAPEROTTYPE
-    parts.push(u8arr(fF32(135, 1)));                            // BRUWMAXSCALE
-    parts.push(u8arr(fF32(136, 0.06776)));                      // BRUWSCALE
+    parts.push(u8arr(fF32(135, maxSize / 500)));                // BRUWMAXSCALE
+    parts.push(u8arr(fF32(136, size / maxSize)));               // BRUWSCALE
     return util.concat(parts.map(u8arr));
   }
 
@@ -189,12 +210,38 @@
   const RECORD_LEN = 128;
   const BODY_START = CONTAINER_HEAD + RECORD_LEN; // 150
 
+  function metadataFor(brush, opts) {
+    if (opts.fidelity !== false && opts.keepRawMeta !== false && !opts.forceRebuild && brush._rawMeta && brush._rawMeta.length) {
+      const patch=new Set(brush._rawPatchFields||[]);
+      if(brush._rawOriginalName!==undefined && brush.name!==brush._rawOriginalName)patch.add(3);
+      if(patch.size){
+        const freshBytes=buildMetadata(brush),fresh=readFields(freshBytes,0,freshBytes.length);
+        const old=readFields(brush._rawMeta,0,brush._rawMeta.length);
+        return encodeFields(old.filter(f=>!patch.has(f.f)).concat(fresh.filter(f=>patch.has(f.f))));
+      }
+      const raw = new Uint8Array(brush._rawMeta);
+      const oldId = (brush.oldTexId || '').toUpperCase();
+      const newId = (brush.texId || (brush.png ? util.md5(brush.png) : '')).toUpperCase();
+      if (oldId && newId && oldId !== newId && oldId.length === newId.length) {
+        const oldBytes = util.utf8Encode(oldId), newBytes = util.utf8Encode(newId);
+        for (let i = 0; i + oldBytes.length <= raw.length; i++) {
+          let same = true;
+          for (let k = 0; k < oldBytes.length; k++) if (raw[i + k] !== oldBytes[k]) { same = false; break; }
+          if (same) raw.set(newBytes, i);
+        }
+      }
+      return raw;
+    }
+    return buildMetadata(Object.assign({}, brush, { pkgId: brush.pkgId || opts.pkgId,
+      texId: brush.texId || (brush.png ? util.md5(brush.png).toUpperCase() : '') }));
+  }
+
   /* Build a single-brush .bru file */
   function writeBrush(brush, opts) {
     opts = opts || {};
     const img = brush.png;
     if (!img || !img.length) throw new Error('缺少笔尖图像数据');
-    const meta = buildMetadata(brush);
+    const meta = metadataFor(brush, opts);
     const total = BODY_START + meta.length + img.length;
     const out = new Uint8Array(total);
     const dv = new DataView(out.buffer);
@@ -222,31 +269,7 @@
     const items = brushes.map(function (b) {
       const pngBytes = b.png;
       if (!pngBytes || !pngBytes.length) throw new Error('缺少笔尖图像数据: ' + (b.name || ''));
-      // 还原优先：源就是 .bru 时原样复用参数字节（只改笔尖图片及其引用 id）
-      let meta = null;
-      if (opts.fidelity !== false && b._rawMeta && b._rawMeta.length && opts.keepRawMeta !== false) {
-        const raw = new Uint8Array(b._rawMeta);
-        // 若笔尖图片被重新编码，md5 变了：把元数据里旧的 texId 文本替换成新的（长度相同）
-        const oldId = (b.oldTexId || '').toUpperCase();
-        const newId = (b.texId || util.md5(pngBytes)).toUpperCase();
-        if (oldId && newId && oldId !== newId) {
-          const oldBytes = util.utf8Encode(oldId), newBytes = util.utf8Encode(newId);
-          if (oldBytes.length === newBytes.length) {
-            for (let i = 0; i + oldBytes.length <= raw.length; i++) {
-              let same = true;
-              for (let k = 0; k < oldBytes.length; k++) if (raw[i + k] !== oldBytes[k]) { same = false; break; }
-              if (same) { raw.set(newBytes, i); break; }
-            }
-          }
-        }
-        meta = raw;
-      }
-      if (!meta) {
-        meta = buildMetadata(Object.assign({}, b, {
-          pkgId: b.pkgId || opts.pkgId,
-          texId: b.texId || util.md5(pngBytes).toUpperCase()
-        }));
-      }
+      const meta = metadataFor(b, opts);
       return { meta, img: pngBytes };
     });
     let total = BODY_START;
@@ -296,6 +319,7 @@
     const fields = [];
     let p = start;
     while (p < end) {
+      const fieldStart = p;
       let tagVal = 0, shift = 0, ok = false;
       let q = p;
       while (q < end) {
@@ -339,6 +363,7 @@
         fields.push({ f, w, v: bytes.subarray(p, p + l) });
         p += l;
       } else break;
+      fields[fields.length - 1].raw = bytes.subarray(fieldStart, p);
     }
     return fields;
   }
@@ -347,6 +372,16 @@
     const o = {};
     for (const it of fields) o[it.f] = it.v;
     return o;
+  }
+
+  function encodeFields(fields) {
+    return util.concat(fields.map(function (f) {
+      if (f.raw) return f.raw;
+      if (f.w === 0) return u8arr(fVarint(f.f, f.v));
+      if (f.w === 5) return u8arr(fF32(f.f, f.v));
+      if (f.w === 2) return u8arr(fBytes(f.f, f.v));
+      return util.concat([u8arr(tag(f.f, f.w)), f.v]);
+    }));
   }
 
   const PNG_SIG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
@@ -387,9 +422,9 @@
     const brushes = [];
     const warnings = [];
 
-    function pushBrush(metaStart, metaEnd, pngStart, pngEnd) {
-      const rawMeta = bytes.subarray(metaStart, metaEnd);
-      const fields = readFields(bytes, metaStart, metaEnd);
+    function pushBrush(metaStart, metaEnd, pngStart, pngEnd, embeddedMeta) {
+      const rawMeta = embeddedMeta || bytes.subarray(metaStart, metaEnd);
+      const fields = readFields(rawMeta, 0, rawMeta.length);
       const o = fieldsToObj(fields);
       // 字段语义依据实机标定：D:\dsh项目\笔刷ru_标定\字段映射.md
       const num = (v, dflt) => (typeof v === 'number' && isFinite(v) ? v : dflt);
@@ -429,24 +464,18 @@
       const colorDynOn = !!o[61];                                     // 颜色动态（f61）
       const colorHue = num(o[62], 0), colorSat = num(o[63], 0), colorVal = num(o[64], 0);
       const smoothingStrength = num(o[80], 0.2);                      // 平滑强度（f80）
-      // 画世界Pro 3.0 双笔刷：f120=本笔刷 uuid，f121=关联消息（field1 本笔刷，field2 第二支笔刷）
+      // 画世界Pro 3.0：f120=本笔刷uuid；f121 field2=包ID，field3及后续字段为副笔参数。
       let bruUuid = null, bruDualRef = null, bruLinkInfo = null, bruLinkTemplate = null;
       try {
         if (o[120] instanceof Uint8Array) bruUuid = util.utf8Decode(o[120]).replace(/ +$/, '');
         if (o[121] instanceof Uint8Array) {
-          let q = 0; const d = o[121]; const msg = {};
-          while (q < d.length) {
-            const tag = d[q++];
-            let len = 0, sh = 0;
-            while (q < d.length) { const c = d[q++]; len += (c & 0x7f) * Math.pow(2, sh); if (!(c & 0x80)) break; sh += 7; }
-            if (q + len > d.length) break;
-            msg[tag] = d.subarray(q, q + len); q += len;
-          }
-          const u1 = msg[0x0a] ? util.utf8Decode(msg[0x0a]) : null;
-          const u2 = msg[0x12] ? util.utf8Decode(msg[0x12]) : null;
+          const msg = fieldsToObj(readFields(o[121], 0, o[121].length));
+          const u1 = msg[1] instanceof Uint8Array ? util.utf8Decode(msg[1]) : null;
+          const u2 = msg[2] instanceof Uint8Array ? util.utf8Decode(msg[2]) : null;
           if (!bruUuid && u1) bruUuid = u1;
           if (u2 && u2 !== bruUuid) bruDualRef = u2;
-          bruLinkInfo = { primary: u1, secondary: u2 };
+          bruLinkInfo = { primary: u1, packageId: u2,
+            name: msg[3] instanceof Uint8Array ? util.utf8Decode(msg[3]) : '', enabled: !!o[119] };
           bruLinkTemplate = new Uint8Array(o[121]);
         }
       } catch (e) { /* ignore */ }
@@ -477,8 +506,8 @@
         minSizeRatio: minSizePct !== null ? Math.max(0, Math.min(1, minSizePct)) : 1,
         opacity: alpha,
         flowPct: Math.max(0, Math.min(1, flowPct)),
-        minOpacityRatio: alpha > 0 ? Math.max(0.01, Math.min(1, smallAlpha / alpha)) : 1,
-        minFlowRatio: flowPct > 0 ? Math.max(0.01, Math.min(1, minFlowPct / flowPct)) : 1,
+        minOpacityRatio: alpha > 0 ? Math.max(0, Math.min(1, smallAlpha / alpha)) : 1,
+        minFlowRatio: flowPct > 0 ? Math.max(0, Math.min(1, minFlowPct / flowPct)) : 1,
         pressure: pressureSize || transferOn,
         pressureSize: pressureSize,
         pressureOpacity: transferOn,
@@ -495,6 +524,10 @@
         bruDualRefUuid: bruDualRef,
         bruLinkInfo: bruLinkInfo,
         bruLinkTemplate: bruLinkTemplate,
+        bruDualEnabled: !!o[119],
+        bruDualBlendMode: num(o[122], 0),
+        dualBlendMode: dualBlendName(num(o[122], 0)),
+        pkgId: o[2] instanceof Uint8Array ? util.utf8Decode(o[2]) : undefined,
         hollowPct: hollowPct,
         antialiasLevel: antialiasLevel,
         borderOn: borderOn,
@@ -526,6 +559,7 @@
         colorJitterSat: colorSat,
         colorJitterVal: colorVal,
         _rawMeta: rawMeta,
+        _rawMaxWidth:num(o[12],500),
         oldTexId: (function (v) {
           if (!v) return '';
           if (typeof v === 'string') return v;
@@ -533,6 +567,12 @@
         })(o[7]),
         source: 'bru',
         bruVersion: version
+      });
+      const parsed = brushes[brushes.length - 1];
+      parsed._rawState = {};
+      Object.keys(parsed).forEach(function (key) {
+        const v = parsed[key];
+        if (v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') parsed._rawState[key] = v;
       });
     }
 
@@ -600,10 +640,36 @@
       pos = endOff > pos ? endOff : Math.min(bytes.length, pngStart + img1Len + img2Len);
     }
     if (!brushes.length) throw new Error('.bru 中没有找到可用笔刷');
+    // Resolve links after every standalone brush is available. f121 embeds the
+    // secondary settings; field2 is a package ID, not a secondary brush UUID.
+    brushes.slice().forEach(function (primary) {
+      if (!primary.bruLinkTemplate) return;
+      pushBrush(0, 0, -1, -1, primary.bruLinkTemplate);
+      const embedded = brushes.pop();
+      const candidates = brushes.filter(function (b) { return b !== primary; });
+      const samePackage = candidates.filter(function (b) { return b.pkgId === primary.bruDualRefUuid; });
+      const pool = samePackage.length ? samePackage : candidates;
+      const linked = pool.find(function (b) { return embedded.oldTexId && b.oldTexId === embedded.oldTexId; }) ||
+        pool.find(function (b) { return b.name === embedded.name; }) ||
+        candidates.find(function (b) { return b.bruUuid === primary.bruDualRefUuid; });
+      const sub = Object.assign({}, linked || {}, embedded, {
+        tip: linked ? linked.tip : null, dualOn: false, dualTip: undefined,
+        bruDualRefUuid: null, bruLinkTemplate: null, _rawMeta: undefined
+      });
+      primary.dualOn = primary.bruDualEnabled;
+      primary.dualTip = sub.tip;
+      primary.dualSubBrush = sub;
+      primary.dualBrush = Object.assign({}, sub, {
+        enabled: primary.dualOn, diameter: sub.sizePx, spacing: sub.spacingPct,
+        blend: primary.dualBlendMode,
+        name: sub.name, useScatter: sub.scatterOn, count: sub.scatterCount, bothAxes: sub.scatterBothAxes
+      });
+      if (primary.dualOn && !sub.tip) warnings.push(primary.name + ': 双笔刷副笔参数已读取，但包内缺少对应笔尖图像');
+    });
     return { version, totalSize, count: count || brushes.length, brushes, warnings };
   }
 
-  const api = { isBru, writeBrush, writePack, parseBru, buildMetadata, MAGIC };
+  const api = { isBru, writeBrush, writePack, parseBru, buildMetadata, MAGIC, dualBlendValue };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { bru: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);
