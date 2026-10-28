@@ -260,7 +260,12 @@
     dv.setUint32(rec + 0x66, total, false); // end
     out.set(meta, BODY_START);
     out.set(img, BODY_START + meta.length);
-    if (embedded) out.set(embedded, BODY_START + meta.length + img.length);
+    if (embedded) {
+      // Native single-export fixture: trailing 22-byte descriptor starts at 128.
+      out[rec + 0x6a] = 1;
+      dv.setUint32(rec + 0x73, embedded.length, false);
+      out.set(embedded, BODY_START + meta.length + img.length);
+    }
     return out;
   }
 
@@ -275,11 +280,11 @@
       const pngBytes = b.png;
       if (!pngBytes || !pngBytes.length) throw new Error('缺少笔尖图像数据: ' + (b.name || ''));
       const meta = metadataFor(b, opts);
-      return { meta, img: pngBytes };
+      return { meta, img: pngBytes, embedded: b.embeddedSubPng || new Uint8Array(0) };
     });
     let total = BODY_START;
     for (let i = 0; i < items.length; i++) {
-      total += items[i].meta.length + items[i].img.length;
+      total += items[i].meta.length + items[i].img.length + items[i].embedded.length;
       if (i > 0) total += 50;
     }
     if (total > 0xffffffff) throw new Error('打包后文件超过 4GB');
@@ -294,20 +299,30 @@
     // brush 1: describe it in the 128-byte record
     dv.setUint32(CONTAINER_HEAD + 0x56, items[0].meta.length, false);
     dv.setUint32(CONTAINER_HEAD + 0x5e, items[0].img.length, false);
-    dv.setUint32(CONTAINER_HEAD + 0x66, pos + items[0].meta.length + items[0].img.length, false);
+    dv.setUint32(CONTAINER_HEAD + 0x66, pos + items[0].meta.length + items[0].img.length + items[0].embedded.length, false);
     out.set(items[0].meta, pos); pos += items[0].meta.length;
     out.set(items[0].img, pos); pos += items[0].img.length;
+    if (items[0].embedded.length) {
+      out[CONTAINER_HEAD + 0x6a] = 1;
+      dv.setUint32(CONTAINER_HEAD + 0x73, items[0].embedded.length, false);
+    }
+    out.set(items[0].embedded, pos); pos += items[0].embedded.length;
     for (let i = 1; i < items.length; i++) {
       const blockPos = pos;
       const metaLen = items[i].meta.length, imgLen = items[i].img.length;
-      const endOff = blockPos + 50 + metaLen + imgLen;
+      const endOff = blockPos + 50 + metaLen + imgLen + items[i].embedded.length;
       dv.setUint32(blockPos + 0x08, metaLen, false);
       dv.setUint32(blockPos + 0x10, imgLen, false);
       dv.setUint32(blockPos + 0x14, 0, false);
       dv.setUint32(blockPos + 0x18, endOff, false);
+      if (items[i].embedded.length) {
+        out[blockPos + 0x1c] = 1;
+        dv.setUint32(blockPos + 0x25, items[i].embedded.length, false);
+      }
       pos = blockPos + 50;
       out.set(items[i].meta, pos); pos += metaLen;
       out.set(items[i].img, pos); pos += imgLen;
+      out.set(items[i].embedded, pos); pos += items[i].embedded.length;
     }
     if (pos !== total) throw new Error('内部长度不一致 (' + pos + '/' + total + ')');
     return out;
@@ -560,7 +575,7 @@
         bruDualRefUuid: bruDualRef,
         bruLinkInfo: bruLinkInfo,
         bruLinkTemplate: bruLinkTemplate,
-        bruDualEnabled: !!o[119],
+        bruDualEnabled: o[119] === undefined ? undefined : !!o[119],
         bruDualBlendMode: num(o[122], 0),
         dualBlendMode: dualBlendName(num(o[122], 0)),
         pkgId: o[2] instanceof Uint8Array ? util.utf8Decode(o[2]) : undefined,
@@ -610,12 +625,12 @@
         brush.embeddedTips = embeddedTips;
         const hasLink = !!(brush.bruLinkTemplate || brush.bruDualRefUuid || brush.bruDualEnabled);
         if (hasLink && !brush.dualTip) {
-          brush.dualOn = true;
+          brush.dualOn = brush.bruDualEnabled !== false;
           brush.dualTip = embeddedTips[0];
           const subName = (brush.bruLinkInfo && brush.bruLinkInfo.name) || '';
           brush.dualSubName = subName;
           brush.dualBrush = Object.assign({}, brush.dualBrush || {}, {
-            enabled: true,
+            enabled: brush.dualOn,
             name: subName,
             blend: brush.bruDualBlendMode,
             diameter: embeddedTips[0].w
@@ -683,16 +698,14 @@
         continue;
       }
       const expectEnd = metaStart + metaLen + img1Len + img2Len;
-      if (endOff !== expectEnd) {
-        // tolerate 64-bit/flag variants: prefer the block's end offset when it looks sane
-        if (endOff > pos && endOff <= bytes.length && metaAt(endOff + 50) === false && expectEnd <= bytes.length) {
-          endOff = expectEnd;
-        } else if (endOff <= pos || endOff > bytes.length) {
-          endOff = expectEnd;
-        }
+      if (expectEnd > bytes.length) {
+        warnings.push('笔刷记录长度超出文件，停止读取');
+        break;
       }
+      // A valid end may also cover an embedded sub-tip PNG after the main.
+      if (endOff < expectEnd || endOff > bytes.length) endOff = expectEnd;
       const pngStart = metaStart + metaLen;
-      pushBrush(metaStart, pngStart, pngStart, Math.min(bytes.length, pngStart + img1Len));
+      pushBrush(metaStart, pngStart, pngStart, Math.min(bytes.length, pngStart + img1Len), undefined, endOff);
       pos = endOff > pos ? endOff : Math.min(bytes.length, pngStart + img1Len + img2Len);
     }
     if (!brushes.length) throw new Error('.bru 中没有找到可用笔刷');
@@ -710,10 +723,13 @@
         candidates.find(function (b) { return b.bruUuid === primary.bruDualRefUuid; });
       const embeddedTip = (primary.embeddedTips && primary.embeddedTips[0]) || primary.dualTip || null;
       const sub = Object.assign({}, linked || {}, embedded, {
-        tip: linked ? linked.tip : embeddedTip, dualOn: false, dualTip: undefined,
+        // Record-local embedded pixels are authoritative; a same-named brush
+        // elsewhere in the pack must not replace them.
+        tip: embeddedTip || (linked ? linked.tip : null), dualOn: false, dualTip: undefined,
         bruDualRefUuid: null, bruLinkTemplate: null, _rawMeta: undefined
       });
-      primary.dualOn = !!(primary.bruDualEnabled || embeddedTip || (linked && linked.tip));
+      primary.dualOn = primary.bruDualEnabled === undefined
+        ? !!(embeddedTip || (linked && linked.tip)) : primary.bruDualEnabled;
       primary.dualTip = sub.tip;
       primary.dualSubBrush = sub;
       primary.dualBrush = Object.assign({}, sub, {

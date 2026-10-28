@@ -1,4 +1,4 @@
-﻿/* Conversion pipeline: detect -> parse -> normalize -> write .bru */
+/* Conversion pipeline: detect -> parse -> normalize -> write .bru */
 (function (root) {
   'use strict';
   const isNode = typeof module !== 'undefined' && module.exports && typeof process !== 'undefined';
@@ -518,20 +518,22 @@
   function makeBruEmbedded(brush, opts) {
     const pair = buildBruDualPairBrushes(brush);
     if (!pair || !pair.secondary || !pair.secondary.tip) return makeBru(brush, Object.assign({}, opts, { embedSubTip: false }));
-    const st = pair.secondary.tip;
-    const subPng = png.encode(st.w, st.h, st.rgba);
+    // Use the same conversion path as a standalone secondary. This supplies
+    // its image ID and applies scale/spacing/pressure/size limits exactly once.
+    const sub = makeBru(pair.secondary, Object.assign({}, opts, { embedSubTip: false }));
+    const enabled = brush.dualOn !== false && brush.bruDualEnabled !== false;
     const primary = Object.assign({}, pair.primary, {
-      embeddedSubPng: subPng,
-      bruDualSubBrush: pair.secondary,
-      bruDualEnabled: true,
-      dualSubName: pair.secondary.name,
+      embeddedSubPng: sub.pngBytes,
+      bruDualSubBrush: sub.meta,
+      bruDualEnabled: enabled,
+      dualSubName: sub.meta.name,
       pkgId: pair.pkgUuid
     });
     return makeBru(primary, Object.assign({}, opts, { embedSubTip: false }));
   }
 
   function makeBru(brush, opts) {
-    if (opts && opts.embedSubTip && brush && brush.dualOn && brush.dualTip) return makeBruEmbedded(brush, opts);
+    if (opts && opts.embedSubTip && brush && brush.dualTip) return makeBruEmbedded(brush, opts);
     opts = opts || {};
     let tipImg = tipToRGBA(brush);
     const synthesizedTip = !tipImg;
@@ -690,6 +692,11 @@
     items.forEach(function (item, i) {
       if (!item.bruDualSubBrush) return;
       const sub = item.bruDualSubBrush;
+      if (item.embeddedSubPng) {
+        // makeBruEmbedded has already converted the secondary metadata.
+        item.dualSubName = sub.name;
+        return;
+      }
       const ix = brushList.indexOf(sub);
       item.bruDualSubBrush = ix >= 0 ? items[ix] : makeBru(sub, opts).meta;
       item.dualSubName = item.bruDualSubBrush.name;
@@ -1756,6 +1763,7 @@ Write-Host 'restart MediBang Paint Pro'
     if (key === 'dualOn') {
       if (!brush.dualTip) return '未完整写入（缺少副笔图像）';
       if (target === 'abr' || target === 'brush' || target === 'brushset') return '原生双笔刷（待目标软件验证）';
+      if (target === 'bru' && (opts.embedSubTip === true || opts.bruEmbed === true)) return '原生内嵌副笔尖（待目标软件验证）';
       if (target === 'bru' && opts.dualPair !== false) return '原生双笔刷对（待目标软件验证）';
       return opts.dualBake === false ? '丢失（未启用近似合成）' : '近似（烘焙副笔）';
     }

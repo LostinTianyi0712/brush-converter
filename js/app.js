@@ -989,7 +989,7 @@
               const made = BC.convert.makeBruPack(packList, Object.assign({}, commonOpts(rec), { dualBake: pairNote ? false : opts.dualBake, embedSubTip: opts.bruEmbed !== false }));
               outFiles.push({ name: uniqueFile(base, '.bru'), data: made.bytes });
               if (pairNote) warnings.push('画世界双笔刷：主笔旁的「原笔刷名_副笔尖」是关联辅助笔尖，请选择主笔使用；辅助条目并非重复笔刷，删除会影响双笔效果');
-              else if (opts.bruEmbed !== false && list.some(function (b) { return b.dualOn && b.dualTip; })) warnings.push('画世界双笔刷已按原生 3.0 单支内嵌副笔尖写出（一个文件=一支笔刷，记录末尾附带副笔尖 PNG）');
+              else if (opts.bruEmbed !== false && list.some(function (b) { return b.dualOn && b.dualTip; })) warnings.push('画世界双笔刷已内嵌副笔尖，不额外增加辅助笔刷条目；整包文件仍可包含多支主笔刷。');
             }
           } catch (e) {
             list.forEach(b => failed.push((b.name || '未命名') + '（.' + fmt + '）：' + e.message));
@@ -1343,7 +1343,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.33';
+  const APP_VERSION = '2.5.34';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {
