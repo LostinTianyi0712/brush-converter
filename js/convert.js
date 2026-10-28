@@ -533,9 +533,23 @@
       rgba = png.resize(rgba, w, h, nw, nh);
       w = nw; h = nh;
     }
-    // Keep native BRU RGB and its inversion flag together. ABR imports use
-    // the existing white alpha mask with the same f32 toggle users otherwise
-    // have to enable manually (native calibration: nib_invert before/after).
+    // A texture switch without a texture image renders blank in the native app.
+    // BRU currently embeds the shape only. Bake real source pixels when requested;
+    // never substitute procedural noise or enable an empty independent layer.
+    let textureBaked = false;
+    if (brush.source !== 'bru' && brush.hasTexture && opts.noTextureBake !== true) {
+      const texture = textureGray(brush);
+      if (texture) {
+        rgba = new Uint8Array(rgba);
+        bakeTextureIntoRGBA(rgba, w, h, {
+          _patternPixels: { w: texture.w, h: texture.h, mode: 1, data: texture.gray }
+        }, brush.textureDepth === undefined ? 0.35 : brush.textureDepth);
+        textureBaked = true;
+      }
+    }
+    // Keep native BRU RGB and its inversion flag together. Cross-format masks
+    // already encode coverage in alpha: do not force shape inversion to repair
+    // an unrelated missing texture. Native f29 and f32 are separate controls.
     const pngBytes = png.encode(w, h, brush.source === 'bru' ? rgba : png.toMaskRgba(rgba));
     const sizeScale = opts.sizeScale || 1;
     let sizePx = (brush.sizePx || 100) * sizeScale;
@@ -547,7 +561,7 @@
     const rawUnchanged = !brush._rawState || Object.keys(brush._rawState).every(function (key) { return brush[key] === brush._rawState[key]; });
     const meta = {
       name: brush.name || '',
-      bruShapeInverted: brush.bruShapeInverted === undefined ? brush.source === 'abr' : !!brush.bruShapeInverted,
+      bruShapeInverted: !!brush.bruShapeInverted,
       pkgId: brush.pkgId || opts.pkgId,
       texId: util.md5(pngBytes).toUpperCase(),
       sizePx,
@@ -576,7 +590,8 @@
       scatterPct: brush.scatterPct === undefined ? undefined : Math.min(1000, brush.scatterPct * (brush.source === 'bru' ? 1 : (opts.scatterScale === undefined ? 0.15 : opts.scatterScale))),
       scatterBothAxes: brush.scatterBothAxes,
       scatterCount: brush.scatterCount,
-      hasTexture: brush.hasTexture,
+      hasTexture: brush.source === 'bru' ? brush.hasTexture : false,
+      textureInverted: brush.textureInverted,
       textureScale: brush.textureScale,
       textureBrightness: brush.textureBrightness,
       textureContrast: brush.textureContrast,
@@ -618,7 +633,7 @@
       const mapping={name:[3],pkgId:[2],sizePx:[8,9,12,50,135,136],spacingPct:[17],opacity:[13,14],minSizeRatio:[9,50],minOpacityRatio:[14],
         pressure:[36,47,9,50,14],pressureSize:[36],pressureOpacity:[47],bruShapeInverted:[32],flowPct:[25,26,51],minFlowRatio:[26,51],angle:[20],angleJitterDeg:[21],
         roundness:[22],hardness:[23],sizeJitterPct:[10],spacingJitterPct:[18],flowJitterPct:[27],countJitterPct:[60],
-        hasTexture:[28,123],textureDepth:[123],textureScale:[24],textureBrightness:[35],textureContrast:[33],scatterOn:[56,57,58,59],
+        hasTexture:[28,123],textureInverted:[29],textureDepth:[123],textureScale:[24],textureBrightness:[35],textureContrast:[33],scatterOn:[56,57,58,59],
         scatterPct:[58],scatterCount:[59],scatterBothAxes:[57],taperOn:[74,77,78],taperSize:[77],taperOpacity:[78],wetEdgesOn:[100,101,129],
         wetEdgesAmount:[101],wetEdgesDepth:[129],borderOn:[92],borderBlend:[95],borderBrightness:[93],borderStrength:[94],renderCount:[97],
         bruUuid:[120],bruDualRefUuid:[119,120,121,122],dualSubName:[121],bruDualEnabled:[119],dualBlendMode:[122],
@@ -629,7 +644,7 @@
       meta._rawPatchFields=Array.from(fields);
     }
     const bytes = bru.writeBrush(Object.assign({ png: pngBytes }, meta), opts);
-    return { bytes, pngBytes, meta, tipW: w, tipH: h };
+    return { bytes, pngBytes, meta, tipW: w, tipH: h, textureBaked };
   }
 
   /**
@@ -1731,7 +1746,12 @@ Write-Host 'restart MediBang Paint Pro'
         return opts.noTextureBake ? '未完整写入（未烘焙纹理，需配套图案）' : '近似（纹理烘焙进笔尖，不能恢复独立纹理层）';
       }
       if (target === 'brush' || target === 'brushset') return pixels && !opts.noTextureBake ? '参数映射（原纹理图）' : '未完整写入（原纹理图未写出）';
-      if (target === 'bru') return '未完整写入（当前仅纹理参数）';
+      if (target === 'bru') {
+        if (brush.source !== 'bru') return pixels && opts.noTextureBake !== true
+          ? '近似（真实纹理烘焙进笔尖，独立纹理层未写出）'
+          : '未写出（缺少原图或已关闭烘焙，禁用空纹理避免无墨）';
+        return '未完整写入（当前仅纹理参数）';
+      }
     }
     if (!supported) return '丢失（当前转换路径未映射）';
     if (key === 'scatterPct' && target === 'bru' && brush.source !== 'bru') {
@@ -1914,7 +1934,7 @@ Write-Host 'restart MediBang Paint Pro'
     };
     const reason = {
       abr: 'ABR 支持这些；纹理需配合 .pat 图案（目标 PS 里要有同名图案）',
-      bru: '仅映射已知参数；纹理图尚未原生写出，动态和实际笔触需验证',
+      bru: '外来真实纹理按选项近似烘焙进笔尖；独立纹理层尚未写出，空纹理保持关闭；动态和实际笔触需验证',
       brushset: 'Procreate 原生双笔刷、倾斜/速度分开写出；不同引擎效果需验证',
       brush: 'Procreate 原生双笔刷、倾斜/速度分开写出；不同引擎效果需验证',
       kbundle: 'Krita 6 元组曲线/颜色率未映射',

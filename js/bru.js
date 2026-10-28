@@ -117,6 +117,7 @@
     parts.push(u8arr(fVarint(32, b.bruShapeInverted ? 1 : 0))); // REVERSESHAPE (native nib invert toggle)
     parts.push(u8arr(fVarint(31, 1)));                          // USESHAPE
     if (b.hasTexture) parts.push(u8arr(fVarint(28, 1)));        // TEXTURE ON
+    parts.push(u8arr(fVarint(29, b.textureInverted ? 1 : 0)));  // REVERSETEX (distinct from shape f32)
     parts.push(u8arr(fF32(35, Math.max(0, Math.min(100, b.textureBrightness === undefined ? 51 : b.textureBrightness))))); // TEXBRIGHTNESS
     parts.push(u8arr(fVarint(33, Math.max(0, Math.min(200, Math.round(b.textureContrast === undefined ? 100 : b.textureContrast)))))); // CONTRAST
     if (b.textureDepth) parts.push(u8arr(fF32(123, Math.max(0, Math.min(1, b.textureDepth))))); // TEXTUREDEPTH
@@ -542,6 +543,7 @@
         scatterBothAxes: scatterBothAxes,
         scatterCount: scatterCount,
         hasTexture: textureOn,
+        textureInverted: !!o[29],
         textureScale: texScale,
         textureBrightness: texBrightness,
         textureContrast: texContrast,

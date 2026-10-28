@@ -846,6 +846,14 @@
         warnings.push('部分双笔刷缺少副笔图像，无法完整写出；请提供含主副笔资源的原始整包');
       }
       const targets = opts.target === 'all' ? ALL_FORMATS : [opts.target || 'bru'];
+      if (targets.indexOf('bru') >= 0) {
+        const textured = list.filter(function (b) { return b.source !== 'bru' && b.hasTexture; });
+        if (textured.length) {
+          const available = textured.filter(function (b) { return !!(b._grainRgba || b._patternPixels); }).length;
+          if (available && opts.grainBake !== false) warnings.push('画世界：' + available + ' 支真实纹理按选项近似烘焙进笔尖；独立纹理层未写出，不能独立调节，空纹理保持关闭。');
+          if (available < textured.length || opts.grainBake === false) warnings.push('画世界：缺少纹理原图或关闭烘焙的笔刷未写出纹理，已关闭空纹理避免无法出墨。');
+        }
+      }
       if (opts.dualCompanion !== false && targets.indexOf('bru') >= 0) {
         const dualList = list.filter(function (b) { return b.dualOn; });
         if (dualList.length) {
@@ -1306,7 +1314,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.27';
+  const APP_VERSION = '2.5.28';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {
