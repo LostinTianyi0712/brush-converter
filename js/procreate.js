@@ -92,7 +92,8 @@
     const minSizeRatio = pressSize > 0.05 ? Math.max(0, Math.min(1, minSize)) : 1;
     const minOpacityRatio = pressOpacity > 0.05 ? Math.max(0, Math.min(1, minOpacity)) : 1;
     const nv = function (k, d) { const v = Number(params[k]); return isFinite(v) ? v : (d === undefined ? 0 : d); };
-    const angleDeg = nv('shapeAngle');
+    // Procreate 的 shapeAngle 存的是弧度（真实样本 -1.5708 = -90°）
+    const angleDeg = nv('shapeAngle') * 180 / Math.PI;
     const roundnessPct = nv('shapeRoundness', 1) * 100;
     const taperOn = nv('taperSize') > 0.001 || nv('taperOpacity') > 0.001;
     const taperSizeV = nv('taperSize'), taperOpacityV = nv('taperOpacity');
@@ -122,9 +123,12 @@
     const tiltRoundnessDyn = Math.max(0, Number(params.dynamicsTiltShapeRoundness) || 0);
     const speedSizeDyn = Math.max(0, Number(params.dynamicsSpeedSize) || 0);
     const speedOpacityDyn = Math.max(0, Number(params.dynamicsSpeedOpacity) || 0);
-    // 散布/数量：Procreate 的 shapeScatter（0~约2，对应 0~200%）、shapeCount（/16 为个数）
+    // Procreate 参数语义（与官方 Brush Studio 一致）：
+    //   Stroke Path 的 Jitter(plotJitter) = 位置散布；Shape 的 Scatter(shapeScatter) = 每颗笔尖随机旋转
+    //   过去把 shapeScatter 当位置散布会写出过大的 PS 散布（包浆笔刷 2 → 200%），必须分开映射。
     let brushSubRaw = null;
-    const scatterRaw = Number(params.shapeScatter) || 0;
+    const plotJitterRaw = Number(params.plotJitter) || 0;
+    const shapeScatterRaw = Number(params.shapeScatter) || 0;
     const shapeCountRaw = Number(params.shapeCount) || 0;
     const countJitterRaw = Number(params.shapeCountJitter) || 0;
     let dualOn = false, dualTip = null, dualSubName = '', dualBlendNum = 0, subBrush = null;
@@ -141,7 +145,9 @@
         brushSubRaw = { archive: subArcEntry.data(), shape: subShapeEntry ? subShapeEntry.data() : null };
       } catch (e) { /* ignore */ }
     }
-    const scatterPct = Math.max(0, Math.min(1000, scatterRaw * 100));
+    // plotJitter 内部刻度约 0–10（样本最高 7.02 = 约 70%），换算成百分比
+    const scatterPct = Math.max(0, Math.min(1000, plotJitterRaw * 10));
+    const rotationScatterPct = Math.max(0, Math.min(100, shapeScatterRaw * 50));
     const scatterCount = shapeCountRaw > 0.001 ? Math.max(1, Math.round(shapeCountRaw * 16)) : 1;
     const brush = {
       name,
@@ -200,7 +206,7 @@
       textureScale: texScaleV > 0 ? texScaleV : 1,
       textureBrightness: texBrightV * 100,
       textureContrast: texContrastV * 100,
-      spacingJitterPct: plotJitterV * 100,
+      spacingJitterPct: 0,
       smoothingStrength: smoothingV,
       colorDynamicsOn: hueDyn > 0.001 || satDyn > 0.001 || briDyn > 0.001,
       colorJitterHue: hueDyn,
@@ -220,6 +226,9 @@
       blendMode: params.blendMode,
       _params: params,
       scatterOn: scatterPct > 0.01 || scatterCount > 1,
+      angleJitterDeg: rotationScatterPct,
+      procreateRotationScatterPct: rotationScatterPct,
+      procreateJitterPct: scatterPct,
       scatterPct: scatterPct,
       scatterCount: scatterCount,
       scatterBothAxes: true,
@@ -431,14 +440,16 @@
       maxOpacity: Math.max(0, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity)),
       minOpacity: 0,
       paintOpacity: 1,
-      plotSpacing: Math.max(0.001, Math.min(1.0, (brush.spacingPct || 10) / 100)),
-      shapeRoundness: Math.max(0.05, Math.min(1, (brush.roundness === undefined ? 100 : brush.roundness) / 100)),
-      shapeAngle: brush.angle || 0,
-      shapeScatter: brush.scatterOn ? Math.max(0, Math.min(2, (brush.scatterPct || 0) / 100)) : 0,
+      // Procreate 间距允许 >100%（印章笔样本 121%），不要钳到 100
+      plotSpacing: Math.max(0.001, Math.min(10, (brush.spacingPct || 10) / 100)),
+      // PS 圆度 0% 是合法值（扁线），不要抬到 5%
+      shapeRoundness: Math.max(0, Math.min(1, (brush.roundness === undefined ? 100 : brush.roundness) / 100)),
+      shapeAngle: ((brush.angle || 0) * Math.PI / 180),
+      shapeScatter: Math.max(0, Math.min(2, (brush.procreateRotationScatterPct === undefined ? (brush.angleJitterDeg || 0) : brush.procreateRotationScatterPct) / 50)),
       // shapeCount 在 Procreate 里是 ×16 的归一化值（0.625 = 10 个）
-      shapeCount: brush.scatterOn ? Math.max(0, Math.min(1, (brush.scatterCount || 0) / 16)) : 0,
+      shapeCount: Math.max(0, Math.min(1, (brush.scatterCount || 0) / 16)),
       shapeCountJitter: Math.max(0, Math.min(1, (brush.countJitterPct || 0) / 100)),
-      plotJitter: Math.max(0, Math.min(1, (brush.spacingJitterPct || 0) / 100)),
+      plotJitter: Math.max(0, Math.min(10, (brush.scatterOn ? (brush.scatterPct || 0) : 0) / 10)),
       plotSmoothing: Math.max(0, Math.min(1, brush.smoothingStrength === undefined ? 0 : brush.smoothingStrength)),
       grainDepthJitter: Math.max(0, Math.min(1, brush.grainDepthJitter || 0)),
       textureScale: Math.max(0.01, Math.min(20, brush.textureScale === undefined ? 1 : brush.textureScale)),

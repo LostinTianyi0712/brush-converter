@@ -1,4 +1,4 @@
-﻿/* BrushConv web UI */
+/* BrushConv web UI */
 (function () {
   'use strict';
   const BC = window.BC;
@@ -1266,7 +1266,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.17';
+  const APP_VERSION = '2.5.18';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {
