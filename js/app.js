@@ -634,7 +634,7 @@
         await sleep(0);
         if (!kind) {
           rec.parsing = false;
-          rec.error = '无法识别的文件格式（支持 .abr/.bru/.brush/.brushset/.gobrush/.gbr/.gih/.myb/.kpp/.bundle/.brushcategory、toolnrm 等，或包含笔刷的 ZIP）';
+          rec.error = '无法识别的文件格式（支持 .abr/.bru/.brush/.brushset/.sut/.gobrush/.gbr/.gih/.myb/.kpp/.bundle/.brushcategory、toolnrm 等，或包含笔刷的 ZIP）';
           render();
           continue;
         }
@@ -798,7 +798,7 @@
         outFiles.push({ name: '参数对比.html', data: new TextEncoder().encode(cmpHtml) });
       }
     } catch (e) { /* 对比页失败不影响转换 */ }
-    const ALL_FORMATS = ['bru', 'abr', 'gopaint', 'gopaint_set', 'gopaint_abr', 'brushset', 'brush', 'gbr', 'gih',
+    const ALL_FORMATS = ['bru', 'abr', 'udongman', 'gopaint', 'gopaint_set', 'gopaint_abr', 'brushset', 'brush', 'gbr', 'gih',
       'myb', 'kbundle', 'sai2', 'png', 'painter', 'medibang', 'mbini'];
     const usedFileNames = new Set();
     let doneCount = 0;
@@ -921,6 +921,11 @@
             } else if (fmt === 'gopaint_abr') {
               const made = BC.convert.makeGoPaintAbr(list, commonOpts(rec));
               outFiles.push({ name: uniqueFile(base + '_天生会画_ABR', '.abr'), data: made.bytes });
+            } else if (fmt === 'udongman') {
+              const made = BC.convert.makeUdongmanPack(list, commonOpts(rec));
+              outFiles.push({ name: uniqueFile(base + '_优动漫', '.abr'), data: made.bytes });
+              outFiles.push({ name: uniqueFile(base + '_优动漫导入说明', '.txt'), data: BC.util.utf8Encode(made.importGuide) });
+              warnings.push(...made.warnings);
             } else if (fmt === 'abr') {
               // 源就是 .abr 且整包导出时：原样透传，100% 保留文件夹分组 / 动态 / 计算画笔
               const isAbrSource = /^abr$/i.test(rec.kind || '') || /\.abr$/i.test(rec.name || '');
@@ -983,7 +988,9 @@
                 continue;
               }
             }
-            const made = fmt === 'abr'
+            const made = fmt === 'udongman'
+              ? BC.convert.makeUdongmanPack([b], co)
+              : fmt === 'abr'
               ? BC.convert.makeAbrPack([b], co)
               : fmt === 'gopaint' ? BC.convert.makeGoPaintBrush(b, co)
               : fmt === 'gopaint_abr' ? BC.convert.makeGoPaintAbr([b], co)
@@ -999,8 +1006,12 @@
               : fmt === 'png' ? BC.convert.makeTipPng(b, co)
               : BC.convert.makeBru(b, co);
             const extOut = { painter: '.brushcategory', kbundle: '.bundle', sai2: '.zip', medibang: '.zip', mbini: '.zip',
-              gopaint: '.gobrush', gopaint_abr: '.abr', gopaint_set: '.gobrushes' }[fmt] || ('.' + fmt);
+              udongman: '.abr', gopaint: '.gobrush', gopaint_abr: '.abr', gopaint_set: '.gobrushes' }[fmt] || ('.' + fmt);
             outFiles.push({ name: folder + uniqueFile(base, extOut), data: made.bytes });
+            if (fmt === 'udongman') {
+              if (!outFiles.some(f => f.name === '优动漫导入说明.txt')) outFiles.push({ name: '优动漫导入说明.txt', data: BC.util.utf8Encode(made.importGuide) });
+              made.warnings.forEach(w => { if (warnings.indexOf(w) < 0) warnings.push(w); });
+            }
             if (fmt === 'png') {
               // PNG 笔尖旁边同时输出该笔刷的参数，方便在目标软件里手动还原设置
               outFiles.push({
@@ -1290,7 +1301,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.23';
+  const APP_VERSION = '2.5.24';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {

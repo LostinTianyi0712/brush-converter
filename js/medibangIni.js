@@ -68,7 +68,7 @@
     for (const e of entries) {
       const width = Math.max(1, Math.min(5000, num(e.width, 10)));
       const minW = Math.max(0, Math.min(width, num(e.min, 0)));
-      const opacity = Math.max(0.01, Math.min(1, num(e.opacity, 1)));
+      const opacity = Math.max(0, Math.min(1, num(e.opacity, 1)));
       const type = (e.type || 'program').toLowerCase();
       const isBitmap = type.indexOf('bitmap') === 0;
       let tip = null;
@@ -149,7 +149,7 @@
       const name = sanitize(b.name || ('brush ' + (idx + 1)));
       const size = Math.max(1, Math.min(5000, Math.round(b.sizePx || 30)));
       const min = Math.max(0, Math.min(size, Math.round(size * (b.minSizeRatio === undefined ? 0 : b.minSizeRatio))));
-      const opacity = Math.max(0.01, Math.min(1, b.opacity === undefined ? 1 : b.opacity));
+      const opacity = Math.max(0, Math.min(1, b.opacity === undefined ? 1 : b.opacity));
       const tip = b.tip;
       const isBitmap = !!(tip && tip.rgba);
       const sec = [String(idx)];
@@ -161,7 +161,7 @@
       push('width', String(size));
       push('min', String(min));
       push('opacity', String(Math.round(opacity * 100) / 100));
-      push('pSize', 'true');
+      push('pSize', (b.pressureSize === undefined ? b.pressure : b.pressureSize) ? 'true' : 'false');
       push('pAlpha', b.pressureOpacity ? 'true' : 'false');
       push('cloudId', String(-1 - idx));
       push('cloudUuid', '');

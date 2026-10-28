@@ -115,7 +115,8 @@
       myb: 'MyPaint MYB',
       painter: 'Corel Painter',
       mdp: 'MediBang MDP',
-      sut: 'Clip Studio Paint SUT',
+      sut: '优动漫 / CSP SUT（部分读取）',
+      udongman: '优动漫 / CSP（ABR兼容）',
       gobrush: '天生会画 GoBrush',
       kbundle: 'Krita 资源包 BUNDLE',
       'csp-decrypted': 'CSP 解密目录',
@@ -963,6 +964,24 @@
     return { bytes: bytes, count: items.length, meta: items };
   }
 
+  /** Supported import route documented by Udonman/CELSYS: ABR, not renamed SUT. */
+  function makeUdongmanPack(brushList, opts) {
+    const made = makeAbrPack(brushList, opts || {});
+    made.format = 'abr';
+    made.target = 'udongman';
+    made.importGuide = [
+      '优动漫 PAINT / CLIP STUDIO PAINT：ABR 兼容导入',
+      '优动漫 PAINT 1.10.5 及以上：在子工具面板菜单选择「载入子工具」，导入本包 .abr。',
+      '不要在画布打开 ABR；导入后选择新笔刷，检查尺寸、间距、双笔和纹理，再对照原笔刷试画。',
+      '这是 ABR 兼容格式，不是原生 SUT；不同引擎的动态、混色、双笔和纹理效果可能不同。',
+      'SUT 输入目前为部分读取；只有缩略图时不代表已恢复原始加密笔尖。未提供新建原生 SUT 导出。',
+      '官方说明：https://www.udongman.cn/resource/details/doc/25050',
+      'CSP：https://help.clip-studio.com/en-us/manual_en/150_tools/Importing_tools.htm'
+    ].join('\n');
+    made.warnings = ['优动漫/CSP通过ABR兼容导入；原生SUT写出未实现，笔触需在目标软件核对'];
+    return made;
+  }
+
   /** Convert one brush to a Procreate .brush file (zip). */
   function makeProcreateBrush(brush, opts) {
     opts = opts || {};
@@ -1256,7 +1275,7 @@
     const painter = isNode ? require('./painterlib.js') : root.BC.painterlib;
     // 没有真实笔尖的笔刷先合成一个，保证每支都能生成 .nib
     const list = (brushList || []).map(function (b) {
-      try { return withTipRGBA(b, opts || {}); } catch (e) { return b; }
+      try { return withTipRGBA(withExportSettings(b, opts), opts || {}); } catch (e) { return b; }
     });
     try {
       return { bytes: painter.writeLibrary(list, name || 'BrushConv'), count: list.length };
@@ -1340,13 +1359,14 @@
   function makeMediBangIniPack(brushList, opts) {
     // 保证每支都有笔尖（程序笔刷也转成位图笔刷，否则缺少 .bs 脚本无法被 MediBang 识别）
     const list = (brushList || []).map(function (b) {
-      try { return withTipRGBA(b, opts || {}); } catch (e) { return b; }
+      try { return withTipRGBA(withExportSettings(b, opts), opts || {}); } catch (e) { return b; }
     });
     return medibangIni.writeIniPack(list, opts || {});
   }
 
   function makeMediBangBrush(brush, opts) {
     opts = opts || {};
+    brush = withExportSettings(brush, opts);
     const b2 = withTipRGBA(brush, opts, { fit: true });
     const w = b2.tip.w, h = b2.tip.h;
     const rgba = new Uint8Array(w * h * 4);
@@ -1359,7 +1379,7 @@
     const pngName = base + '.png';
     const EOL = '\n';
     const EOL_CRLF = String.fromCharCode(13) + String.fromCharCode(10);
-    const opacity = Math.max(0.01, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity)).toFixed(3);
+    const opacity = Math.max(0, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity)).toFixed(3);
     const width = Math.max(1, Math.min(1000, Math.round(brush.sizePx || 40)));
     const section = '[' + (opts.index === undefined ? 100 : opts.index) + ']' + EOL +
       'name=' + (brush.name || 'brush') + EOL +
@@ -1368,8 +1388,8 @@
       'width=' + width + EOL +
       'min=0' + EOL +
       'opacity=' + opacity + EOL +
-      'pSize=true' + EOL +
-      'pAlpha=false' + EOL +
+      'pSize=' + (pressureSizeOn(brush) ? 'true' : 'false') + EOL +
+      'pAlpha=' + (brush.pressureOpacity ? 'true' : 'false') + EOL +
       'cloudId=-1' + EOL +
       'cloudUuid=' + EOL +
       'bitmapFile=' + pngName + EOL +
@@ -1665,7 +1685,7 @@ Write-Host 'restart MediBang Paint Pro'
 
   /* ---------- 转换差异报告：每支笔刷在目标格式里保留了哪些、丢了哪些 ---------- */
   function reportTarget(target) {
-    return {gopaint:'gobrush',gopaint_set:'gobrush',gopaint_abr:'abr'}[target] || target;
+    return {udongman:'abr',gopaint:'gobrush',gopaint_set:'gobrush',gopaint_abr:'abr'}[target] || target;
   }
 
   function conversionStatus(brush, target, key, supported, opts, rawCache) {
@@ -1715,6 +1735,7 @@ Write-Host 'restart MediBang Paint Pro'
 
   /* 生成「参数对比页」HTML（原参数 vs 目标格式支持情况 + 笔尖缩略图），无需外部样本 */
   function buildCompareHtml(brushList, target, meta) {
+    const targetLabel = target === 'udongman' ? '优动漫 / CSP（ABR兼容）' : target;
     const rawCache = new WeakMap();
     target = reportTarget(target);
     const NL = String.fromCharCode(10);
@@ -1780,7 +1801,7 @@ Write-Host 'restart MediBang Paint Pro'
     };
     const out = [];
     out.push('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">');
-    out.push('<title>参数对比 · ' + esc(target) + '</title>');
+    out.push('<title>参数对比 · ' + esc(targetLabel) + '</title>');
     out.push('<style>');
     out.push('body{font:14px/1.5 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;margin:24px;color:#222;background:#fafafa}');
     out.push('h1{font-size:20px;margin:0 0 4px}h2{font-size:16px;margin:24px 0 8px}');
@@ -1793,7 +1814,7 @@ Write-Host 'restart MediBang Paint Pro'
     out.push('.ok{color:#2a7a2a;font-weight:600}.no{color:#b03030;font-weight:600}');
     out.push('</style></head><body>');
     out.push('<h1>参数对比</h1>');
-    out.push('<div class="meta">目标格式：<b>' + esc(target) + '</b> · 笔刷数：' + brushList.length + (meta && meta.fileName ? ' · 来源：' + esc(meta.fileName) : '') + '</div>');
+    out.push('<div class="meta">目标格式：<b>' + esc(targetLabel) + '</b> · 笔刷数：' + brushList.length + (meta && meta.fileName ? ' · 来源：' + esc(meta.fileName) : '') + '</div>');
     out.push('<div class="meta">状态按当前写出路径判断；参数映射不等于笔触一致，目标软件效果仍需验证。</div>');
     out.push('<div class="meta">双笔刷：ABR / Procreate 写出原生结构，画世界可输出原生对；其它目标按选项近似合成。</div>');
     if (MANUAL_ADVICE[target]) out.push('<div class="meta">手动补全建议：' + esc(MANUAL_ADVICE[target]) + '</div>');
@@ -1911,7 +1932,8 @@ Write-Host 'restart MediBang Paint Pro'
       const target = reportTarget(requestedTarget);
       const keep = support[target] || [];
       const rawCache = new WeakMap();
-      lines.push('【目标格式：' + target + '】');
+      lines.push('【目标格式：' + (requestedTarget === 'udongman' ? '优动漫 / CSP（ABR兼容）' : target) + '】');
+      if (requestedTarget === 'udongman') lines.push('  兼容说明：导出ABR，不是原生SUT；在子工具面板导入，动态/混色/双笔/纹理效果需目标软件核对。');
       if (reason[target]) lines.push('  说明：' + reason[target]);
       let lostTotal = 0, keptTotal = 0;
       brushList.forEach(function (b, i) {
@@ -1933,7 +1955,8 @@ Write-Host 'restart MediBang Paint Pro'
         if (lost.length) lines.push('     丢失：' + lost.join('、'));
       });
       lines.push('  小结：写入参数 ' + keptTotal + ' 项，近似/未完整写入/丢失 ' + lostTotal + ' 项');
-      if (MANUAL_ADVICE[target]) lines.push('  手动补全建议：' + MANUAL_ADVICE[target]);
+      if (requestedTarget === 'udongman') lines.push('  手动补全建议：通过子工具/工具组面板导入ABR后检查尺寸、间距与纹理，不把PS图案安装步骤视为优动漫原生流程。');
+      else if (MANUAL_ADVICE[target]) lines.push('  手动补全建议：' + MANUAL_ADVICE[target]);
       lines.push('');
     }
     return lines.join(NL);
@@ -2053,7 +2076,7 @@ Write-Host 'restart MediBang Paint Pro'
     });
   }
 
-  const api = { detect, parseFile, expandArchive, synthTip, makeBru, makeBruPack, makeBruDualPair, buildBruDualPairBrushes, makeAbrPack, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
+  const api = { detect, parseFile, expandArchive, synthTip, makeBru, makeBruPack, makeBruDualPair, buildBruDualPairBrushes, makeAbrPack, makeUdongmanPack, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { convert: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

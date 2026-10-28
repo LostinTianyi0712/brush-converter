@@ -39,7 +39,7 @@
     <div class="dz-inner">
       <div class="dz-icon">＋</div>
       <p class="dz-title">拖入笔刷文件，或点击选择</p>
-      <p class="dz-sub">支持 .bru/.abr/.brush/.brushset/.gobrush/.gobrushes/.sut/.kpp/.bundle/.gbr/.gih/.myb/.brushcategory<br>也可以直接拖入 <b>ZIP 压缩包</b>，会自动解压并识别里面的笔刷文件<br>默认把一个笔刷包里的全部笔刷打成 <b>1 个文件</b>，整套保留<br>ABR 中“参数化笔刷”没有采样笔尖，无法转换；Procreate 无 Shape 图的笔刷会自动生成圆头笔尖。</p>
+      <p class="dz-sub">支持优动漫 / CSP .sut（部分读取）及 .bru/.abr/.brush/.brushset/.gobrush/.gobrushes/.sut/.kpp/.bundle/.gbr/.gih/.myb/.brushcategory<br>SUT 的加密笔尖可能只能提取缩略图；不等同于原始笔尖还原。<br>也可以直接拖入 <b>ZIP 压缩包</b>，会自动解压并识别里面的笔刷文件<br>默认把一个笔刷包里的全部笔刷打成 <b>1 个文件</b>，整套保留<br>ABR 中“参数化笔刷”没有采样笔尖，无法转换；Procreate 无 Shape 图的笔刷会自动生成圆头笔尖。</p>
       <input id="fileInput" type="file" multiple accept=".abr,.brush,.brushset,.bru,.zip,.myb,.gbr,.gih,.kpp,.bundle,.brushcategory,.brushlibrary,.sut,.gobrush,.gobrushes" hidden>
     </div>
   </section>
@@ -185,6 +185,7 @@
       <select id="optTarget">
         <option value="bru" selected>画世界Pro .bru</option>
         <option value="abr">Photoshop .abr</option>
+        <option value="udongman">优动漫 / CSP .abr（兼容导入）</option>
         <option value="gopaint_abr">天生会画 .abr（GoPaint 导入格式）</option>
         <option value="brushset">Procreate .brushset（整包一个）</option>
         <option value="brush">Procreate .brush（每支一个）</option>
