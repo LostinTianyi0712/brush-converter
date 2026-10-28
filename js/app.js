@@ -14,6 +14,29 @@
   const state = { files: [], converting: false, activeJob: false, saving: false, cancelRequested: false };
   function isBusy() { return state.converting || state.activeJob || state.saving; }
 
+  const directoryControls = $('#saveDirectoryControls');
+  const directoryButton = $('#btnSaveDirectory');
+  const directoryText = $('#saveDirectoryText');
+  async function refreshDirectory() {
+    try {
+      const dir = await window.BCSaver.getDirectory();
+      directoryText.textContent = dir ? '保存目录：' + dir : '选择一次，后续保存复用该目录';
+      directoryButton.textContent = dir ? '更改保存目录' : '选择保存目录';
+    } catch (e) { directoryText.textContent = '读取保存目录失败：' + e.message; }
+  }
+  if (directoryControls && window.BCSaver && window.BCSaver.supportsDirectory && window.BCSaver.supportsDirectory()) {
+    directoryControls.hidden = false;
+    refreshDirectory();
+    directoryButton.addEventListener('click', async function () {
+      if (isBusy()) return;
+      state.saving = true;
+      updateConvertButton();
+      try { await window.BCSaver.chooseDirectory(); await refreshDirectory(); }
+      catch (e) { toast('选择保存目录失败：' + e.message, 7000); }
+      finally { state.saving = false; updateConvertButton(); }
+    });
+  }
+
   /* ---------------- helpers ---------------- */
   function fmtSize(n) {
     if (n < 1024) return n + ' B';
@@ -230,7 +253,7 @@
     btnConvert.disabled = !total || busy;
     fileInput.disabled = busy;
     btnClear.disabled = busy;
-    ['#btnLog', '#btnShare', '#btnSelectAll'].forEach(function (id) { const el=$(id); if(el)el.disabled=busy; });
+    ['#btnLog', '#btnShare', '#btnSelectAll', '#btnSaveDirectory'].forEach(function (id) { const el=$(id); if(el)el.disabled=busy; });
     document.querySelectorAll('#options input, #options select').forEach(function (el) { el.disabled=busy; });
     dz.setAttribute('aria-disabled', String(busy));
     btnConvert.textContent = total
@@ -1212,9 +1235,11 @@
     state.saving = true;
     updateConvertButton();
     try {
-      return await saver.save(files, saveOpts || {}, {
+      const result = await saver.save(files, saveOpts || {}, {
         progress: function (p, text) { setProgress(0.99 + 0.009 * p, text); }
       });
+      if (directoryControls && !directoryControls.hidden) await refreshDirectory();
+      return result;
     } finally {
       state.saving = false;
       if (!state.activeJob) setProgress(null);
@@ -1267,7 +1292,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.19';
+  const APP_VERSION = '2.5.20';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {

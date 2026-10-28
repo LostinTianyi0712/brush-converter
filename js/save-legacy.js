@@ -57,7 +57,27 @@
     return null;
   }
 
+  var webFolder = null;
   window.BCSaver = {
+    supportsDirectory: function () {
+      return !!(window.BrushDesktop || (!window.BrushNative && typeof window.showDirectoryPicker === 'function'));
+    },
+    getDirectory: async function () {
+      if (window.BrushDesktop && window.BrushDesktop.getOutputFolder) return window.BrushDesktop.getOutputFolder();
+      return webFolder ? webFolder.name : null;
+    },
+    chooseDirectory: async function () {
+      if (window.BrushDesktop) return window.BrushDesktop.chooseFolder();
+      if (typeof window.showDirectoryPicker !== 'function') return null;
+      try {
+        var selected = await window.showDirectoryPicker({ mode: 'readwrite' });
+        webFolder = selected;
+        return selected.name;
+      } catch (e) {
+        if (e && e.name === 'AbortError') return null;
+        throw e;
+      }
+    },
     save: async function (files, opts, hooks) {
       opts = opts || {};
       var progress = (hooks && hooks.progress) || function () {};
@@ -84,7 +104,8 @@
 
       // Desktop ZIPs and loose files share one awaited native save operation.
       if (window.BrushDesktop && typeof window.BrushDesktop.chooseFolder === 'function') {
-        var dir = await window.BrushDesktop.chooseFolder();
+        var dir = window.BrushDesktop.getOutputFolder ? await window.BrushDesktop.getOutputFolder() : null;
+        if (!dir) dir = await window.BrushDesktop.chooseFolder();
         if (!dir) return null;
         for (i = 0; i < files.length; i++) {
           progress(i / files.length, '正在写入 ' + (i + 1) + '/' + files.length + '：' + files[i].name);
@@ -106,10 +127,14 @@
       }
 
       // 3) File System Access API (Chrome / Edge web version)
-      if (typeof window.showDirectoryPicker === 'function' && !opts.packOut) {
+      if (typeof window.showDirectoryPicker === 'function' && (webFolder || !opts.packOut)) {
         var dirHandle;
         try {
-          dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+          dirHandle = webFolder || await window.showDirectoryPicker({ mode: 'readwrite' });
+          if (dirHandle.queryPermission && await dirHandle.queryPermission({ mode: 'readwrite' }) !== 'granted') {
+            if (await dirHandle.requestPermission({ mode: 'readwrite' }) !== 'granted') throw new Error('保存目录未授权，请重新选择保存目录');
+          }
+          webFolder = dirHandle;
         } catch (e) {
           if (e && (e.name === 'AbortError' || e.name === 'NotAllowedError')) return null;
           throw e;
