@@ -1,4 +1,4 @@
-﻿:root {
+:root {
   --bg: #f5f6f8;
   --card: #ffffff;
   --text: #1f2328;
@@ -102,7 +102,7 @@ main {
   font-size: 24px; font-weight: 600;
 }
 .dz-title { font-size: 15px; font-weight: 600; margin: 0 0 6px; }
-.dz-sub { margin: 0; color: var(--sub); font-size: 12px; line-height: 1.7; }
+.dz-sub { margin: 0; color: var(--sub); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; word-break: break-word; }
 
 .options {
   display: flex;
@@ -122,7 +122,7 @@ main {
   font-size: 13px;
   background: #fff;
   color: var(--text);
-  min-width: 120px;
+  min-width: 140px;
 }
 .opt.grow { flex: 1; min-width: 180px; }
 .opt.grow input { width: 100%; }
@@ -249,21 +249,41 @@ main {
   font-size: 12px;
   border-top: 1px solid var(--line);
   background: #fff;
+  overflow-wrap: anywhere;
 }
 .footer > * + * { margin-left: 12px; }
 
 @media (max-width: 640px) {
-  .topbar { flex-wrap: wrap; padding: 12px 14px; }
-  .brand .sub { display: none; }
-  .actions { width: 100%; }
-  .actions .btn { flex: 1; }
+  .topbar { padding: 10px 12px; }
+  .brand { display: none; }
+  .actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    width: 100%;
+    margin: 0;
+  }
   .actions > * + * { margin-left: 0; }
-  .actions > * + * { margin-left: 10px; }
-  main { padding: 12px 10px 30px; }
+  .actions .btn { width: 100%; padding: 9px 6px; font-size: 13px; white-space: normal; }
+  .actions #btnConvert, .actions #btnCancel { grid-column: 1 / -1; }
+  main { padding: 10px 10px 28px; }
+  .dropzone { padding: 16px 12px; }
+  .dz-sub { text-align: left; line-height: 1.6; }
+  .options {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    padding: 12px 12px 4px;
+    align-items: stretch;
+  }
+  .options > .opt { margin: 0; min-width: 0; }
+  .options > .opt.grow, .options > .advanced-opts { grid-column: 1 / -1; }
+  .opt input, .opt select { width: 100%; min-width: 0; max-width: 100%; }
+  .advanced-opts { margin: 0; }
+  .advanced-opts .opt-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .grid { grid-template-columns: 1fr; }
-  .footer { flex-direction: column; }
-  .opt input, .opt select { min-width: 0; }
-  .opt { flex: 1 1 140px; }
+  .footer { flex-direction: column; gap: 4px; }
+  .outpath, .notice { margin-left: 0; margin-right: 0; }
 }
 
 

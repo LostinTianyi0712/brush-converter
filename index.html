@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -39,7 +39,7 @@
     <div class="dz-inner">
       <div class="dz-icon">＋</div>
       <p class="dz-title">拖入笔刷文件，或点击选择</p>
-      <p class="dz-sub">支持优动漫 / CSP .sut（部分读取）及 .bru/.abr/.brush/.brushset/.gobrush/.gobrushes/.sut/.kpp/.bundle/.gbr/.gih/.myb/.brushcategory<br>SUT 的加密笔尖可能只能提取缩略图；不等同于原始笔尖还原。<br>也可以直接拖入 <b>ZIP 压缩包</b>，会自动解压并识别里面的笔刷文件<br>默认把一个笔刷包里的全部笔刷打成 <b>1 个文件</b>，整套保留<br>ABR 中“参数化笔刷”没有采样笔尖，无法转换；Procreate 无 Shape 图的笔刷会自动生成圆头笔尖。</p>
+      <p class="dz-sub">支持 .bru / .abr / .brush / .brushset / .gobrush / .sut / .kpp / .bundle 等格式，也可直接拖入 <b>ZIP</b> 自动解压识别<br>优动漫 / CSP .sut 为部分读取，加密笔尖只能提取缩略图<br>默认把一个笔刷包里的全部笔刷打成 <b>1 个文件</b>，整套保留<br>ABR 参数化笔刷没有采样笔尖，无法转换；Procreate 没有 Shape 图的笔刷会自动生成圆头笔尖</p>
       <input id="fileInput" type="file" multiple accept=".abr,.brush,.brushset,.bru,.zip,.myb,.gbr,.gih,.kpp,.bundle,.brushcategory,.brushlibrary,.sut,.gobrush,.gobrushes" hidden>
     </div>
   </section>
@@ -60,22 +60,24 @@
       <input id="optSizeScale" type="number" min="0.1" max="10" step="0.1" value="1">
     </div>
     <div class="opt">
-      <label>统一间距（%，留空保持原样）</label>
-      <input id="optSpacing" type="number" min="1" max="1000" step="1" placeholder="保持原样">
-        <label>天生会画·默认散布</label>
-        <select id="optGoScatter">
-          <option value="auto">跟随原笔刷散布</option>
-          <option value="0">0</option>
-          <option value="15">15</option>
-          <option value="30">30</option>
-          <option value="45">45</option>
-        </select>
+      <label>统一间距（%）</label>
+      <input id="optSpacing" type="number" min="1" max="1000" step="1" placeholder="留空 = 原样">
+    </div>
+    <div class="opt">
+      <label>天生会画 · 默认散布</label>
+      <select id="optGoScatter">
+        <option value="auto">跟随原笔刷散布</option>
+        <option value="0">0</option>
+        <option value="15">15</option>
+        <option value="30">30</option>
+        <option value="45">45</option>
+      </select>
     </div>
     <div class="opt">
       <label>纹理烘焙（近似）</label>
       <select id="optGrainBake">
-        <option value="on" selected>开启（纹理颗粒烘进笔尖）</option>
-        <option value="off">关闭（输出纯净笔尖）</option>
+        <option value="on" selected>开启（烘进笔尖）</option>
+        <option value="off">关闭（纯净笔尖）</option>
       </select>
     </div>
     <details class="advanced-opts">
@@ -176,7 +178,7 @@
     <div class="opt">
       <label>输出方式</label>
       <select id="optMode">
-        <option value="pack" selected>整包一个文件（推荐，保持成组）</option>
+        <option value="pack" selected>整包一个文件（推荐）</option>
         <option value="single">每支笔刷单独文件</option>
       </select>
     </div>
@@ -184,7 +186,7 @@
       <label>输出形式</label>
       <select id="optPack">
         <option value="zip" selected>打包成 1 个 ZIP 下载</option>
-        <option value="files">直接输出文件（选文件夹/下载目录）</option>
+        <option value="files">直接输出文件（选目录）</option>
       </select>
     </div>
     <div class="opt">
@@ -192,23 +194,23 @@
       <select id="optTarget">
         <option value="bru" selected>画世界Pro .bru</option>
         <option value="abr">Photoshop .abr</option>
-        <option value="udongman">优动漫 / CSP .abr（兼容导入）</option>
-        <option value="gopaint_abr">天生会画 .abr（GoPaint 导入格式）</option>
-        <option value="brushset">Procreate .brushset（整包一个）</option>
-        <option value="brush">Procreate .brush（每支一个）</option>
-        <option value="gbr">GIMP .gbr（每支一个）</option>
-        <option value="gih">GIMP .gih（整包一个）</option>
-        <option value="myb">MyPaint .myb（每支一个）</option>
-        <option value="kbundle">Krita .bundle（整包，含笔尖资源）</option>
-        <option value="sai2">SAI2 散布笔刷（.bmp + .ini 打包）</option>
-        <option value="png">笔尖/素材 PNG（MediBang / Infinite Painter）</option>
-        <option value="painter">Corel Painter .brushcategory（整包一个）</option>
-        <option value="gopaint">天生会画 .gobrush（原生，每支一个）</option>
-        <option value="gopaint_set">天生会画 .gobrushes（整套一个文件）</option>
-        <option value="gopaint_abr">天生会画（兼容模式：ABR）</option>
-        <option value="medibang">MediBang 笔刷包（PNG+ini，每支一个 zip）</option>
-        <option value="mbini">MediBang 云笔刷包（Brush2.ini，可整包导入）</option>
-        <option value="all">全部格式（一次生成所有可写格式，自动打包 ZIP）</option>
+        <option value="udongman">优动漫 CSP .abr（兼容）</option>
+        <option value="gopaint_abr">天生会画 .abr（兼容）</option>
+        <option value="brushset">Procreate .brushset</option>
+        <option value="brush">Procreate .brush</option>
+        <option value="gbr">GIMP .gbr</option>
+        <option value="gih">GIMP .gih</option>
+        <option value="myb">MyPaint .myb</option>
+        <option value="kbundle">Krita .bundle</option>
+        <option value="sai2">SAI2 散布（bmp+ini）</option>
+        <option value="png">笔尖 PNG（MediBang）</option>
+        <option value="painter">Corel Painter</option>
+        <option value="gopaint">天生会画 .gobrush</option>
+        <option value="gopaint_set">天生会画 .gobrushes</option>
+        <option value="gopaint_abr">天生会画（兼容 ABR）</option>
+        <option value="medibang">MediBang 笔刷包</option>
+        <option value="mbini">MediBang 云包</option>
+        <option value="all">全部格式（自动打包）</option>
       </select>
     </div>
 
