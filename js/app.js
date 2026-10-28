@@ -1,4 +1,4 @@
-/* BrushConv web UI */
+﻿/* BrushConv web UI */
 (function () {
   'use strict';
   const BC = window.BC;
@@ -662,7 +662,8 @@
     const dualBake = $('#optDualBake') ? $('#optDualBake').value !== '0' : true;
     const dualCompanion = $('#optDualCompanion') ? $('#optDualCompanion').value !== '0' : false;
     const dualPair = $('#optDualPair') ? $('#optDualPair').value !== '0' : true;
-    return { tipSize, sizeScale, spacingOverride, pressureMode, prefix, groupBySource, mode, target, packOut, goScatter, grainBake, fidelity, textureMode, scatterScale, autoBatch, dualBake, dualCompanion, dualPair };
+    const compareReport = $('#optCompareReport') ? $('#optCompareReport').value === '1' : false;
+    return { tipSize, sizeScale, spacingOverride, pressureMode, prefix, groupBySource, mode, target, packOut, goScatter, grainBake, fidelity, textureMode, scatterScale, autoBatch, dualBake, dualCompanion, dualPair, compareReport };
   }
 
   function toast(msg, ms) {
@@ -767,7 +768,7 @@
       if (refCount > 0) warnings.push('ABR 里保留了 ' + refCount + ' 支笔刷的纹理引用：目标 Photoshop 需要先有同名图案，否则纹理不显示（高级设置改「纹理处理=图案文件」可自动附带 .pat）');
     }
     try {
-      if (BC.convert.buildCompareHtml) {
+      if (opts.compareReport !== false && BC.convert.buildCompareHtml) {
         const cmpHtml = BC.convert.buildCompareHtml(
           records.reduce(function (acc, r) { return acc.concat(r.brushes.filter(function (b) { return b.enabled !== false; })); }, []),
           opts.target,
@@ -1266,7 +1267,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.18';
+  const APP_VERSION = '2.5.19';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {
