@@ -1015,10 +1015,10 @@
           try {
             if (fmt === 'brushset') continue;
             const co = commonOpts(rec);
-            if (fmt === 'bru' && opts.bruEmbed !== false && b.dualOn && b.dualTip && BC.convert.makeBru) {
+            if (fmt === 'bru' && opts.bruEmbed !== false && b.dualTip && BC.convert.makeBru) {
               const made = BC.convert.makeBru(b, Object.assign({}, co, { embedSubTip: true }));
               outFiles.push({ name: folder + uniqueFile(base, '.bru'), data: made.bytes });
-              warnings.push('双笔刷已按画世界原生 3.0 单支内嵌副笔尖写出（一个文件=一支笔刷）');
+              warnings.push(b.dualOn ? '双笔刷已按画世界原生 3.0 单支内嵌副笔尖写出（一个文件=一支笔刷）' : '已内嵌缓存副笔尖，双笔刷保持关闭');
               continue;
             }
             if (fmt === 'bru' && opts.dualPair !== false && b.dualOn && b.dualTip && BC.convert.makeBruDualPair) {
@@ -1343,7 +1343,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.34';
+  const APP_VERSION = '2.5.35';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {
