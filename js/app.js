@@ -701,6 +701,26 @@
     el._t = setTimeout(() => el.classList.remove('show'), ms || 3000);
   }
 
+  // 输出 ZIP 的文件名前缀：按目标格式命名，不能一律叫"画世界笔刷"
+  function outputBundleLabel(target) {
+    switch (target) {
+      case 'bru': return '画世界笔刷';
+      case 'abr': return 'Photoshop笔刷';
+      case 'udongman': return '优动漫笔刷';
+      case 'gopaint_abr': return '天生会画ABR';
+      case 'brushset': case 'brush': return 'Procreate笔刷';
+      case 'kbundle': return 'Krita笔刷';
+      case 'gbr': case 'gih': return 'GIMP笔刷';
+      case 'myb': return 'MyPaint笔刷';
+      case 'painter': return 'Painter笔刷';
+      case 'gopaint': case 'gopaint_set': return '天生会画笔刷';
+      case 'medibang': case 'mbini': return 'MediBang笔刷';
+      case 'sai2': return 'SAI2笔刷';
+      case 'png': return '笔尖PNG';
+      case 'all': return '全部格式笔刷';
+      default: return '笔刷包';
+    }
+  }
   function setOutputLocation(text) {
     const el = document.getElementById('outPathText');
     if (!el) return;
@@ -1089,6 +1109,7 @@
       const ts = new Date();
       const pad = n => String(n).padStart(2, '0');
       const stamp = ts.getFullYear() + pad(ts.getMonth() + 1) + pad(ts.getDate()) + '_' + pad(ts.getHours()) + pad(ts.getMinutes());
+      const bundleName = outputBundleLabel(opts.target);
       const LIMIT = 120 * 1024 * 1024;
       if (opts.autoBatch !== false && totalOut > 200 * 1024 * 1024) {
         // 大输出自动分卷：每卷最多 120MB，避免浏览器一次分配超大 Buffer
@@ -1101,11 +1122,11 @@
         }
         if (cur.length) vols.push(cur);
         payload = vols.map(function (files, i) {
-          return { name: '画世界笔刷_' + stamp + '_' + (i + 1) + 'of' + vols.length + '.zip', data: BC.zip.write(files) };
+          return { name: bundleName + '_' + stamp + '_' + (i + 1) + 'of' + vols.length + '.zip', data: BC.zip.write(files) };
         });
         warnings.push('输出较大，已自动分成 ' + vols.length + ' 个 ZIP（每卷约 120MB）');
       } else {
-        payload = [{ name: '画世界笔刷_' + stamp + '.zip', data: BC.zip.write(outFiles) }];
+        payload = [{ name: bundleName + '_' + stamp + '.zip', data: BC.zip.write(outFiles) }];
       }
     }
     if (sink) {
@@ -1322,7 +1343,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.32';
+  const APP_VERSION = '2.5.33';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {
