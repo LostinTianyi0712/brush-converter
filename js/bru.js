@@ -424,7 +424,21 @@
     const brushes = [];
     const warnings = [];
 
-    function pushBrush(metaStart, metaEnd, pngStart, pngEnd, embeddedMeta) {
+    function pngEndAt(off, limit) {
+      let p = off + 8;
+      const stop = limit === undefined ? bytes.length : Math.min(bytes.length, limit);
+      while (p + 12 <= stop) {
+        const len = util.u32(bytes, p);
+        const type = String.fromCharCode(bytes[p + 4], bytes[p + 5], bytes[p + 6], bytes[p + 7]);
+        const end = p + 12 + len;
+        if (end > stop) return -1;
+        if (type === 'IEND') return end;
+        p = end;
+      }
+      return -1;
+    }
+
+    function pushBrush(metaStart, metaEnd, pngStart, pngEnd, embeddedMeta, extraEnd) {
       const rawMeta = embeddedMeta || bytes.subarray(metaStart, metaEnd);
       const fields = readFields(rawMeta, 0, rawMeta.length);
       const o = fieldsToObj(fields);
@@ -500,7 +514,24 @@
           warnings.push('第 ' + (brushes.length + 1) + ' 支笔刷图像解码失败（可能为 JPEG 纹理）');
         }
       }
-      brushes.push({
+      // 画世界 3.x 单支 BRU 会把“关联副笔尖”的 PNG 紧随主图之后内嵌；
+      // 容器 count 仍是 1，需要在记录 end 之前的剩余区里继续找 PNG。
+      const embeddedTips = [];
+      if (pngStart >= 0 && extraEnd && extraEnd > pngEnd) {
+        let ep = pngEnd;
+        while (ep < extraEnd) {
+          const pj = findPng(bytes, ep, extraEnd - ep);
+          if (pj < 0) break;
+          const pe = pngEndAt(pj, extraEnd);
+          if (pe < 0 || pe > extraEnd) break;
+          try {
+            const im = png.decode(bytes.subarray(pj, pe));
+            embeddedTips.push({ w: im.width, h: im.height, rgba: im.rgba });
+          } catch (e) { break; }
+          ep = pe;
+        }
+      }
+      const brush = {
         name: name || ('笔刷 ' + (brushes.length + 1)),
         tip,
         sizePx: size,
@@ -571,7 +602,24 @@
         bruShapeInverted: !!o[32],
         source: 'bru',
         bruVersion: version
-      });
+      };
+      if (embeddedTips.length) {
+        brush.embeddedTips = embeddedTips;
+        const hasLink = !!(brush.bruLinkTemplate || brush.bruDualRefUuid || brush.bruDualEnabled);
+        if (hasLink && !brush.dualTip) {
+          brush.dualOn = true;
+          brush.dualTip = embeddedTips[0];
+          const subName = (brush.bruLinkInfo && brush.bruLinkInfo.name) || '';
+          brush.dualSubName = subName;
+          brush.dualBrush = Object.assign({}, brush.dualBrush || {}, {
+            enabled: true,
+            name: subName,
+            blend: brush.bruDualBlendMode,
+            diameter: embeddedTips[0].w
+          });
+        }
+      }
+      brushes.push(brush);
       const parsed = brushes[brushes.length - 1];
       parsed._rawState = {};
       Object.keys(parsed).forEach(function (key) {
@@ -602,7 +650,8 @@
     let pos = BODY_START + firstMetaLen + firstImgLen;
     if (firstMetaLen > 0 && BODY_START + firstMetaLen <= bytes.length) {
       pushBrush(BODY_START, BODY_START + firstMetaLen, BODY_START + firstMetaLen,
-        Math.min(bytes.length, BODY_START + firstMetaLen + firstImgLen));
+        Math.min(bytes.length, BODY_START + firstMetaLen + firstImgLen),
+        undefined, Math.min(bytes.length, firstEnd || bytes.length));
       if (firstEnd && firstEnd > pos && firstEnd <= bytes.length) pos = firstEnd;
     }
 
@@ -656,11 +705,12 @@
       const linked = pool.find(function (b) { return embedded.oldTexId && b.oldTexId === embedded.oldTexId; }) ||
         pool.find(function (b) { return b.name === embedded.name; }) ||
         candidates.find(function (b) { return b.bruUuid === primary.bruDualRefUuid; });
+      const embeddedTip = (primary.embeddedTips && primary.embeddedTips[0]) || primary.dualTip || null;
       const sub = Object.assign({}, linked || {}, embedded, {
-        tip: linked ? linked.tip : null, dualOn: false, dualTip: undefined,
+        tip: linked ? linked.tip : embeddedTip, dualOn: false, dualTip: undefined,
         bruDualRefUuid: null, bruLinkTemplate: null, _rawMeta: undefined
       });
-      primary.dualOn = primary.bruDualEnabled;
+      primary.dualOn = !!(primary.bruDualEnabled || embeddedTip || (linked && linked.tip));
       primary.dualTip = sub.tip;
       primary.dualSubBrush = sub;
       primary.dualBrush = Object.assign({}, sub, {
