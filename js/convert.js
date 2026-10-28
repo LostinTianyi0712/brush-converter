@@ -1665,18 +1665,19 @@ Write-Host 'restart MediBang Paint Pro'
     return {gopaint:'gobrush',gopaint_set:'gobrush',gopaint_abr:'abr'}[target] || target;
   }
 
-  function conversionStatus(brush, target, key, supported, opts) {
+  function conversionStatus(brush, target, key, supported, opts, rawCache) {
     opts = opts || {};
     if(opts.pressure===undefined && (opts.pressureMode==='off' || opts.pressureMode==='on')) {
       opts=Object.assign({},opts,{pressure:opts.pressureMode==='on'});
     }
     target = reportTarget(target);
-    const raw = !opts.forceRebuild && opts.fidelity !== false &&
+    const raw = rawCache && rawCache.has(brush) ? rawCache.get(brush) : !opts.forceRebuild && opts.fidelity !== false &&
       (((target === 'brush' || target === 'brushset') && procreate.unchanged(withExportSettings(brush,opts),opts)) ||
        (target === 'abr' && opts.preserveRaw !== false && brush._rawPreset && rawBrushUnchanged(brush,opts)) ||
        (target === 'gobrush' && brush._rawGobrush && rawBrushUnchanged(brush, opts)) ||
        (target === 'gbr' && brush._rawKind === 'gbr' && brush._rawFile && rawBrushUnchanged(brush, opts)) ||
        (target === 'myb' && brush._rawMyb && rawBrushUnchanged(brush, opts)));
+    if (rawCache) rawCache.set(brush, raw);
     if (raw) return '原样保留';
     if(opts.pressure===false && ['abr','brush','brushset','myb','kbundle','sai2','bru'].indexOf(target)>=0 &&
         (key==='pressureSize' || key==='pressureOpacity')) return '参数映射（按导出设置关闭压感）';
@@ -1695,7 +1696,10 @@ Write-Host 'restart MediBang Paint Pro'
     if (key === 'textureDepth') {
       if (!brush.hasTexture) return '未启用';
       const pixels = brush._rawGrain || brush._grainRgba || brush._patternPixels;
-      if (target === 'abr') return opts.noTextureBake ? '未完整写入（需配套图案）' : '近似或图案引用（需配套图案验证）';
+      if (target === 'abr') {
+        if (opts.textureMode === 'pattern') return '参数映射（图案引用，需配套图案验证）';
+        return opts.noTextureBake ? '未完整写入（未烘焙纹理，需配套图案）' : '近似（纹理烘焙进笔尖，不能恢复独立纹理层）';
+      }
       if (target === 'brush' || target === 'brushset') return pixels && !opts.noTextureBake ? '参数映射（原纹理图）' : '未完整写入（原纹理图未写出）';
       if (target === 'bru') return '未完整写入（当前仅纹理参数）';
     }
@@ -1708,6 +1712,7 @@ Write-Host 'restart MediBang Paint Pro'
 
   /* 生成「参数对比页」HTML（原参数 vs 目标格式支持情况 + 笔尖缩略图），无需外部样本 */
   function buildCompareHtml(brushList, target, meta) {
+    const rawCache = new WeakMap();
     target = reportTarget(target);
     const NL = String.fromCharCode(10);
     const fields = [
@@ -1735,8 +1740,8 @@ Write-Host 'restart MediBang Paint Pro'
     const support = {
       abr: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','角度随机','散布','散布数量','纹理深度','锥度','湿边','混色/涂抹','颜色动态','平滑','双笔刷'],
       bru: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','角度随机','散布','散布数量','纹理深度','锥度','湿边','混色/涂抹','颜色动态','平滑','双笔刷'],
-      brushset: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','散布','散布数量','纹理深度','锥度','湿边','混色/涂抹','颜色动态','平滑'],
-      brush: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','散布','散布数量','纹理深度','锥度','湿边','混色/涂抹','颜色动态','平滑'],
+      brushset: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','角度随机','散布','散布数量','纹理深度','锥度','湿边','混色/涂抹','颜色动态','平滑'],
+      brush: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','角度随机','散布','散布数量','纹理深度','锥度','湿边','混色/涂抹','颜色动态','平滑'],
       kbundle: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','散布','纹理深度','混色/涂抹','颜色动态'],
       gbr: ['尺寸','间距','硬度'], gih: ['尺寸','间距','硬度'],
       myb: ['尺寸','间距','角度','圆度','不透明度','硬度','最小直径','最小不透明度','大小随机','散布','混色/涂抹','颜色动态'],
@@ -1798,7 +1803,7 @@ Write-Host 'restart MediBang Paint Pro'
         if (v === undefined || v === null || v === '' || v === false) continue;
         let text = f[2] ? f[2](v) : String(v);
         if (f[0] === '双笔刷') text = dualDesc(b);
-        const status = conversionStatus(b, target, f[1], keep.indexOf(f[0]) >= 0, meta && meta.options);
+        const status = conversionStatus(b, target, f[1], keep.indexOf(f[0]) >= 0, meta && meta.options, rawCache);
         const ok = /^(原样|原生|参数映射)/.test(status);
         out.push('<tr><td>' + esc(f[0]) + '</td><td>' + esc(text) + '</td><td class="' + (ok ? 'ok' : 'no') + '">' + esc(status) + '</td></tr>');
       }
@@ -1866,8 +1871,8 @@ Write-Host 'restart MediBang Paint Pro'
     const support = {
       abr: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','角度随机','散布','散布数量','纹理','压感尺寸','压感不透明度','湿边','平滑','双笔刷'],
       bru: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','角度随机','散布','散布数量','纹理','压感尺寸','压感不透明度','锥度','湿边','混色/涂抹','颜色动态','平滑'],
-      brushset: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','散布','散布数量','纹理','压感尺寸','压感不透明度','锥度','湿边','混色/涂抹','颜色动态','平滑'],
-      brush: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','散布','散布数量','纹理','压感尺寸','压感不透明度','锥度','湿边','混色/涂抹','颜色动态','平滑'],
+      brushset: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','角度随机','散布','散布数量','纹理','压感尺寸','压感不透明度','锥度','湿边','混色/涂抹','颜色动态','平滑'],
+      brush: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','角度随机','散布','散布数量','纹理','压感尺寸','压感不透明度','锥度','湿边','混色/涂抹','颜色动态','平滑'],
       kbundle: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','散布','纹理','压感尺寸','压感不透明度','混色/涂抹','颜色动态'],
       gbr: ['尺寸','间距','硬度'], gih: ['尺寸','间距','硬度'],
       myb: ['尺寸','间距','角度','圆度','不透明度','硬度','最小直径','最小不透明度','大小随机','散布','压感尺寸','压感不透明度','混色/涂抹','颜色动态'],
@@ -1878,7 +1883,7 @@ Write-Host 'restart MediBang Paint Pro'
     };
     const reason = {
       abr: 'ABR 支持这些；纹理需配合 .pat 图案（目标 PS 里要有同名图案）',
-      bru: '画世界Pro 字段最多，基本都能写',
+      bru: '仅映射已知参数；纹理图尚未原生写出，动态和实际笔触需验证',
       brushset: 'Procreate 原生双笔刷、倾斜/速度分开写出；不同引擎效果需验证',
       brush: 'Procreate 原生双笔刷、倾斜/速度分开写出；不同引擎效果需验证',
       kbundle: 'Krita 6 元组曲线/颜色率未映射',
@@ -1902,6 +1907,7 @@ Write-Host 'restart MediBang Paint Pro'
     for (const requestedTarget of targets) {
       const target = reportTarget(requestedTarget);
       const keep = support[target] || [];
+      const rawCache = new WeakMap();
       lines.push('【目标格式：' + target + '】');
       if (reason[target]) lines.push('  说明：' + reason[target]);
       let lostTotal = 0, keptTotal = 0;
@@ -1913,7 +1919,8 @@ Write-Host 'restart MediBang Paint Pro'
           if (!present) continue;
           let text = f[2] ? f[2](v) : String(v);
           if (f[0] === '双笔刷') text = dualDesc(b);
-          const status = conversionStatus(b, target, f[1], keep.indexOf(f[0]) >= 0, opts);
+          const status = conversionStatus(b, target, f[1], keep.indexOf(f[0]) >= 0, opts, rawCache);
+          if (status === '未启用') continue;
           const entry = f[0] + '(' + text + ')：' + status;
           if (/^(原样|原生|参数映射)/.test(status)) { has.push(entry); keptTotal++; }
           else { lost.push(entry); lostTotal++; }

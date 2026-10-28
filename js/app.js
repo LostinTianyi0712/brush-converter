@@ -208,7 +208,7 @@
   }
 
   /* ---------------- rendering ---------------- */
-  /* 事前预检：用参数级报告估算「前 3 支笔刷」在目标格式会丢多少项参数 */
+  /* 事前预检：覆盖全部已勾选笔刷；参数级判断不代表视觉还原。 */
   function updatePrecheck() {
     const el = $('#precheck');
     if (!el) return;
@@ -218,9 +218,7 @@
     for (const rec of state.files) {
       for (const b of (rec.brushes || [])) {
         if (b && b.enabled !== false) brushes.push(b);
-        if (brushes.length >= 3) break;
       }
-      if (brushes.length >= 3) break;
     }
     if (!brushes.length || !BC.convert.brushLossReport) { el.style.display = 'none'; return; }
     try {
@@ -235,9 +233,9 @@
         });
       });
       if (!names.length) {
-        el.textContent = '预检：目标格式 ' + target + ' 可保留当前笔刷的全部主要参数';
+        el.textContent = '预检：已检查 ' + brushes.length + ' 支，目标格式 ' + target + ' 未发现已知未写入项；参数检查不保证笔触一致';
       } else {
-        el.textContent = '预检：目标格式 ' + target + ' 预计丢失 ' + names.length + ' 类参数（' + names.slice(0, 8).join('、') + (names.length > 8 ? '…' : '') + '），详见转换报告';
+        el.textContent = '预检：已检查 ' + brushes.length + ' 支，目标格式 ' + target + ' 存在近似/未完整写入/丢失 ' + names.length + ' 类参数（' + names.slice(0, 8).join('、') + (names.length > 8 ? '…' : '') + '），详见转换报告';
       }
       el.style.display = '';
     } catch (e) { el.style.display = 'none'; }
@@ -1292,7 +1290,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.21';
+  const APP_VERSION = '2.5.22';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {

@@ -445,7 +445,7 @@
       // PS 圆度 0% 是合法值（扁线），不要抬到 5%
       shapeRoundness: Math.max(0, Math.min(1, (brush.roundness === undefined ? 100 : brush.roundness) / 100)),
       shapeAngle: ((brush.angle || 0) * Math.PI / 180),
-      shapeScatter: Math.max(0, Math.min(2, (brush.procreateRotationScatterPct === undefined ? (brush.angleJitterDeg || 0) : brush.procreateRotationScatterPct) / 50)),
+      shapeScatter: Math.max(0, Math.min(2, (brush.angleJitterDeg === undefined ? (brush.procreateRotationScatterPct || 0) : brush.angleJitterDeg) / 50)),
       // shapeCount 在 Procreate 里是 ×16 的归一化值（0.625 = 10 个）
       shapeCount: Math.max(0, Math.min(1, (brush.scatterCount || 0) / 16)),
       shapeCountJitter: Math.max(0, Math.min(1, (brush.countJitterPct || 0) / 100)),
@@ -512,8 +512,9 @@
     const mapping={sizePx:['paintSize'],spacingPct:['plotSpacing'],name:['name'],opacity:['maxOpacity','paintOpacity'],
       minSizeRatio:['minSize'],minOpacityRatio:['minOpacity'],angle:['shapeAngle'],roundness:['shapeRoundness'],
       pressure:['dynamicsPressureSize'],pressureSize:['dynamicsPressureSize'],pressureOpacity:['dynamicsPressureOpacity'],
-      scatterOn:['shapeScatter','shapeCount'],scatterPct:['shapeScatter'],scatterCount:['shapeCount'],
-      countJitterPct:['shapeCountJitter'],spacingJitterPct:['plotJitter'],smoothingStrength:['plotSmoothing'],
+      scatterOn:['plotJitter'],scatterPct:['plotJitter'],scatterCount:['shapeCount'],
+      angleJitterDeg:['shapeScatter'],procreateRotationScatterPct:['shapeScatter'],
+      countJitterPct:['shapeCountJitter'],smoothingStrength:['plotSmoothing'],
       sizeJitterPct:['dynamicsJitterSize'],tiltSizeDyn:['dynamicsTiltSize'],tiltOpacityDyn:['dynamicsTiltOpacity'],
       tiltAngleDyn:['dynamicsTiltAngle'],tiltRoundnessDyn:['dynamicsTiltShapeRoundness'],speedSizeDyn:['dynamicsSpeedSize'],
       speedOpacityDyn:['dynamicsSpeedOpacity'],hasTexture:['grainDepth'],textureDepth:['grainDepth'],textureScale:['textureScale'],
