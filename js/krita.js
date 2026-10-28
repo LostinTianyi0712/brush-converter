@@ -142,10 +142,14 @@
     }
     spacingPct = clamp(spacingPct, 1, 1000);
 
-    const opacityHit = pick(params, [/opacity/i, /flow/i]);
+    const opacityHit = pick(params, [/^OpacityValue$/i]) || pick(params, [/^opacity$/i]);
     let opacity = opacityHit && isFinite(opacityHit.value) ? opacityHit.value : 1;
     if (opacity > 1.5) opacity = opacity / 100;
-    opacity = clamp(opacity, 0.02, 1);
+    opacity = clamp(opacity, 0, 1);
+    const flowHit = pick(params, [/^FlowValue$/i]) || pick(params, [/^flow$/i]);
+    let flowPct = flowHit && isFinite(flowHit.value) ? flowHit.value : 1;
+    if (flowPct > 1.5) flowPct /= 100;
+    flowPct = clamp(flowPct, 0, 1);
 
     if (!isFinite(hardness) || hardness <= 0) {
       const softHit = pick(params, [/softness/i, /sharpness/i]);
@@ -246,6 +250,7 @@
         sizePx: sizePx,
         spacingPct: spacingPct,
         opacity: opacity,
+        flowPct: flowPct,
         hardness: hardness,
         angle: angle,
         roundness: roundnessPct,
@@ -335,7 +340,7 @@
     const name = esc(brush.name || 'brush');
     const diameter = Math.max(1, Math.min(4000, brush.sizePx || 40));
     const spacing = Math.max(0.01, Math.min(5, (brush.spacingPct || 10) / 100));
-    const opacity = Math.max(0.01, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity));
+    const opacity = Math.max(0, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity));
     const hardness = Math.max(0, Math.min(1, brush.hardness === undefined ? 1 : brush.hardness));
     const angle = isFinite(brush.angle) ? brush.angle : 0;
     let ratio = brush.roundness === undefined ? 1 : brush.roundness / 100;
@@ -359,7 +364,7 @@
       ['CompositeOp', 'string', cdata('normal')],
       ['EraserMode', 'string', cdata(brush.eraser ? 'true' : 'false')],
       ['OpacityValue', 'string', cdata(num(opacity, 1))],
-      ['FlowValue', 'string', cdata(num(opacity, 1))],
+      ['FlowValue', 'string', cdata(num(brush.flowPct === undefined ? 1 : brush.flowPct, 1))],
       ['PaintOpSettings/ignoreSpacing', 'string', cdata('false')],
       ['Sharpness/softness', 'string', cdata(num(soft, 0))],
       ['PressureSize', 'string', cdata(pressureSize ? 'true' : 'false')],
@@ -408,7 +413,7 @@
   function circlePresetXml(brush) {
     const diameter = Math.max(1, Math.min(4000, brush.sizePx || 40));
     const spacing = Math.max(0.01, Math.min(5, (brush.spacingPct || 10) / 100));
-    const opacity = Math.max(0.01, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity));
+    const opacity = Math.max(0, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity));
     const hardness = Math.max(0, Math.min(1, brush.hardness === undefined ? 1 : brush.hardness));
     const angleRad = ((isFinite(brush.angle) ? brush.angle : 0) * Math.PI / 180).toFixed(6);
     let ratio = brush.roundness === undefined ? 1 : brush.roundness / 100;
@@ -428,7 +433,7 @@
       ['CompositeOp', 'string', cdata('normal')],
       ['EraserMode', 'string', cdata(brush.eraser ? 'true' : 'false')],
       ['OpacityValue', 'string', cdata(opacity.toFixed(3))],
-      ['FlowValue', 'string', cdata(Math.max(0.01, Math.min(1, brush.flowPct === undefined ? opacity : brush.flowPct)).toFixed(3))],
+      ['FlowValue', 'string', cdata(Math.max(0, Math.min(1, brush.flowPct === undefined ? 1 : brush.flowPct)).toFixed(3))],
       ['ColorRateValue', 'string', cdata(Math.max(0, Math.min(1, brush.smudgeOn ? (brush.smudgeAmount === undefined ? 0.3 : brush.smudgeAmount) : 0)).toFixed(3))],
       ['ScatterValue', 'string', cdata((brush.scatterOn ? Math.max(0, Math.min(1, (brush.scatterPct || 0) / 100)) : 0).toFixed(3))],
       ['PaintOpSettings/ignoreSpacing', 'string', cdata('false')],
@@ -452,7 +457,7 @@
   /* Preset XML for a bundle preset that references an image-brush resource. */
   function bundlePresetXml(brush, gbrName) {
     const spacing = Math.max(0.005, Math.min(5, (brush.spacingPct || 10) / 100));
-    const opacity = Math.max(0.01, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity));
+    const opacity = Math.max(0, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity));
     const angleRad = ((isFinite(brush.angle) ? brush.angle : 0) * Math.PI / 180).toFixed(6);
     const pressureSize = !!brush.pressureSize;
     const pressureOpacity = !!brush.pressureOpacity;
@@ -468,7 +473,7 @@
       ['CompositeOp', 'string', cdata('normal')],
       ['EraserMode', 'string', cdata(brush.eraser ? 'true' : 'false')],
       ['OpacityValue', 'string', cdata(opacity.toFixed(3))],
-      ['FlowValue', 'string', cdata(opacity.toFixed(3))],
+      ['FlowValue', 'string', cdata(Math.max(0, Math.min(1, brush.flowPct === undefined ? 1 : brush.flowPct)).toFixed(3))],
       ['PaintOpSettings/ignoreSpacing', 'string', cdata('false')],
       ['PressureSize', 'string', cdata(pressureSize ? 'true' : 'false')],
       ['PressureOpacity', 'string', cdata(pressureOpacity ? 'true' : 'false')],
@@ -511,13 +516,13 @@
   }
 
   function pngTipPng(tip) {
-    // Krita reads a brush-tip PNG's ALPHA channel as the paint coverage.  The
-    // old opaque-RGB grayscale encoding made every dab a solid square (the
-    // whole canvas filled black when painting), so write white RGB + alpha.
+    // Native AlphaMask applies inverse luminance as well as alpha: white RGB
+    // produces no ink. Keep coverage in alpha and use black RGB (MASK3 native
+    // import/stroke verified). Do not infer this from our alpha-only reader.
     const w = tip.w, h = tip.h;
     const rgba = new Uint8Array(w * h * 4);
     for (let i = 0; i < w * h; i++) {
-      rgba[i * 4] = 255; rgba[i * 4 + 1] = 255; rgba[i * 4 + 2] = 255;
+      rgba[i * 4] = 0; rgba[i * 4 + 1] = 0; rgba[i * 4 + 2] = 0;
       rgba[i * 4 + 3] = tip.data[i];
     }
     return png.encode(w, h, rgba);
@@ -549,11 +554,11 @@
   function pngPresetXml(brush, tipName, tipWidth, tipHeight, patternName) {
     const tpl = loadPresetTemplate();
     const spacing = Math.max(0.005, Math.min(5, (brush.spacingPct || 10) / 100));
-    const opacity = Math.max(0.01, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity));
+    const opacity = Math.max(0, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity));
     const angleRad = ((isFinite(brush.angle) ? brush.angle : 0) * Math.PI / 180).toFixed(6);
     const tipSide = Math.max(1, tipWidth || 200, tipHeight || tipWidth || 200);
     const scale = Math.max(0.01, Math.min(10, (brush.sizePx || 40) / tipSide));
-    const def = '<Brush type="png_brush" BrushVersion="2" filename="' + tipName + '" scale="' + scale.toFixed(6) +
+    const def = '<Brush type="png_brush" brushApplication="0" ColorAsMask="1" BrushVersion="2" filename="' + tipName + '" scale="' + scale.toFixed(6) +
       '" spacing="' + spacing.toFixed(4) + '" angle="' + angleRad + '" useAutoSpacing="0"/>';
     let xml = tpl.replace(/name="[^"]*"/, 'name="' + xmlEsc(brush.name || 'brush') + '"');
     xml = setParam(xml, 'brush_definition', def);
@@ -562,7 +567,7 @@
     xml = setParam(xml, 'EraserMode', brush.eraser ? 'true' : 'false');
     xml = setParam(xml, 'CompositeOp', 'normal');
     xml = setParam(xml, 'OpacityValue', opacity.toFixed(3));
-    xml = setParam(xml, 'FlowValue', opacity.toFixed(3));
+    xml = setParam(xml, 'FlowValue', Math.max(0, Math.min(1, brush.flowPct === undefined ? 1 : brush.flowPct)).toFixed(3));
     const pressureSize=brush.pressureSize===undefined?!!brush.pressure:!!brush.pressureSize;
     const pressureOpacity=!!brush.pressureOpacity;
     xml = setParam(xml,'PressureSize',String(pressureSize));
@@ -632,7 +637,8 @@
 
     for (const brush of list) {
       const base = brush.name || 'brush';
-      const asciiBase = 'converted_' + (++bundleIndex);
+      const resourceId = util.md5(util.utf8Encode(util.brushFingerprint(brush))).slice(0, 20);
+      const asciiBase = 'bc_mask3_' + resourceId + '_' + (++bundleIndex);
       // 还原优先：源是 .kpp 时直接复用它的预设 XML（只替换笔尖文件名）
       if (opts.fidelity !== false && !opts.forceRebuild && brush._rawXml && brush.tip) {
         const tipName = asciiBase + '_tip.png';
@@ -644,7 +650,7 @@
         const scaleOverride=Number.isFinite(opts.sizeScale) && opts.sizeScale>0 && opts.sizeScale!==1;
         const spacingOverride=Number.isFinite(opts.spacingOverride) && opts.spacingOverride>0;
         const definition=collectParams(xml).brush_definition;
-        if(definition && (scaleOverride || spacingOverride)) {
+        if(definition) {
           const patched=definition.raw.replace(/<(?:Brush|MaskGenerator)\b[^>]*>/g,function(tag){
             if(scaleOverride){
               tag=tag.replace(/(\bdiameter=")([0-9.eE+-]+)(")/g,function(_,a,n,c){return a+(Number(n)*opts.sizeScale).toFixed(3)+c;});
@@ -654,6 +660,7 @@
               tag=tag.replace(/(\bspacing=")[^"]*(")/g,function(_,a,c){return a+(opts.spacingOverride/100).toFixed(4)+c;});
               tag=tag.replace(/\buseAutoSpacing="[^"]*"/g,'useAutoSpacing="0"');
             }
+            tag=tag.replace(/\bfilename="[^"]*"/g,'filename="'+tipName+'"');
             return tag;
           });
           xml=setParam(xml,'brush_definition',patched);

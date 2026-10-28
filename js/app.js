@@ -739,18 +739,23 @@
     if (opts.target === 'abr' || opts.target === 'all') {
       try {
         const seenTex = {};
+        const textureNames = new Set();
         let texIndex = 0;
         for (const rec of records) {
           const list = rec.brushes || [];
           for (const b of list) {
-            if (!b || !b.hasTexture) continue;
+            if (!b || b.enabled === false || !b.hasTexture) continue;
             const tex = BC.convert.makeTexturePng(b);
             if (!tex) continue;
             const key = tex.w + 'x' + tex.h + ':' + BC.util.md5(tex.bytes);
             if (seenTex[key]) continue;
             seenTex[key] = 1;
             texIndex++;
-            outFiles.push({ name: '纹理_' + texIndex + '_' + tex.w + 'x' + tex.h + '.png', data: tex.bytes });
+            const texBase = BC.convert.sanitizeName(b.name, texIndex - 1).slice(0, 54) + '_纹理';
+            let texName = texBase, suffix = 2;
+            while (textureNames.has(texName.toLowerCase())) texName = texBase + ' (' + suffix++ + ')';
+            textureNames.add(texName.toLowerCase());
+            outFiles.push({ name: texName + '.png', data: tex.bytes });
           }
         }
         if (texIndex) warnings.push('已导出 ' + texIndex + ' 张纹理 PNG：在 PS 里「编辑→定义图案」后可手动指定给画笔纹理（可调深度/缩放）');
@@ -954,7 +959,7 @@
               }
               const made = BC.convert.makeBruPack(packList, Object.assign({}, commonOpts(rec), { dualBake: pairNote ? false : opts.dualBake }));
               outFiles.push({ name: uniqueFile(base, '.bru'), data: made.bytes });
-              if (pairNote) warnings.push('画世界3.0 双笔刷：含双笔刷的笔刷已拆成「主笔 + 第二支」，主笔 f121 引用第二支（原生双重笔刷）');
+              if (pairNote) warnings.push('画世界双笔刷：主笔旁的「原笔刷名_副笔尖」是关联辅助笔尖，请选择主笔使用；辅助条目并非重复笔刷，删除会影响双笔效果');
             }
           } catch (e) {
             list.forEach(b => failed.push((b.name || '未命名') + '（.' + fmt + '）：' + e.message));
@@ -984,7 +989,7 @@
               const pair = BC.convert.makeBruDualPair(b, co);
               if (pair) {
                 outFiles.push({ name: folder + uniqueFile(base + '_双笔刷对', '.bru'), data: pair.bytes });
-                warnings.push('双笔刷已输出为「主笔 + 第二支」一对 BRU（画世界3.0 原生双重笔刷）');
+                warnings.push('双笔刷已输出为主笔及「原笔刷名_副笔尖」辅助条目，请选择主笔使用，保留关联辅助条目');
                 continue;
               }
             }
@@ -1301,7 +1306,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.24';
+  const APP_VERSION = '2.5.27';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {

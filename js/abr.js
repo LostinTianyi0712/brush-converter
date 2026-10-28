@@ -505,26 +505,23 @@
         const uuid2 = desc.getItem(inner, 'sampledData');
         let uuid = typeof uuidVal === 'string' ? uuidVal :
           (uuid2 && typeof uuid2 === 'string' ? uuid2 : (uuidVal && uuidVal.items && uuidVal.items[0]) || null);
-        // 多支预设可能共享同一个采样（源文件里 uuid 重复出现），按出现顺序消费
-        let tipEntry = uuid ? tipByUuid.get(uuid.toLowerCase()) : null;
-        // PS 有时描述符里的 sampledData uuid 与采样头里的 uuid 不一致，按“第 n 个预设 ↔ 第 n 个采样”兜底
-        if (!tipEntry && sampEntries[pi] && sampEntries[pi].tip) tipEntry = sampEntries[pi];
+        // Presets and sampled images have independent ordering/counts. Computed
+        // brushes must never borrow the same-index image from another preset.
+        const cls = inner && inner.classId || '';
+        const computed = cls === 'computedBrush';
+        const tipEntry = !computed && typeof uuid === 'string' ? tipByUuid.get(uuid.toLowerCase()) : null;
         const tipUuid = (tipEntry && tipEntry.uuid) || uuid;
+        if (tipEntry) usedTips.add(tipUuid ? tipUuid.toLowerCase() : '');
+        const brush = toBrush(preset, tipEntry);
         if (!tipEntry) {
-          // computed (parametric) brush: no sampled bitmap -> keep it and let the
-          // converter synthesize a tip from the descriptor parameters.
-          const innerInfo = desc.getItem(preset, 'Brsh');
-          const cls = (innerInfo && (innerInfo.className || innerInfo.classname)) || '';
-          const brush = toBrush(preset, null);
-          brush.computed = true;
+          brush.computed = computed;
           brush.className = cls;
           brush.tipStyle = 'auto';
-          computedCount++;
-          brushes.push(brush);
-          continue;
+          if (computed) computedCount++;
+          else warnings.push((brush.name || ('笔刷 ' + (pi + 1))) +
+            '：' + (uuid ? '采样UUID未匹配' : ('不支持的笔尖类型 ' + cls)) +
+            '，跨格式仅按圆形/椭圆参数近似，未套用其它笔刷图像');
         }
-        usedTips.add(tipUuid ? tipUuid.toLowerCase() : '');
-        const brush = toBrush(preset, tipEntry);
         if (presetGroups[pi]) brush.group = presetGroups[pi];
         // 双笔刷：解析第二支笔尖（按 uuid 找对应采样），供不支持双笔刷的目标格式做近似烘焙
         if (brush.dualBrush && brush.dualBrush.enabled) {
@@ -560,12 +557,7 @@
               brush._patternPixels = { w: rr.w, h: rr.h, mode: 1, data: rr.planes.gray };
               brush._patternDepth = rr.planes.planes && rr.planes.planes[0] ? rr.planes.planes[0].depth : 8;
             } else {
-              const bpp = rr.mode === 3 ? 3 : 1;
-              const pixelLen = rr.w * rr.h * bpp;
-              const start = rr.data.length - pixelLen;
-              if (start > 0 && pixelLen > 0) {
-                brush._patternPixels = { w: rr.w, h: rr.h, mode: rr.mode, data: rr.data.subarray(start, start + pixelLen) };
-              }
+              warnings.push(brush.name + '：纹理图案通道未解码，未将记录尾部误当像素');
             }
           }
         }
@@ -887,75 +879,67 @@
 
   function parsePatternPlanes(data, w, h) {
     try {
-      let p = 4;
-      const mode = util.u32(data, p); p += 4;
-      p += 4;
+      // Record includes u32 length, then u32 version, then image mode.
+      let p = 8;
+      const mode = util.u32(data, p); p += 8;
       const nl = util.u32(data, p); p += 4 + nl * 2;
+      if (p >= data.length) return null;
       const idl = data[p]; p += 1 + idl;
       let palette = null;
       if (mode === 2) { palette = data.subarray(p, p + 768); p += 768 + 4; }
-      p += 4;
-      p += 4;
-      p += 16;
+      if (p + 28 > data.length || util.u32(data, p) !== 3) return null;
+      const listEnd = p + 8 + util.u32(data, p + 4);
+      if (listEnd > data.length) return null;
+      p += 24;
       const slotCount = util.u32(data, p); p += 4;
+      if (slotCount > 64 || !w || !h || w * h > 67108864) return null;
       const planes = [];
-      for (let s2 = 0; s2 < slotCount; s2++) {
-        if (p + 4 > data.length) break;
+      for (let s2 = 0; s2 < slotCount && p + 4 <= listEnd; s2++) {
         const written = util.u32(data, p); p += 4;
-        if (written !== 1) break;
+        if (written === 0) continue;
+        if (written !== 1 || p + 4 > listEnd) return null;
         const alen = util.u32(data, p); p += 4;
-        const bodyStart = p;
-        p += 4;
-        p += 16;
-        const depth2 = util.u16(data, p); p += 2;
-        const comp = data[p]; p += 1;
-        const dataStart = p;
-        const dataEnd = Math.min(data.length, bodyStart + alen);
-        const n = w * h;
+        const bodyStart = p, dataEnd = bodyStart + alen;
+        if (!alen) continue;
+        if (alen < 23 || dataEnd > listEnd) return null;
+        const top = util.i32(data, p + 4), left = util.i32(data, p + 8);
+        const ph = util.i32(data, p + 12) - top, pw = util.i32(data, p + 16) - left;
+        const depth2 = util.u16(data, p + 20), comp = data[p + 22];
+        if ((depth2 !== 8 && depth2 !== 16) || (comp !== 0 && comp !== 1) || pw !== w || ph !== h) return null;
+        const bytes = depth2 === 16 ? 2 : 1, n = w * h;
         const gray = new Uint8Array(n);
-        const bytes = depth2 === 16 ? 2 : depth2 === 32 ? 4 : 1;
+        p += 23;
         if (comp === 0) {
-          for (let i = 0; i < n; i++) {
-            const o = dataStart + i * bytes;
-            if (o + bytes > dataEnd) break;
-            let v;
-            if (bytes === 1) v = data[o];
-            else if (bytes === 2) v = data[o] >> 8;
-            else { v = Math.max(0, Math.min(255, Math.round(data[o] ))); }
-            gray[i] = v;
-          }
-        } else if (comp === 1) {
-          let rp = dataStart;
-          for (let y = 0; y < h && rp + 2 <= dataEnd; y++) {
-            const rowLen = util.u16(data, rp); rp += 2;
-            const rowEnd = Math.min(dataEnd, rp + rowLen);
-            const out = [];
-            let q = rp;
-            while (q < rowEnd) {
-              const hh = data[q++];
-              if (hh <= 127) { for (let k = 0; k < hh + 1 && q < rowEnd; k++) out.push(data[q++]); }
-              else if (hh >= 129) { const v = data[q++] || 0; for (let k = 0; k < 257 - hh; k++) out.push(v); }
-            }
-            rp = rowEnd;
-            for (let x = 0; x < w; x++) gray[y * w + x] = out[x * bytes] || 0;
+          if (p + n * bytes > dataEnd) return null;
+          for (let i = 0; i < n; i++) gray[i] = data[p + i * bytes];
+        } else {
+          // All row lengths precede all PackBits row payloads.
+          const counts = p; p += h * 2;
+          if (p > dataEnd) return null;
+          for (let y = 0; y < h; y++) {
+            const rowLen = util.u16(data, counts + y * 2);
+            if (p + rowLen > dataEnd) return null;
+            const row = [];
+            packbitsDecode(data.subarray(p, p + rowLen), row, w * bytes);
+            if (row.length !== w * bytes) return null;
+            for (let x = 0; x < w; x++) gray[y * w + x] = row[x * bytes];
+            p += rowLen;
           }
         }
         planes.push({ depth: depth2, compression: comp, gray: gray });
-        p = bodyStart + alen;
+        p = dataEnd;
       }
       let out = null;
       if (mode === 2 && palette && planes[0]) {
         out = new Uint8Array(w * h);
         for (let i = 0; i < w * h; i++) {
-          const q = (planes[0].gray[i] || 0) * 3;
+          const q = planes[0].gray[i] * 3;
           out[i] = Math.round((palette[q] + palette[q + 1] + palette[q + 2]) / 3);
         }
       } else if (mode === 3 && planes.length >= 3) {
         out = new Uint8Array(w * h);
         for (let i = 0; i < w * h; i++) out[i] = Math.round((planes[0].gray[i] + planes[1].gray[i] + planes[2].gray[i]) / 3);
-      } else if (planes.length) {
-        out = planes[0].gray;
-      }
+      } else if (mode === 1 && planes.length) out = planes[0].gray;
       return { mode: mode, planes: planes, gray: out };
     } catch (e) { return null; }
   }

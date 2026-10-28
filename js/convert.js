@@ -78,9 +78,9 @@
       if (zentries) {
         if (zentries.some(e => /^brush2\.ini$/i.test(e.name.replace(/^.*\//, '')))) return 'mbini_set';
         if (zentries.some(e => /(^|\/)(brushform|brushtex|papertex|scatter|bristle)\.conf$/i.test(e.name))) return 'sai2pack';
+        if (zentries.some(e => /^paintoppresets\/[^/]+\.kpp$/i.test(e.name))) return 'kbundle';
         if (painterlib && safe(function () { return painterlib.isLibraryZip(bytes); })) return 'painter';
         if (zentries.some(e => /Brush\.archive$/i.test(e.name))) return 'procreate';
-        if (zentries.some(e => /^paintoppresets\/[^/]+\.kpp$/i.test(e.name))) return 'kbundle';
       }
       return null;
     }
@@ -474,7 +474,7 @@
     const sub = brush.dualSubBrush || {};
     const sec = Object.assign({}, info, sub, {
       source: sub.source || brush.source,
-      name: info.name || sub.name || (brush.name || 'brush') + ' · 双笔刷第二支',
+      name: sanitizeName(brush.name || 'brush', 0).slice(0, 54) + '_副笔尖',
       tip: tip,
       sizePx: Math.max(1, Math.round(info.diameter || brush.sizePx || 100)),
       spacingPct: info.spacing !== undefined ? info.spacing : (brush.spacingPct || 10),
@@ -517,11 +517,12 @@
   function makeBru(brush, opts) {
     opts = opts || {};
     let tipImg = tipToRGBA(brush);
+    const synthesizedTip = !tipImg;
     if (!tipImg) tipImg = synthTip(brush, 256, opts);
     const bakingDual = !brush.bruDualRefUuid && opts.dualBake !== false && brush.dualOn && brush.dualTip && (brush.dualTip.rgba || brush.dualTip.data) && opts.noDualBake !== true;
     if (bakingDual) tipImg = bakeDualTip(tipImg, brush);
     // 圆度/角度只在 bakeTipTransform 里应用一次（之前 abr 源会被压两次 → 笔刷变得又细又扁）
-    if (brush.source !== 'bru') tipImg = bakeTipTransform(tipImg, brush);
+    if (brush.source !== 'bru' && !synthesizedTip) tipImg = bakeTipTransform(tipImg, brush);
     const maxTip = Math.max(16, Math.min(2048, opts.maxTipSize || 512));
     let w = tipImg.w, h = tipImg.h, rgba = tipImg.rgba;
     const maxSide = Math.max(w, h);
@@ -532,7 +533,10 @@
       rgba = png.resize(rgba, w, h, nw, nh);
       w = nw; h = nh;
     }
-    const pngBytes = png.encode(w, h, png.toMaskRgba(rgba));
+    // Keep native BRU RGB and its inversion flag together. ABR imports use
+    // the existing white alpha mask with the same f32 toggle users otherwise
+    // have to enable manually (native calibration: nib_invert before/after).
+    const pngBytes = png.encode(w, h, brush.source === 'bru' ? rgba : png.toMaskRgba(rgba));
     const sizeScale = opts.sizeScale || 1;
     let sizePx = (brush.sizePx || 100) * sizeScale;
     if (!isFinite(sizePx) || sizePx < 1) sizePx = Math.max(4, Math.max(w, h));
@@ -543,6 +547,7 @@
     const rawUnchanged = !brush._rawState || Object.keys(brush._rawState).every(function (key) { return brush[key] === brush._rawState[key]; });
     const meta = {
       name: brush.name || '',
+      bruShapeInverted: brush.bruShapeInverted === undefined ? brush.source === 'abr' : !!brush.bruShapeInverted,
       pkgId: brush.pkgId || opts.pkgId,
       texId: util.md5(pngBytes).toUpperCase(),
       sizePx,
@@ -611,7 +616,7 @@
     if(meta._rawMeta){
       const old=brush._rawState||{},fields=new Set();
       const mapping={name:[3],pkgId:[2],sizePx:[8,9,12,50,135,136],spacingPct:[17],opacity:[13,14],minSizeRatio:[9,50],minOpacityRatio:[14],
-        pressure:[36,47,9,50,14],pressureSize:[36],pressureOpacity:[47],flowPct:[25,26,51],minFlowRatio:[26,51],angle:[20],angleJitterDeg:[21],
+        pressure:[36,47,9,50,14],pressureSize:[36],pressureOpacity:[47],bruShapeInverted:[32],flowPct:[25,26,51],minFlowRatio:[26,51],angle:[20],angleJitterDeg:[21],
         roundness:[22],hardness:[23],sizeJitterPct:[10],spacingJitterPct:[18],flowJitterPct:[27],countJitterPct:[60],
         hasTexture:[28,123],textureDepth:[123],textureScale:[24],textureBrightness:[35],textureContrast:[33],scatterOn:[56,57,58,59],
         scatterPct:[58],scatterCount:[59],scatterBothAxes:[57],taperOn:[74,77,78],taperSize:[77],taperOpacity:[78],wetEdgesOn:[100,101,129],
@@ -651,6 +656,7 @@
       const sub = item.bruDualSubBrush;
       const ix = brushList.indexOf(sub);
       item.bruDualSubBrush = ix >= 0 ? items[ix] : makeBru(sub, opts).meta;
+      item.dualSubName = item.bruDualSubBrush.name;
     });
     const bytes = bru.writePack(items, { pkgId: opts.pkgId, fidelity: opts.fidelity, keepRawMeta: opts.keepRawMeta });
     return { bytes, count: items.length, meta: items };
@@ -1706,6 +1712,7 @@ Write-Host 'restart MediBang Paint Pro'
         (key==='pressureSize' || key==='pressureOpacity')) return '参数映射（按导出设置关闭压感）';
     if(supported && opts.fidelity!==false && !opts.forceRebuild &&
       (((target==='brush'||target==='brushset')&&brush._rawArchive) || (target==='abr'&&opts.preserveRaw!==false&&brush._rawPreset)))return '原生参数局部更新（保留未知字段）';
+    if (target === 'kbundle' && key === 'roundness' && !brush._rawXml && brush.tip && brush.roundness !== undefined && brush.roundness !== 100) return '未完整写入（PNG采样笔尖圆度未独立映射）';
     if (target === 'myb' && (key === 'dualOn' || key === 'textureDepth')) return '丢失（MyPaint当前仅输出参数化笔尖）';
     if (target === 'abr' && ['taperOn','smudgeOn','smoothingStrength'].indexOf(key) >= 0) return '丢失（当前转换路径未映射）';
     if ((target === 'brush' || target === 'brushset') && key === 'flowPct') return '丢失（流量尚无独立映射）';

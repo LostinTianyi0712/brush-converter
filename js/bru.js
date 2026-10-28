@@ -114,6 +114,7 @@
     parts.push(u8arr(fF32(25, flow)));                          // BRUSHFLOW
     const minFlow = Math.max(0, Math.min(1, b.minFlowRatio === undefined ? Math.min(1, flow * 0.13 + 0.01) : b.minFlowRatio));
     parts.push(u8arr(fF32(26, flow * minFlow)));                // SMALLBRUSHFLOW
+    parts.push(u8arr(fVarint(32, b.bruShapeInverted ? 1 : 0))); // REVERSESHAPE (native nib invert toggle)
     parts.push(u8arr(fVarint(31, 1)));                          // USESHAPE
     if (b.hasTexture) parts.push(u8arr(fVarint(28, 1)));        // TEXTURE ON
     parts.push(u8arr(fF32(35, Math.max(0, Math.min(100, b.textureBrightness === undefined ? 51 : b.textureBrightness))))); // TEXBRIGHTNESS
@@ -565,6 +566,7 @@
           if (typeof v === 'string') return v;
           try { return util.utf8Decode(v); } catch (e) { return ''; }
         })(o[7]),
+        bruShapeInverted: !!o[32],
         source: 'bru',
         bruVersion: version
       });
