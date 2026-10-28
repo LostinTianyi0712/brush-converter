@@ -432,8 +432,12 @@
 
   function sanitizeName(name, index) {
     let n = (name || '').replace(/[\\/:*?"<>|\r\n\t]/g, ' ').replace(/\s+/g, ' ').trim();
+    // Windows 不允许文件名以点/空格结尾（"a." 会被系统截断或创建失败）
+    n = n.replace(/[. ]+$/, '');
     if (!n) n = 'brush_' + String(index + 1).padStart(3, '0');
-    if (n.length > 60) n = n.slice(0, 60).trim();
+    if (n.length > 60) n = n.slice(0, 60).replace(/[. ]+$/, '').trim();
+    // Windows 保留设备名：CON/PRN/AUX/NUL/COM1-9/LPT1-9，带扩展名同样不可用
+    if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(n)) n = '_' + n;
     return n;
   }
 

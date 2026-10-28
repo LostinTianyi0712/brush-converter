@@ -880,7 +880,11 @@
         if (dualList.length) {
           try {
             const made = BC.convert.makeAbrPack(dualList, Object.assign({}, commonOpts(rec), { maxTipSize: opts.tipSize }));
-            outFiles.push({ name: '双笔刷_可直接导入画世界Pro3.0.abr', data: made.bytes });
+            // 多个输入文件各带双笔刷时，固定文件名会在 ZIP 里产生重复条目；
+            // 这里走 uniqueFile，并按前缀/分组命名，避免互相覆盖。
+            const compFolder = opts.groupBySource && rec.baseName ? BC.convert.sanitizeName(rec.baseName, 0) + '/' : '';
+            const compBase = compFolder + BC.convert.sanitizeName((opts.prefix || '') + '双笔刷_可直接导入画世界Pro3.0', 0);
+            outFiles.push({ name: uniqueFile(compBase, '.abr'), data: made.bytes });
             warnings.push('含 ' + dualList.length + ' 支双笔刷：已额外附带 .abr（画世界Pro 3.0 可直接导入，保留原生双重笔刷）');
           } catch (e) { warnings.push('双笔刷 ABR 附带失败：' + e.message); }
         }
@@ -1343,7 +1347,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.35';
+  const APP_VERSION = '2.5.36';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {
