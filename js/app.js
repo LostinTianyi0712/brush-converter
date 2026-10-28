@@ -683,8 +683,9 @@
     const dualBake = $('#optDualBake') ? $('#optDualBake').value !== '0' : true;
     const dualCompanion = $('#optDualCompanion') ? $('#optDualCompanion').value !== '0' : false;
     const dualPair = $('#optDualPair') ? $('#optDualPair').value !== '0' : true;
+    const bruEmbed = $('#optBruEmbed') ? $('#optBruEmbed').value !== '0' : true;
     const compareReport = $('#optCompareReport') ? $('#optCompareReport').value === '1' : false;
-    return { tipSize, sizeScale, spacingOverride, pressureMode, prefix, groupBySource, mode, target, packOut, goScatter, grainBake, fidelity, textureMode, scatterScale, autoBatch, dualBake, dualCompanion, dualPair, compareReport };
+    return { tipSize, sizeScale, spacingOverride, pressureMode, prefix, groupBySource, mode, target, packOut, goScatter, grainBake, fidelity, textureMode, scatterScale, autoBatch, dualBake, dualCompanion, dualPair, bruEmbed, compareReport };
   }
 
   function toast(msg, ms) {
@@ -955,7 +956,7 @@
             } else {
               let packList = list;
               let pairNote = false;
-              if (opts.dualPair !== false && BC.convert.buildBruDualPairBrushes) {
+              if (opts.bruEmbed === false && opts.dualPair !== false && BC.convert.buildBruDualPairBrushes) {
                 packList = [];
                 for (const b of list) {
                   if (b.dualOn && b.dualTip) {
@@ -965,9 +966,10 @@
                   packList.push(b);
                 }
               }
-              const made = BC.convert.makeBruPack(packList, Object.assign({}, commonOpts(rec), { dualBake: pairNote ? false : opts.dualBake }));
+              const made = BC.convert.makeBruPack(packList, Object.assign({}, commonOpts(rec), { dualBake: pairNote ? false : opts.dualBake, embedSubTip: opts.bruEmbed !== false }));
               outFiles.push({ name: uniqueFile(base, '.bru'), data: made.bytes });
               if (pairNote) warnings.push('画世界双笔刷：主笔旁的「原笔刷名_副笔尖」是关联辅助笔尖，请选择主笔使用；辅助条目并非重复笔刷，删除会影响双笔效果');
+              else if (opts.bruEmbed !== false && list.some(function (b) { return b.dualOn && b.dualTip; })) warnings.push('画世界双笔刷已按原生 3.0 单支内嵌副笔尖写出（一个文件=一支笔刷，记录末尾附带副笔尖 PNG）');
             }
           } catch (e) {
             list.forEach(b => failed.push((b.name || '未命名') + '（.' + fmt + '）：' + e.message));
@@ -993,6 +995,12 @@
           try {
             if (fmt === 'brushset') continue;
             const co = commonOpts(rec);
+            if (fmt === 'bru' && opts.bruEmbed !== false && b.dualOn && b.dualTip && BC.convert.makeBru) {
+              const made = BC.convert.makeBru(b, Object.assign({}, co, { embedSubTip: true }));
+              outFiles.push({ name: folder + uniqueFile(base, '.bru'), data: made.bytes });
+              warnings.push('双笔刷已按画世界原生 3.0 单支内嵌副笔尖写出（一个文件=一支笔刷）');
+              continue;
+            }
             if (fmt === 'bru' && opts.dualPair !== false && b.dualOn && b.dualTip && BC.convert.makeBruDualPair) {
               const pair = BC.convert.makeBruDualPair(b, co);
               if (pair) {
@@ -1314,7 +1322,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.29';
+  const APP_VERSION = '2.5.30';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {

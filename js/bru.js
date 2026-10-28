@@ -244,7 +244,8 @@
     const img = brush.png;
     if (!img || !img.length) throw new Error('缺少笔尖图像数据');
     const meta = metadataFor(brush, opts);
-    const total = BODY_START + meta.length + img.length;
+    const embedded = brush.embeddedSubPng && brush.embeddedSubPng.length ? brush.embeddedSubPng : null;
+    const total = BODY_START + meta.length + img.length + (embedded ? embedded.length : 0);
     const out = new Uint8Array(total);
     const dv = new DataView(out.buffer);
     out.set(util.utf8Encode(MAGIC), 0);
@@ -255,9 +256,11 @@
     const rec = CONTAINER_HEAD;
     dv.setUint32(rec + 0x56, meta.length, false);            // meta length
     dv.setUint32(rec + 0x5e, img.length, false);             // image length
-    dv.setUint32(rec + 0x66, BODY_START + meta.length + img.length, false); // end
+    // 原生单支 BRU：记录 end 覆盖主图之后追加的副笔尖 PNG；img length 仍只算主图
+    dv.setUint32(rec + 0x66, total, false); // end
     out.set(meta, BODY_START);
     out.set(img, BODY_START + meta.length);
+    if (embedded) out.set(embedded, BODY_START + meta.length + img.length);
     return out;
   }
 

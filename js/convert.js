@@ -514,7 +514,24 @@
     return { bytes: made.bytes, count: 2, primaryUuid: pair.primaryUuid, secondaryUuid: pair.secondaryUuid };
   }
 
+  /* 单支 BRU + 记录末尾内嵌副笔尖 PNG（画世界 3.x 原生单支布局） */
+  function makeBruEmbedded(brush, opts) {
+    const pair = buildBruDualPairBrushes(brush);
+    if (!pair || !pair.secondary || !pair.secondary.tip) return makeBru(brush, Object.assign({}, opts, { embedSubTip: false }));
+    const st = pair.secondary.tip;
+    const subPng = png.encode(st.w, st.h, st.rgba);
+    const primary = Object.assign({}, pair.primary, {
+      embeddedSubPng: subPng,
+      bruDualSubBrush: pair.secondary,
+      bruDualEnabled: true,
+      dualSubName: pair.secondary.name,
+      pkgId: pair.pkgUuid
+    });
+    return makeBru(primary, Object.assign({}, opts, { embedSubTip: false }));
+  }
+
   function makeBru(brush, opts) {
+    if (opts && opts.embedSubTip && brush && brush.dualOn && brush.dualTip) return makeBruEmbedded(brush, opts);
     opts = opts || {};
     let tipImg = tipToRGBA(brush);
     const synthesizedTip = !tipImg;
@@ -619,6 +636,10 @@
       bruUuid: brush.bruUuid,
       bruDualRefUuid: brush.bruDualRefUuid,
       dualSubName: brush.dualSubName,
+      bruDualSubBrush: brush.bruDualSubBrush,
+      bruDualEnabled: brush.bruDualEnabled,
+      embeddedSubPng: brush.embeddedSubPng,
+      pkgId: brush.pkgId,
       bruLinkTemplate: brush.bruLinkTemplate,
       bruDualEnabled: brush.bruDualEnabled,
       dualBlendMode: brush.dualBlendMode === undefined ? (brush.dualBrush && brush.dualBrush.blend) : brush.dualBlendMode,
@@ -1843,7 +1864,7 @@ Write-Host 'restart MediBang Paint Pro'
     out.push('<h1>参数对比</h1>');
     out.push('<div class="meta">目标格式：<b>' + esc(targetLabel) + '</b> · 笔刷数：' + brushList.length + (meta && meta.fileName ? ' · 来源：' + esc(meta.fileName) : '') + '</div>');
     out.push('<div class="meta">状态按当前写出路径判断；参数映射不等于笔触一致，目标软件效果仍需验证。</div>');
-    out.push('<div class="meta">双笔刷：ABR / Procreate 写出原生结构，画世界可输出原生对；其它目标按选项近似合成。</div>');
+    out.push('<div class="meta">双笔刷：ABR / Procreate 写出原生结构，画世界默认输出「单支内嵌副笔尖」或可选「主笔+辅助条目」原生布局；其它目标按选项近似合成。</div>');
     if (MANUAL_ADVICE[target]) out.push('<div class="meta">手动补全建议：' + esc(MANUAL_ADVICE[target]) + '</div>');
     brushList.forEach(function (b, idx) {
       out.push('<div class="card">');
@@ -1876,7 +1897,7 @@ Write-Host 'restart MediBang Paint Pro'
 
   const MANUAL_ADVICE = {
     abr: '纹理：先在 PS 图案面板导入配套 .pat；双笔刷：本格式原样保留，无需补',
-    bru: '散布：画世界刻度更小，可用「散布换算系数」微调；双笔刷：默认输出「主笔+第二支」原生对（3.0）',
+    bru: '散布：画世界刻度更小，可用「散布换算系数」微调；双笔刷：默认输出画世界 3.0 原生「单支内嵌副笔尖」，高级设置可切回「主笔+辅助条目」',
     brushset: '双笔刷写入 Sub01，倾斜/速度动态分别映射；请在 Procreate 验证笔触',
     brush: '双笔刷写入 Sub01，倾斜/速度动态分别映射；请在 Procreate 验证笔触',
     kbundle: '不透明度/流量曲线：在 Krita「画笔设置」里手动调；双笔刷：已合成近似',
@@ -1953,7 +1974,7 @@ Write-Host 'restart MediBang Paint Pro'
     lines.push('转换差异报告（参数级，自动生成）');
     lines.push('========================================');
     lines.push('状态：原样保留 / 原生结构 / 参数映射 / 近似 / 未完整写入 / 丢失');
-    lines.push('说明：参数映射不保证笔触一致；ABR/Procreate 支持原生双笔刷，画世界可输出原生对。');
+    lines.push('说明：参数映射不保证笔触一致；ABR/Procreate 支持原生双笔刷，画世界默认输出单支内嵌副笔尖（另可选主笔+辅助条目）。');
     lines.push('');
     for (const requestedTarget of targets) {
       const target = reportTarget(requestedTarget);
