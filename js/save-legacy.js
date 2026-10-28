@@ -113,7 +113,7 @@
           if (typeof window.BrushDesktop.writeFileBytes === 'function') {
             var CHUNK = 1024 * 1024;
             for (var off = 0; off < bytes.length || off === 0; off += CHUNK) {
-              var w = await window.BrushDesktop.writeFileBytes(dir, files[i].name, bytes.subarray(off, off + CHUNK), off > 0);
+              var w = await window.BrushDesktop.writeFileBytes(dir, files[i].name, bytes.subarray(off, off + CHUNK), off > 0, off + CHUNK >= bytes.length);
               if (w !== 'OK') throw new Error(String(w || '文件写入未完成').replace(/^ERROR:\s*/, ''));
               progress((i + Math.min(1, (off + CHUNK) / Math.max(1, bytes.length))) / files.length, '正在写入：' + files[i].name);
               await sleep(0);
@@ -148,8 +148,13 @@
           }
           var fh = await cur.getFileHandle(parts[parts.length - 1], { create: true });
           var writable = await fh.createWritable();
-          await writable.write(files[i].data);
-          await writable.close();
+          try {
+            await writable.write(files[i].data);
+            await writable.close();
+          } catch (e) {
+            try { await writable.abort(); } catch (ignored) { }
+            throw e;
+          }
         }
         return '已保存到所选文件夹';
       }
