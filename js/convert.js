@@ -788,7 +788,8 @@
         pressureOpacity:['usePaintDynamics','opVr.bVTy','opVr.Mnm '],minSizeRatio:['minimumDiameter'],minOpacityRatio:['opVr.Mnm '],
         dynamicsControlSize:['useTipDynamics','szVr.bVTy'],dynamicsControlOpacity:['usePaintDynamics','opVr.bVTy'],
         sizeJitterPct:['useTipDynamics','szVr.jitter'],opacityJitterPct:['usePaintDynamics','opVr.jitter'],
-        flowPct:['toolOptions.flow'],opacity:['toolOptions.Opct']};
+        flowPct:['toolOptions.flow'],opacity:['toolOptions.Opct'],
+        hasTexture:['useTexture'],textureDepth:['textureDepth'],textureScale:['textureScale'],textureInverted:['InvT']};
       Object.assign(mapping,{dynamicsControlAngle:['useTipDynamics','angleDynamics.bVTy'],dynamicsControlRoundness:['useTipDynamics','roundnessDynamics.bVTy'],
         dynamicsControlScatter:['scatterDynamics.bVTy'],dynamicsControlCount:['countDynamics.bVTy'],dynamicsControlFlow:['usePaintDynamics','prVr.bVTy'],
         angleJitterDeg:['useTipDynamics','angleDynamics.jitter'],roundnessJitterPct:['useTipDynamics','roundnessDynamics.jitter'],
@@ -822,7 +823,7 @@
       //  · 需要重建描述符（其他格式来源）→ 把纹理烘焙进笔尖（PS 不会从 ABR 导入图案，写图案引用会变空）
       const willUseRaw = keepRaw && !!brush._rawPreset;
       const textureMode = opts.textureMode === 'pattern';
-      const usePsTexture = !!brush.hasTexture && (textureMode || (opts.writePsTexture === true && willUseRaw));
+      const usePsTexture = !!brush.hasTexture && (textureMode || willUseRaw);
       if (brush.hasTexture && !usePsTexture && !textureMode && opts.noTextureBake !== true) {
         rgba = bakeTextureIntoRGBA(rgba, w, h, brush, brush.textureDepth === undefined ? (brush.grainStrength === undefined ? 0.35 : brush.grainStrength) : brush.textureDepth);
       }
@@ -907,6 +908,8 @@
         patternRef: (usePsTexture && ((opts.patternRefs && opts.patternRefs.get(textureKey(brush))) || opts.patternRef)) || null,
         textureDepth: brush.textureDepth,
         textureScale: brush.textureScale,
+        textureEnabled: !!brush.hasTexture,
+        textureInverted: !!brush.textureInverted,
         // 源就是 ABR 时，保留原始描述符/样本字节（部分导出也能保住 PS 原版特性）
         rawPreset: keepRaw ? brush._rawPreset : undefined,
         rawPatchPaths: Array.from(paths), mainTipChanged:tipChanged,

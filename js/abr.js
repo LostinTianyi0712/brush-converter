@@ -1297,8 +1297,15 @@
         ])));
         presetItems.push(_descItem('textureScale', 'UntF', _descUntF('#Prc', Math.round(Math.max(1, Math.min(1000, (it.textureScale === undefined ? 1 : it.textureScale) * 100))))));
       } else {
-        presetItems.push(_descItem('useTexture', 'bool', _descBool(false)));
+        presetItems.push(_descItem('useTexture', 'bool', _descBool(!!(it.rawPreset && it.textureEnabled))));
+        // A native preset already owns its pattern reference. Expose fresh scalar
+        // values for selected patches without regenerating or replacing Txtr.
+        if (it.rawPreset) {
+          presetItems.push(_descItem('textureDepth', 'UntF', _descUntF('#Prc', Math.round(Math.max(0, Math.min(1, it.textureDepth === undefined ? 0.5 : it.textureDepth)) * 100))));
+          presetItems.push(_descItem('textureScale', 'UntF', _descUntF('#Prc', Math.round(Math.max(1, Math.min(1000, (it.textureScale === undefined ? 1 : it.textureScale) * 100))))));
+        }
       }
+      presetItems.push(_descItem('InvT', 'bool', _descBool(!!it.textureInverted)));
       let dualObjc = null;
       if (it.rawDualObjc && it.dualOn && !it.rawDualChanged) dualObjc = it.rawDualObjc;
       else if (it.dualUuid) {

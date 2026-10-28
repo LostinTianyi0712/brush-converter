@@ -200,7 +200,7 @@
       smudgeSize: smudgeSizeV,
       smudgeOpacity: smudgeOpacityV,
       smudgeAmount: smudgeAmount,
-      textureDepth: grainDepthV > 0 ? Math.max(0.05, Math.min(1, grainDepthV)) : 0,
+      textureDepth: Math.max(0, Math.min(1, grainDepthV)),
       grainDepthMinimum: grainDepthMin,
       grainDepthJitter: grainDepthJitter,
       textureScale: texScaleV > 0 ? texScaleV : 1,
