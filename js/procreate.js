@@ -1,4 +1,4 @@
-﻿/* Procreate .brush / .brushset parser -> normalized brushes */
+/* Procreate .brush / .brushset parser -> normalized brushes */
 (function (root) {
   'use strict';
   const isNode = typeof module !== 'undefined' && module.exports && typeof process !== 'undefined';
@@ -418,14 +418,9 @@
       }
       return png.encode(w, h, out);
     }
-    const gw = 512, gh = 512;
-    const noise = convGrainNoise(gw, gh, 5, 4);
-    const grainRgba = new Uint8Array(gw * gh * 4);
-    for (let i = 0; i < gw * gh; i++) {
-      const v = Math.round(255 * (0.55 + 0.45 * noise[i]));
-      grainRgba[i * 4] = v; grainRgba[i * 4 + 1] = v; grainRgba[i * 4 + 2] = v; grainRgba[i * 4 + 3] = 255;
-    }
-    return png.encode(gw, gh, grainRgba);
+    // A missing source image cannot be reconstructed from a texture flag.
+    if (brush._rawGrain) return new Uint8Array(brush._rawGrain);
+    return null;
   }
 
   function archiveParams(brush, opts) {
@@ -529,10 +524,6 @@
     return bplist.patchKeyedArchive(brush._rawArchive,changes);
   }
 
-  function convGrainNoise(w, h, seed, scale) {
-    if (isNode) return require('./convert.js').grainNoise(w, h, seed, scale);
-    return root.BC.convert.grainNoise(w, h, seed, scale);
-  }
 
   function secondaryBrush(brush) {
     const sub = brush.dualSubBrush || {};
@@ -555,6 +546,11 @@
 
   function writeBrush(brush, opts) {
     opts = opts || {};
+    // Fresh/rebuilt archives must agree with the resources actually included.
+    // Native raw archives retain their existing resource/parameter semantics.
+    const rawPath = opts.fidelity !== false && brush._rawArchive && !opts.forceRebuild;
+    const grain = !rawPath && brush.hasTexture && !opts.noTextureBake ? grainPng(brush) : null;
+    if (!rawPath && brush.hasTexture && !grain) brush = Object.assign({}, brush, {hasTexture:false, textureDepth:0});
     function subBrush(){const b=secondaryBrush(brush);
       if(opts.spacingOverride>0)b.spacingPct=opts.spacingOverride;
       if(opts.pressure!==undefined){b.pressureSize=!!opts.pressure;b.pressureOpacity=opts.pressure===false?false:!!b.pressureOpacity;b.pressure=b.pressureSize||b.pressureOpacity;}
@@ -568,7 +564,7 @@
       else if(!sameTip && brush.tip)entries.push({name:'Shape.png',data:shapePng(tipRGBA(brush,opts),opts.maxTipSize||512).png});
       const sameGrain=brush._rawGrainState===util.brushFingerprint({tip:brush._grainRgba});
       if(sameGrain && brush._rawGrain)entries.push({name:'Grain.png',data:new Uint8Array(brush._rawGrain)});
-      else if(brush.hasTexture)entries.push({name:'Grain.png',data:grainPng(brush)});
+      else if(brush.hasTexture){const g=grainPng(brush);if(g)entries.push({name:'Grain.png',data:g});}
       if(brush.dualOn && brush.dualTip)zip.read(writeBrush(subBrush(),opts)).forEach(e=>entries.push({name:'Sub01/'+e.name,data:e.data()}));
       let tipRaw = brush.tip ? tipRGBA(brush,opts) : null;
       if (!tipRaw) tipRaw = roundTip(brush.sizePx || 128);
@@ -585,9 +581,7 @@
       { name: 'Shape.png', data: shape.png },
       { name: 'QuickLook/Thumbnail.png', data: thumb }
     ];
-    if (brush.hasTexture && !opts.noTextureBake) {
-      entries.push({ name: 'Grain.png', data: grainPng(brush) });
-    }
+    if (grain) entries.push({ name: 'Grain.png', data: grain });
     if (brush.dualOn && brush.dualTip) {
       zip.read(writeBrush(subBrush(), opts)).forEach(function (e) {
         entries.push({ name: 'Sub01/' + e.name, data: e.data() });

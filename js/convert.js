@@ -878,8 +878,13 @@
       const willUseRaw = keepRaw && !!brush._rawPreset;
       const textureMode = opts.textureMode === 'pattern';
       const usePsTexture = !!brush.hasTexture && (textureMode || willUseRaw);
-      if (brush.hasTexture && !usePsTexture && !textureMode && opts.noTextureBake !== true) {
-        rgba = bakeTextureIntoRGBA(rgba, w, h, brush, brush.textureDepth === undefined ? (brush.grainStrength === undefined ? 0.35 : brush.grainStrength) : brush.textureDepth);
+      // 只有拿到真实纹理像素才烘焙：纹理开关 + 缺原图时伪造程序化噪声会直接改变笔刷图案
+      // （与第66轮 BRU「空纹理保持关闭、不用噪声兜底」的策略一致）。
+      // 烘焙前复制 rgba：bakeTextureIntoRGBA 就地修改，否则会污染 brush.tip.rgba，
+      // 同一支笔刷重复导出 ABR 会反复叠加，同一次运行里后续格式也会继承被烘焙的笔尖。
+      if (brush.hasTexture && !usePsTexture && !textureMode && opts.noTextureBake !== true && textureGray(brush)) {
+        rgba = new Uint8Array(rgba);
+        bakeTextureIntoRGBA(rgba, w, h, brush, brush.textureDepth === undefined ? (brush.grainStrength === undefined ? 0.35 : brush.grainStrength) : brush.textureDepth);
       }
       items.push({
         name: name, w: w, h: h, gray: abr.maskFromRGBA(rgba),
@@ -1591,7 +1596,8 @@ Write-Host 'restart MediBang Paint Pro'
     return out;
   }
 
-  /* 用源笔刷的真实纹理（ABR 图案 / Procreate Grain）烘焙；没有时退回程序化噪声 */
+  /* 用源笔刷的真实纹理（ABR 图案 / Procreate Grain）烘焙；没有真实像素时保持原样，
+     不生成程序化噪声（伪造纹理会让笔刷图案偏离原笔刷）。 */
   function bakeTextureIntoRGBA(rgba, w, h, brush, strength) {
     const k = Math.max(0, Math.min(1, strength === undefined ? 0.35 : strength));
     let tex = null;
@@ -1607,7 +1613,7 @@ Write-Host 'restart MediBang Paint Pro'
         }
       };
     }
-    if (!tex) return bakeGrainIntoRGBA(rgba, w, h, k, 3);
+    if (!tex) return rgba;
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const i = y * w + x;
@@ -1775,10 +1781,18 @@ Write-Host 'restart MediBang Paint Pro'
       if (!brush.hasTexture) return '未启用';
       const pixels = brush._rawGrain || brush._grainRgba || brush._patternPixels;
       if (target === 'abr') {
-        if (opts.textureMode === 'pattern') return '参数映射（图案引用，需配套图案验证）';
+        if (opts.textureMode === 'pattern') {
+          return textureGray(brush) ? '参数映射（图案引用，需配套图案验证）' : '未写出（缺少原纹理图，无法生成图案）';
+        }
+        if (!textureGray(brush)) return '未写出（缺少原纹理图，未伪造纹理）';
         return opts.noTextureBake ? '未完整写入（未烘焙纹理，需配套图案）' : '近似（纹理烘焙进笔尖，不能恢复独立纹理层）';
       }
-      if (target === 'brush' || target === 'brushset') return pixels && !opts.noTextureBake ? '参数映射（原纹理图）' : '未完整写入（原纹理图未写出）';
+      if (target === 'brush' || target === 'brushset') {
+        if (!pixels) return '未写出（缺少原纹理图，重建时关闭纹理，不生成替代噪声）';
+        const raw = opts.fidelity !== false && brush._rawArchive && !opts.forceRebuild;
+        return !raw && (opts.noTextureBake === true || opts.grainBake === false)
+          ? '未写出（已关闭纹理输出，重建时禁用纹理）' : '参数映射（原纹理图，笔触待验证）';
+      }
       if (target === 'bru') {
         if (brush.source !== 'bru') return pixels && opts.noTextureBake !== true
           ? '近似（真实纹理烘焙进笔尖，独立纹理层未写出）'
