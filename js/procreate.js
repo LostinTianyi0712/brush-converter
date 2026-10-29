@@ -5,6 +5,7 @@
   const util = isNode ? require('./util.js') : root.BC.util;
   const zip = isNode ? require('./zip.js') : root.BC.zip;
   const png = isNode ? require('./png.js') : root.BC.png;
+  const jpeg = isNode ? require('./jpeg.js') : root.BC.jpeg;
   const plist = isNode ? require('./plist.js') : root.BC.plist;
   const bplist = isNode ? require('./bplist.js') : root.BC.bplist;
   const defaultsApi = isNode ? require('./procreateDefaults.js') : root.BC.proDefaults;
@@ -62,7 +63,22 @@
       subArcEntry = subArcCandidates[0];
       subShapeEntry = entries.find(function (e) { return e.name === subPrefix + 'Shape.png'; }) || null;
     }
-    const shapeEntry = find('Shape.png');
+    let shapeEntry = find('Shape.png');
+    const bundledShapePath = typeof params.bundledShapePath === 'string' && params.bundledShapePath !== '$null' ? params.bundledShapePath : '';
+    let resolvedShapePath = '';
+    if (!shapeEntry && bundledShapePath && !/(^|[\\/])(?:\.\.|QuickLook|Signature)([\\/]|$)|(^|[\\/])Grain\.png$/i.test(bundledShapePath)) {
+      // Resolve only an explicit source reference, never a thumbnail or Grain.
+      const resource = find(bundledShapePath) || entries.find(e=>e.name===bundledShapePath);
+      if (resource) {
+        try {
+          const bytes=resource.data();
+          const im=jpeg && jpeg.isJpeg(bytes) ? jpeg.decode(bytes) : png.decode(bytes);
+          const raw=jpeg && jpeg.isJpeg(bytes) ? png.encode(im.width,im.height,im.rgba) : bytes;
+          shapeEntry={name:prefix+'Shape.png',data:()=>raw};
+          resolvedShapePath=bundledShapePath;
+        } catch(e) { /* retain the unresolved reference; no substitute image */ }
+      }
+    }
     const grainEntry = find('Grain.png');
     const tipFromShape = decodeShape(shapeEntry);
     // Grain is an independent texture, never a substitute for a bundled Shape.
@@ -153,6 +169,8 @@
       name,
       tip,
       tipSource,
+      bundledShapePath,
+      resolvedShapePath,
       _rawArchive: arcEntry.data(),
       _rawShape: shapeEntry ? shapeEntry.data() : null,
       _rawGrain: grainEntry ? grainEntry.data() : null,
@@ -256,7 +274,7 @@
       const b = readBrushFolder(entries, '');
       if (b) {
         if (!b.name) b.name = baseName;
-        if (!b.tip) warnings.push('该笔刷使用 Procreate 默认圆头（无 Shape 图），将自动生成圆头笔尖');
+        if (!b.tip) warnings.push(b.bundledShapePath ? '缺少内置笔尖原图 '+b.bundledShapePath+'；Procreate原生导出保留引用，跨软件圆头仅为近似' : '该笔刷没有可解码Shape图；跨软件只能生成近似圆头，原笔尖未确认');
         brushes.push(b);
       }
       return { brushes, warnings, kind: 'brush' };
@@ -280,7 +298,7 @@
         const b = readBrushFolder(entries, prefix);
         if (!b) continue;
         if (!b.name) b.name = /^[0-9A-Fa-f-]{20,}$/.test(folder) ? (baseName + ' ' + autoIndex) : folder;
-        if (!b.tip) warnings.push(b.name + ': 使用默认圆头（无 Shape 图），将自动生成圆头笔尖');
+        if (!b.tip) warnings.push(b.name + ': ' + (b.bundledShapePath ? '缺少内置笔尖原图 '+b.bundledShapePath+'；Procreate原生导出保留引用，跨软件圆头仅为近似' : '没有可解码Shape图；跨软件圆头仅为近似'));
         brushes.push(b);
       } catch (e) {
         warnings.push('解析失败 ' + folder + ': ' + e.message);
@@ -601,9 +619,13 @@
       if(sameGrain && brush._rawGrain)entries.push({name:'Grain.png',data:new Uint8Array(brush._rawGrain)});
       else if(brush.hasTexture){const g=grainPng(brush);if(g)entries.push({name:'Grain.png',data:g});}
       if(brush.dualOn && brush.dualTip)zip.read(writeBrush(subBrush(),opts)).forEach(e=>entries.push({name:'Sub01/'+e.name,data:e.data()}));
-      let tipRaw = brush.tip ? tipRGBA(brush,opts) : null;
-      if (!tipRaw) tipRaw = roundTip(brush.sizePx || 128);
-      entries.push({ name: 'QuickLook/Thumbnail.png', data: thumbPng(tipRaw, { spacingPct: brush.spacingPct, opacity: brush.opacity }) });
+      const originalThumb = !brush.tip && (brush._rawEntries || []).find(e=>e.name==='QuickLook/Thumbnail.png');
+      if (originalThumb) entries.push({name:'QuickLook/Thumbnail.png',data:new Uint8Array(originalThumb.data)});
+      else {
+        let tipRaw = brush.tip ? tipRGBA(brush,opts) : null;
+        if (!tipRaw) tipRaw = roundTip(brush.sizePx || 128);
+        entries.push({ name: 'QuickLook/Thumbnail.png', data: thumbPng(tipRaw, { spacingPct: brush.spacingPct, opacity: brush.opacity }) });
+      }
       return zip.write(entries);
     }
     const tip = tipRGBA(brush, opts);

@@ -1253,6 +1253,9 @@
     opts = opts || {};
     const list = brushList.map(function (b) {
       b=withExportSettings(b,opts);
+      // Native Procreate resources may be builtin references with no Shape.png.
+      // Match the single-brush raw path instead of replacing them with a circle.
+      if (opts.fidelity !== false && b._rawArchive && !opts.forceRebuild) return b;
       const tip = tipToRGBA(b) || synthTip(Object.assign({},b,{roundness:100,angle:0}), 256, opts);
       return Object.assign({}, b, { tip: { w: tip.w, h: tip.h, rgba: tip.rgba } });
     });
@@ -2160,7 +2163,7 @@ Write-Host 'restart MediBang Paint Pro'
     const out = { noTip: [], procedural: [], grainOnly: [] };
     for (const b of (brushList || [])) {
       if (!b || b.enabled === false) continue;
-      const hasTip = !!(b.tip || b.dualTip);
+      const hasTip = !!b.tip; // A secondary image cannot replace the missing primary.
       if (!hasTip) {
         out.noTip.push(b.name);
         if (b.computed) out.procedural.push(b.name);
@@ -2180,7 +2183,7 @@ Write-Host 'restart MediBang Paint Pro'
     }
     if (list.noTip.length) {
       let m = list.noTip.length + ' 支笔刷源文件没有笔尖（shape）图片：' + names(list.noTip, 3) +
-        '；转出时只能用参数生成的圆形/椭圆笔尖，笔触、纹理与源文件不同';
+        '；跨软件或强制重建只能生成近似圆形/椭圆笔尖，笔触可能不同；Procreate原生保留路径可保留内置引用';
       if (list.procedural.length === list.noTip.length) m += '（这些笔刷本身就是参数化笔刷，没有采样图像）';
       else if (list.procedural.length) m += '（其中 ' + list.procedural.length + ' 支为参数化生成）';
       msgs.push(m);
