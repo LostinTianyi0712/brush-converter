@@ -16,16 +16,21 @@
     const le32 = o => dv.getUint32(o, true);
     // locate End of Central Directory
     let eocd = -1;
-    for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 70000); i--) {
-      if (le32(i) === 0x06054b50) { eocd = i; break; }
+    for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 65557); i--) {
+      // A signature inside an archive comment is not an EOCD record.
+      if (le32(i) === 0x06054b50 && i + 22 + le16(i + 20) === bytes.length) { eocd = i; break; }
     }
     if (eocd < 0) throw new Error('不是有效的 ZIP 文件');
     const count = le16(eocd + 10);
     const cdOff = le32(eocd + 16);
+    const cdSize = le32(eocd + 12), cdEnd = cdOff + cdSize;
+    if (count === 0xffff || cdOff === 0xffffffff || cdSize === 0xffffffff) throw new Error('暂不支持 ZIP64 压缩包');
+    if (le16(eocd + 4) || le16(eocd + 6) || le16(eocd + 8) !== count) throw new Error('暂不支持 ZIP 分卷压缩包');
+    if (cdEnd > eocd || (count && cdSize < 46)) throw new Error('ZIP 中央目录长度异常');
     const entries = [];
     let p = cdOff;
     for (let i = 0; i < count; i++) {
-      if (le32(p) !== 0x02014b50) break;
+      if (p + 46 > cdEnd || le32(p) !== 0x02014b50) throw new Error('ZIP 中央目录损坏或条目不完整');
       const flags = le16(p + 8);
       const method = le16(p + 10);
       const compSize = le32(p + 20);
@@ -34,21 +39,34 @@
       const extraLen = le16(p + 30);
       const commentLen = le16(p + 32);
       const localOff = le32(p + 42);
+      if (p + 46 + nameLen + extraLen + commentLen > cdEnd) throw new Error('ZIP 中央目录条目长度异常');
+      if (compSize === 0xffffffff || size === 0xffffffff || localOff === 0xffffffff) throw new Error('暂不支持 ZIP64 条目');
+      const crc = le32(p + 16);
       const name = util.utf8Decode(bytes.subarray(p + 46, p + 46 + nameLen));
-      entries.push({ name, flags, method, compSize, size, localOff, dir: name.endsWith('/') });
+      entries.push({ name, flags, method, compSize, size, localOff, crc, dir: name.endsWith('/') });
       p += 46 + nameLen + extraLen + commentLen;
     }
     for (const e of entries) {
       if (e.dir) continue;
       const lp = e.localOff;
-      if (le32(lp) !== 0x04034b50) throw new Error('ZIP 局部头损坏: ' + e.name);
+      if (lp + 30 > cdOff || le32(lp) !== 0x04034b50) throw new Error('ZIP 局部头损坏: ' + e.name);
+      if (e.flags & 1) throw new Error('暂不支持 ZIP 加密条目: ' + e.name);
+      if (le16(lp + 8) !== e.method || (le16(lp + 6) & 1)) throw new Error('ZIP 局部头编码不一致: ' + e.name);
       const lnl = le16(lp + 26), lel = le16(lp + 28);
       const start = lp + 30 + lnl + lel;
+      if (start + e.compSize > cdOff) throw new Error('ZIP 数据截断或长度异常: ' + e.name);
       e._raw = bytes.subarray(start, start + e.compSize);
       e.data = function () {
-        if (this.method === 0) return this._raw;
-        if (this.method === 8) return zlib.inflateRaw(this._raw);
-        throw new Error('不支持的 ZIP 压缩方式 ' + this.method + ' (' + this.name + ')');
+        let data;
+        if (this.method === 0) data = this._raw;
+        else if (this.method === 8) {
+          try { data = zlib.inflateRaw(this._raw); }
+          catch (err) { throw new Error('ZIP 解压失败: ' + this.name + ' (' + (err && err.message ? err.message : String(err)) + ')'); }
+        }
+        else throw new Error('不支持的 ZIP 压缩方式 ' + this.method + ' (' + this.name + ')');
+        if (!data || data.length !== this.size) throw new Error('ZIP 解压后长度异常: ' + this.name);
+        if (util.crc32(data) !== this.crc) throw new Error('ZIP 数据校验失败，文件可能已损坏: ' + this.name);
+        return data;
       };
     }
     return entries;

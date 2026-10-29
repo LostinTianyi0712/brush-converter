@@ -24,12 +24,14 @@
   /* Decode PNG -> {width,height,rgba:Uint8Array} */
   function decode(bytes) {
     if (!isPng(bytes)) throw new Error('不是有效的 PNG 图片');
-    let p = 8, ihdr = null, plte = null, trns = null, idat = [];
-    while (p + 8 <= bytes.length) {
+    let p = 8, ihdr = null, plte = null, trns = null, idat = [], ended = false;
+    while (p + 12 <= bytes.length) {
       const len = util.u32(bytes, p);
       const type = util.ascii(bytes, p + 4, 4);
+      if (len > bytes.length - p - 12) throw new Error('PNG 数据块截断：' + type);
       const data = bytes.subarray(p + 8, p + 8 + len);
       if (type === 'IHDR') {
+        if (len !== 13 || ihdr) throw new Error('PNG IHDR 长度或数量异常');
         ihdr = {
           width: util.u32(data, 0), height: util.u32(data, 4),
           bitDepth: data[8], colorType: data[9], compression: data[10], filter: data[11], interlace: data[12]
@@ -37,25 +39,36 @@
       } else if (type === 'PLTE') plte = data;
       else if (type === 'tRNS') trns = data;
       else if (type === 'IDAT') idat.push(data);
-      else if (type === 'IEND') break;
+      else if (type === 'IEND') { ended = true; break; }
       p += 12 + len;
     }
     if (!ihdr) throw new Error('PNG 缺少 IHDR');
+    if (!ended || !idat.length) throw new Error('PNG 数据不完整');
     if (ihdr.interlace) throw new Error('暂不支持隔行扫描 PNG');
     const w = ihdr.width, h = ihdr.height, bd = ihdr.bitDepth, ct = ihdr.colorType;
-    const raw = zlib.inflate(util.concat(idat));
     const channels = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 }[ct];
     if (!channels) throw new Error('不支持的 PNG 颜色类型: ' + ct);
+    const depths = { 0: [1,2,4,8,16], 2: [8,16], 3: [1,2,4,8], 4: [8,16], 6: [8,16] };
+    if (!w || !h || !depths[ct].includes(bd) || ihdr.compression !== 0 || ihdr.filter !== 0) throw new Error('PNG 尺寸、位深或编码方式异常');
+    if (ct === 3 && (!plte || !plte.length || plte.length % 3 || plte.length > 768)) throw new Error('PNG 调色板异常');
+    if (trns && ((ct === 0 && trns.length !== 2) || (ct === 2 && trns.length !== 6) ||
+      (ct === 3 && trns.length > plte.length / 3) || ct === 4 || ct === 6)) throw new Error('PNG 透明度数据长度或类型异常');
     const bitsPerPixel = channels * bd;
     const stride = Math.ceil((w * bitsPerPixel) / 8);
     const bpp = Math.max(1, Math.ceil(bitsPerPixel / 8));
+    const raw = zlib.inflate(util.concat(idat));
+    if (!raw || raw.length !== (stride + 1) * h) throw new Error('PNG 扫描行数据长度异常');
     const out = new Uint8Array(w * h * 4);
     const prev = new Uint8Array(stride);
     const line = new Uint8Array(stride);
     let pos = 0;
     const maxv = (1 << bd) - 1;
+    const u16 = (b, o) => (b[o] << 8) | b[o + 1];
+    const transparentGray = trns && ct === 0 ? u16(trns, 0) : -1;
+    const transparentRgb = trns && ct === 2 ? [u16(trns, 0), u16(trns, 2), u16(trns, 4)] : null;
     for (let y = 0; y < h; y++) {
       const ft = raw[pos++];
+      if (ft > 4) throw new Error('PNG 扫描行过滤类型异常：' + ft);
       line.set(raw.subarray(pos, pos + stride));
       pos += stride;
       for (let x = 0; x < stride; x++) {
@@ -77,23 +90,31 @@
           if (bd === 16) { const o = x * 8; r = line[o]; g = line[o + 2]; bl = line[o + 4]; al = line[o + 6]; }
           else { const o = x * 4; r = line[o]; g = line[o + 1]; bl = line[o + 2]; al = line[o + 3]; }
         } else if (ct === 2) {
-          if (bd === 16) { const o = x * 6; r = line[o]; g = line[o + 2]; bl = line[o + 4]; }
+          if (bd === 16) {
+            const o = x * 6;
+            r = line[o]; g = line[o + 2]; bl = line[o + 4];
+            // Compare full samples before discarding low bytes (PNG tRNS).
+            if (transparentRgb && u16(line,o) === transparentRgb[0] && u16(line,o+2) === transparentRgb[1] && u16(line,o+4) === transparentRgb[2]) al = 0;
+          }
           else { const o = x * 3; r = line[o]; g = line[o + 1]; bl = line[o + 2]; }
+          if (bd === 8 && transparentRgb && r === transparentRgb[0] && g === transparentRgb[1] && bl === transparentRgb[2]) al = 0;
         } else if (ct === 4) {
           const o = x * 2 * (bd === 16 ? 2 : 1);
           if (bd === 16) { r = g = bl = line[o]; al = line[o + 2]; }
           else { r = g = bl = line[o]; al = line[o + 1]; }
         } else if (ct === 0) {
           let v;
-          if (bd === 16) v = line[x * 2];
+          if (bd === 16) v = u16(line, x * 2);
           else if (bd === 8) v = line[x];
           else {
             const bitPos = x * bd;
             const byte = line[bitPos >> 3];
             const shift = 8 - bd - (bitPos & 7);
             v = (byte >> shift) & maxv;
-            v = Math.round((v * 255) / maxv);
           }
+          if (v === transparentGray) al = 0;
+          if (bd === 16) v >>= 8;
+          else if (bd < 8) v = Math.round((v * 255) / maxv);
           r = g = bl = v;
         } else if (ct === 3) {
           let idx;
@@ -104,6 +125,7 @@
             const shift = 8 - bd - (bitPos & 7);
             idx = (byte >> shift) & maxv;
           }
+          if (idx * 3 + 2 >= plte.length) throw new Error('PNG 调色板索引越界');
           r = plte[idx * 3]; g = plte[idx * 3 + 1]; bl = plte[idx * 3 + 2];
           if (trns && idx < trns.length) al = trns[idx];
         }
