@@ -162,7 +162,11 @@
     hardness = clamp(hardness, 0, 1);
     if (!isFinite(angle)) {
       const angleHit = pick(params, [/angle/i, /rotation/i]);
-      angle = angleHit && isFinite(angleHit.value) ? angleHit.value : 0;
+      let v = angleHit && isFinite(angleHit.value) ? angleHit.value : 0;
+      // 主路径的 brush_definition.angle 是 Krita 弧度口径，已 ×180/π；兜底参数来自同族引擎参数，
+      // 同样是弧度存储。为不让已写成度的旧预设被放大 57.3 倍，只在 |v| <= 2π 时按弧度换算（#271）。
+      if (Math.abs(v) <= Math.PI * 2 + 1e-6) v = v * 180 / Math.PI;
+      angle = v;
     }
     if (!isFinite(roundnessPct)) {
       const ratioHit = pick(params, [/ratio/i, /roundness/i]);

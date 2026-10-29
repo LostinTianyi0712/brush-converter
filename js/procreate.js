@@ -550,8 +550,21 @@
       if (before && sub[key] !== undefined && sub[key] !== before[key] && info[alias] === before[key]) return sub[key];
       return info[alias] === undefined ? (sub[key] === undefined ? fallback : sub[key]) : info[alias];
     }
+    function nameValue() {
+      // ABR 双笔副刷缺 `Nm  ` 时解析结果是空串（不是 undefined），
+      // 直接用 value() 会把旧的「<主刷名> 2」回退链跳掉（#270）。
+      // 规则：显式改过的二次解析名 > 非空快照名 > 非空二次解析名 > 主刷名 + " 2"。
+      const fromInfo = info.name;
+      const fromSub = sub.name;
+      const before = sub._rawNormalized;
+      const nonEmpty = function (v) { return v !== undefined && v !== null && String(v).trim() !== ''; };
+      if (before && fromSub !== undefined && fromSub !== before.name && fromInfo === before.name && nonEmpty(fromSub)) return fromSub;
+      if (nonEmpty(fromInfo)) return fromInfo;
+      if (nonEmpty(fromSub)) return fromSub;
+      return brush.name + ' 2';
+    }
     return Object.assign({}, info, sub, {
-      name: value('name','name',brush.name + ' 2'),
+      name: nameValue(),
       tip: brush.dualTip,
       sizePx: value('diameter','sizePx',brush.sizePx || 100),
       spacingPct: value('spacing','spacingPct',25),
@@ -637,7 +650,7 @@
     return s;
   }
 
-  const api = { isProcreate, parse, writeBrush, writeBrushset, buildArchive, shapePng, thumbPng, unchanged };
+  const api = { isProcreate, parse, writeBrush, writeBrushset, buildArchive, shapePng, thumbPng, unchanged, secondaryBrush: secondaryBrush };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { procreate: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

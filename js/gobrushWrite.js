@@ -205,11 +205,14 @@
     const outers = [];
     let p = 0;
     let hit = false;
+    let malformed = false;
     while (p + 6 <= propBytes.length) {
       const tag = propBytes[p], flag = propBytes[p + 1];
       const len = le(propBytes, p + 2);
       const end = p + 6 + len;
-      if ((tag !== 0x10 && tag !== 0x00) || end > propBytes.length) break;
+      // 遇非法块不能只返回已处理前缀：那会把「输入校验失败」变成静默截断（#278）。
+      // 标记后返回**原字节**，保证不丢尾部数据。
+      if ((tag !== 0x10 && tag !== 0x00) || end > propBytes.length) { malformed = true; break; }
       let inner = propBytes.subarray(p + 6, end);
       if (tag === 0x10) {
         const recs = [];
@@ -217,7 +220,7 @@
         while (q + 6 <= inner.length) {
           const t2 = inner[q];
           const l2 = le(inner, q + 2);
-          if (q + 6 + l2 > inner.length) break;
+          if (q + 6 + l2 > inner.length) { malformed = true; break; }
           if (t2 === 0x11) { try { name = util.utf8Decode(inner.subarray(q + 6, q + 6 + l2)); } catch (e) { name = ''; } }
           if (t2 === 0x20 && l2 > 1 && inner[q + 6] === 0x5b) curveIdx = recs.length;
           recs.push({ tag: t2, flag: inner[q + 1], payload: inner.subarray(q + 6, q + 6 + l2) });
@@ -243,7 +246,7 @@
       outers.push(recordBytes(rec(tag, flag, inner)));
       p = end;
     }
-    if (!hit) return propBytes;
+    if (!hit || malformed) return propBytes;
     return concat(outers);
   }
 
