@@ -321,6 +321,22 @@ main {
 }
 .outpath #outPathText { font-weight: 600; }
 
+/* 结果文件（手机浏览器下载入口） */
+.result-head { margin-bottom: 8px; }
+.result-list { display: flex; flex-direction: column; gap: 8px; }
+.result-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid #d6e6f5;
+}
+.result-name { flex: 1 1 220px; font-size: 13px; color: #1d4e79; word-break: break-all; }
+.result-item .btn { padding: 6px 12px; font-size: 13px; }
+
 
 /* 首次打开公告弹窗 */
 .modal-backdrop {

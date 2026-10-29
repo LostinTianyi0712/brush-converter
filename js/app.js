@@ -1187,6 +1187,7 @@
     if (warnings.length) msg += '｜' + warnings[0] + (warnings.length > 1 ? ' 等 ' + warnings.length + ' 条提示' : '');
     toast(msg + (savedMsg ? '｜' + savedMsg : ''), 9000);
     setOutputLocation(savedMsg);
+    renderResultPanel();
   }
 
   /* 每 N 支一个包 */
@@ -1272,6 +1273,7 @@
       if (failedCount) msg += '，' + failedCount + ' 支失败';
       toast(msg + (savedMsg ? '｜' + savedMsg : ''), 9000);
       setOutputLocation(savedMsg);
+    renderResultPanel();
     } catch (e) {
       toast('保存失败：' + (e && e.message ? e.message : e), 7000);
     }
@@ -1282,6 +1284,7 @@
     state.activeJob = true;
     // Release the previous ZIP before allocating the next conversion output.
     lastSavedFiles = null;
+    renderResultPanel();
     updateConvertButton();
     try {
       await convertAllBatches();
@@ -1321,6 +1324,58 @@
       updateConvertButton();
     }
   }
+  /* 结果文件面板：手机浏览器（夸克/UC 等）会拦掉自动触发的下载，
+     这里给出「真实点按手势」的保存入口，让用户还能把文件拿到手。 */
+  function formatSize(n) {
+    if (!n && n !== 0) return '';
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1048576).toFixed(1) + ' MB';
+  }
+  function renderResultPanel() {
+    const panel = $('#resultPanel');
+    const list = $('#resultList');
+    if (!panel || !list) return;
+    const files = lastSavedFiles || [];
+    const webOnly = !window.BrushNative && !window.BrushDesktop;
+    if (!files.length || !webOnly) {
+      panel.style.display = 'none';
+      list.innerHTML = '';
+      return;
+    }
+    panel.style.display = '';
+    list.innerHTML = '';
+    files.forEach(function (f) {
+      const row = document.createElement('div');
+      row.className = 'result-item';
+      const name = document.createElement('span');
+      name.className = 'result-name';
+      name.textContent = f.name + '（' + formatSize(f.data ? f.data.length : 0) + '）';
+      const save = document.createElement('button');
+      save.className = 'btn ghost';
+      save.textContent = '保存';
+      save.addEventListener('click', function () {
+        const saver = window.BCSaver;
+        if (!saver || typeof saver.downloadOne !== 'function') { toast('当前环境不支持保存', 6000); return; }
+        saver.downloadOne(f);
+        toast('已发起下载：' + f.name + '（若无反应，试「新标签打开」或右上「分享保存」）', 7000);
+      });
+      const open = document.createElement('button');
+      open.className = 'btn ghost';
+      open.textContent = '新标签打开';
+      open.addEventListener('click', function () {
+        const saver = window.BCSaver;
+        if (!saver || typeof saver.openOne !== 'function' || !saver.openOne(f)) {
+          toast('这个文件无法在新标签打开（太大或浏览器限制），请用右上「分享保存」', 7000);
+        }
+      });
+      row.appendChild(name);
+      row.appendChild(save);
+      row.appendChild(open);
+      list.appendChild(row);
+    });
+  }
+
   /* ---------------- built-in sample brushes ---------------- */
   /* The minitool container can only pick images/videos, so the packaged
      minitool build offers these runtime-generated sample brushes. */
@@ -1367,7 +1422,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.53';
+  const APP_VERSION = '2.5.54';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {

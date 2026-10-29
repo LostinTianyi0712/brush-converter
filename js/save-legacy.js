@@ -14,15 +14,54 @@
     return btoa(s);
   }
 
-  function downloadFile(name, bytes, mime) {
-    var blob = new Blob([bytes], { type: mime || 'application/octet-stream' });
-    var url = URL.createObjectURL(blob);
+  /* 手机浏览器：即使 showDirectoryPicker 存在，用户手势/系统策略也常常直接抛错，
+     之前一抛错就 return null（等于「点了没反应」）。手机一律走下载分支。 */
+  function isMobileWeb() {
+    try {
+      var ua = navigator.userAgent || '';
+      if (/Android|iPhone|iPad|iPod|Mobile|HarmonyOS/i.test(ua)) return true;
+      if (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) return true;
+    } catch (e) { /* ignore */ }
+    return false;
+  }
+
+  function mimeFor(name) {
+    var ext = String(name || '').toLowerCase().split('.').pop();
+    var map = {
+      zip: 'application/zip', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+      bundle: 'application/zip', mtd: 'application/zip',
+      txt: 'text/plain;charset=utf-8', json: 'application/json'
+    };
+    return map[ext] || 'application/octet-stream';
+  }
+
+  /* 手机浏览器（夸克/UC/QQ 等）普遍不支持 blob: 下载：点了没有任何反应。
+     小文件改用 data: URL（这些浏览器吃 data:），大文件仍用 blob，但 blob URL
+     必须活得够久——以前 4 秒就 revoke，下载刚发起就被判失败。 */
+  function clickAnchor(url, name) {
     var a = document.createElement('a');
     a.href = url;
-    a.download = name.split('/').pop();
+    a.download = String(name || 'file').split('/').pop();
+    a.rel = 'noopener';
+    a.style.display = 'none';
     document.body.appendChild(a);
     a.click();
-    setTimeout(function () { document.body.removeChild(a); URL.revokeObjectURL(url); }, 4000);
+    setTimeout(function () { try { document.body.removeChild(a); } catch (e) { /* ignore */ } }, 8000);
+  }
+
+  function downloadFile(name, bytes, mime) {
+    var mimeType = mime || mimeFor(name);
+    if (bytes.length <= 8 * 1024 * 1024) {
+      try {
+        clickAnchor('data:' + mimeType + ';base64,' + base64FromBytes(bytes), name);
+        return 'data';
+      } catch (e) { /* 回退 blob */ }
+    }
+    var blob = new Blob([bytes], { type: mimeType });
+    var url = URL.createObjectURL(blob);
+    clickAnchor(url, name);
+    setTimeout(function () { try { URL.revokeObjectURL(url); } catch (e) { /* ignore */ } }, 180000);
+    return 'blob';
   }
 
   async function saveViaAndroid(name, bytes, mime, onChunk) {
@@ -59,7 +98,23 @@
 
   var webFolder = null;
   window.BCSaver = {
+    /* 供「结果文件」面板在真实点按手势里重试下载：手机浏览器只肯在用户手势内接受下载，
+       自动触发的那次经常被拦（夸克等）。 */
+    downloadOne: function (file) {
+      if (!file || !file.data || !file.data.length) return false;
+      downloadFile(file.name, file.data, mimeFor(file.name));
+      return true;
+    },
+    openOne: function (file) {
+      if (!file || !file.data || !file.data.length) return false;
+      if (file.data.length > 8 * 1024 * 1024) return false;
+      try {
+        var url = 'data:' + mimeFor(file.name) + ';base64,' + base64FromBytes(file.data);
+        return !!window.open(url, '_blank');
+      } catch (e) { return false; }
+    },
     supportsDirectory: function () {
+      if (isMobileWeb()) return false;
       return !!(window.BrushDesktop || (!window.BrushNative && typeof window.showDirectoryPicker === 'function'));
     },
     getDirectory: async function () {
@@ -126,8 +181,8 @@
         return '已保存到 ' + dir;
       }
 
-      // 3) File System Access API (Chrome / Edge web version)
-      if (typeof window.showDirectoryPicker === 'function' && (webFolder || !opts.packOut)) {
+      // 3) File System Access API (Chrome / Edge web version, desktop only)
+      if (!isMobileWeb() && typeof window.showDirectoryPicker === 'function' && (webFolder || !opts.packOut)) {
         var dirHandle;
         try {
           dirHandle = webFolder || await window.showDirectoryPicker({ mode: 'readwrite' });
@@ -160,12 +215,15 @@
       }
 
       // 4) fallback: browser downloads
+      var bigOnMobile = false;
       for (i = 0; i < files.length; i++) {
         progress(i / files.length, '正在下载 ' + (i + 1) + '/' + files.length + '：' + files[i].name);
-        downloadFile(files[i].name, files[i].data, 'application/octet-stream');
+        downloadFile(files[i].name, files[i].data, mimeFor(files[i].name));
+        if (isMobileWeb() && files[i].data.length > 8 * 1024 * 1024) bigOnMobile = true;
         await sleep(180);
       }
-      return '已发起 ' + files.length + ' 个下载（浏览器可能询问是否允许多个下载）';
+      if (bigOnMobile) return '已发起 ' + files.length + ' 个下载；其中有超过 8MB 的文件，手机浏览器常拦这种大文件，建议把输出改成「单独文件」再转一次';
+      return '已发起 ' + files.length + ' 个下载；手机浏览器若没反应，请点下方「结果文件」里的保存按钮重试';
     }
   };
 })();
