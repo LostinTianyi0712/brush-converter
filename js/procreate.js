@@ -535,7 +535,7 @@
       tip: brush.dualTip,
       sizePx: info.diameter === undefined ? (sub.sizePx || brush.sizePx || 100) : info.diameter,
       spacingPct: info.spacing === undefined ? (sub.spacingPct === undefined ? 25 : sub.spacingPct) : info.spacing,
-      scatterOn: info.useScatter === undefined ? !!(sub.scatterOn || info.scatterOn) : !!info.useScatter,
+      scatterOn: info.useScatter === undefined ? (sub.scatterOn === undefined ? !!info.scatterOn : !!sub.scatterOn) : !!info.useScatter,
       scatterCount: info.count === undefined ? (sub.scatterCount || info.scatterCount || 1) : info.count,
       scatterBothAxes: info.bothAxes === undefined ? !!(sub.scatterBothAxes || info.scatterBothAxes) : !!info.bothAxes,
       scatterPct: info.scatterPct === undefined ? sub.scatterPct : info.scatterPct,

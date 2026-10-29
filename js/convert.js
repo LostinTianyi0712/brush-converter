@@ -1761,9 +1761,15 @@ Write-Host 'restart MediBang Paint Pro'
        (target === 'myb' && brush._rawMyb && rawBrushUnchanged(brush, opts)));
     if (rawCache) rawCache.set(brush, raw);
     if (raw) return '原样保留';
-    if (key === 'spacingPct' && target === 'bru' &&
-        (opts.spacingOverride > 0 ? opts.spacingOverride : brush.spacingPct) < 0.1) {
-      return '近似（按当前BRU写出下限设为0.1%，未保留零间距）';
+    if (key === 'spacingPct' && target === 'bru') {
+      const override = opts.spacingOverride > 0 ? opts.spacingOverride : undefined;
+      const affected = [];
+      if ((override === undefined ? brush.spacingPct : override) < 0.1) affected.push('主笔间距');
+      const nativeDual = opts.embedSubTip === true || opts.bruEmbed === true || opts.dualPair !== false;
+      const info = brush.dualBrush || {};
+      const subSpacing = info.spacing === undefined ? (brush.spacingPct === undefined ? 10 : brush.spacingPct) : info.spacing;
+      if (nativeDual && brush.dualOn && brush.dualTip && (override === undefined ? subSpacing : override) < 0.1) affected.push('副笔间距');
+      if (affected.length) return '近似（' + affected.join('、') + '按当前BRU写出下限设为0.1%，低间距未原样保留）';
     }
     if(opts.pressure===false && ['abr','brush','brushset','myb','kbundle','sai2','bru'].indexOf(target)>=0 &&
         (key==='pressureSize' || key==='pressureOpacity')) return '参数映射（按导出设置关闭压感）';
