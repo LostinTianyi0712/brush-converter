@@ -1782,6 +1782,7 @@ Write-Host 'restart MediBang Paint Pro'
        (target === 'myb' && brush._rawMyb && rawBrushUnchanged(brush, opts)));
     if (rawCache) rawCache.set(brush, raw);
     if (raw) return '原样保留';
+    if (key === 'scatterPct' && brush.scatterOn === false) return '未启用';
     if (key === 'spacingPct' && target === 'bru') {
       const override = opts.spacingOverride > 0 ? opts.spacingOverride : undefined;
       const affected = [];
@@ -1833,6 +1834,7 @@ Write-Host 'restart MediBang Paint Pro'
     }
     if (!supported) return '丢失（当前转换路径未映射）';
     if (key === 'scatterPct' && target === 'bru' && brush.source !== 'bru') {
+      if (brush.scatterPct === 0) return '参数映射（位置散布强度为0，缩放不改变数值）';
       return '近似（散布×' + (opts.scatterScale === undefined ? 0.15 : opts.scatterScale) + '）';
     }
     return '参数映射（笔触待验证）';
@@ -1916,7 +1918,7 @@ Write-Host 'restart MediBang Paint Pro'
     out.push('table{border-collapse:collapse;flex:1;min-width:320px}');
     out.push('th,td{border:1px solid #eee;padding:5px 8px;text-align:left;font-size:13px}');
     out.push('th{background:#f7f7f7;font-weight:600}');
-    out.push('.ok{color:#2a7a2a;font-weight:600}.no{color:#b03030;font-weight:600}');
+    out.push('.ok{color:#2a7a2a;font-weight:600}.no{color:#b03030;font-weight:600}.off{color:#777}');
     out.push('</style></head><body>');
     out.push('<h1>参数对比</h1>');
     out.push('<div class="meta">目标格式：<b>' + esc(targetLabel) + '</b> · 笔刷数：' + brushList.length + (meta && meta.fileName ? ' · 来源：' + esc(meta.fileName) : '') + '</div>');
@@ -1934,7 +1936,7 @@ Write-Host 'restart MediBang Paint Pro'
         if (f[0] === '双笔刷') text = dualDesc(b);
         const status = conversionStatus(b, target, f[1], keep.indexOf(f[0]) >= 0, meta && meta.options, rawCache);
         const ok = /^(原样|原生|参数映射)/.test(status);
-        out.push('<tr><td>' + esc(f[0]) + '</td><td>' + esc(text) + '</td><td class="' + (ok ? 'ok' : 'no') + '">' + esc(status) + '</td></tr>');
+        out.push('<tr><td>' + esc(f[0]) + '</td><td>' + esc(text) + '</td><td class="' + (status === '未启用' ? 'off' : ok ? 'ok' : 'no') + '">' + esc(status) + '</td></tr>');
       }
       out.push('</table></div>');
     });
