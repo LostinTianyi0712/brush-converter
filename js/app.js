@@ -254,6 +254,9 @@
     ['#btnLog', '#btnShare', '#btnSelectAll', '#btnSaveDirectory'].forEach(function (id) { const el=$(id); if(el)el.disabled=busy; });
     document.querySelectorAll('#options input, #options select').forEach(function (el) { el.disabled=busy; });
     filesEl.classList.toggle('locked', busy);
+    // 转换/保存期间卡片内的勾选框也要禁用：pointer-events 只挡鼠标，Tab+空格仍能改状态，
+    // 会让输出结果随按键漂移（#259）。
+    filesEl.querySelectorAll('input').forEach(function (el) { el.disabled = busy; });
     dz.setAttribute('aria-disabled', String(busy));
     btnConvert.textContent = total
       ? outText + '（已选 ' + total + ' 支 · ' + fmtLabel + '）'
@@ -338,6 +341,7 @@
     const toggle = document.createElement('label');
     toggle.className = 'tog';
     toggle.innerHTML = '<input type="checkbox" ' + (b.enabled === false ? '' : 'checked') + '><span>转换</span>';
+    toggle.querySelector('input').disabled = isBusy();
     toggle.querySelector('input').onchange = e => {
       b.enabled = e.target.checked;
       item.classList.toggle('off', !e.target.checked);
@@ -759,10 +763,12 @@
     progressEl.querySelector('.ptext').textContent = text || '';
   }
 
-  async function convertAllOnce(sink, force) {
+  async function convertAllOnce(sink, force, recordsOverride) {
     if (state.converting && !force) return;
     const opts = getOpts();
-    const records = state.files.filter(r => r.brushes && r.brushes.some(b => b.enabled !== false));
+    // 分批转换只传入本批记录，不改 state.files：否则卡片列表会整体变成本批、
+    // 勾选计数与进度条反复归零（#258）。
+    const records = (recordsOverride || state.files).filter(r => r.brushes && r.brushes.some(b => b.enabled !== false));
     const totalBrushes = records.reduce((s, r) => s + r.brushes.filter(b => b.enabled !== false).length, 0);
     if (!records.length || !totalBrushes) { toast('没有可转换的笔刷'); return; }
     state.converting = true;
@@ -1096,25 +1102,21 @@
     const onlyAux = outFiles.length > 0 && outFiles.every(function (f) {
       return /^(安装\/|转换报告\.txt$|参数对比\.html$|纹理图案_|优动漫导入说明\.txt$|.*_优动漫导入说明\.txt$|.*_参数\.txt$)/.test(f.name);
     });
-    if (!outFiles.length || onlyAux) {
-      // 附带：一键安装说明 + 转换差异报告
-    try {
-      const allTargets = opts.target === 'all' ? ALL_FORMATS : [opts.target || 'bru'];
-      for (const t of allTargets) {
-        for (const f of BC.convert.makeInstallScripts(t)) {
-          outFiles.push({ name: '安装/' + t + '/' + f.name, data: f.data });
-        }
-      }
-      const reportBrushes = records.reduce(function (acc, r) { return acc.concat(r.brushes.filter(function (b) { return b.enabled !== false; })); }, []);
-      outFiles.push({ name: '转换报告.txt', data: BC.util.utf8Encode(BC.convert.brushLossReport(reportBrushes, allTargets, opts)) });
-    } catch (e) { warnings.push('安装说明/报告生成失败：' + e.message); }
-
-    state.converting = false;
-    try { if (typeof btnCancel !== 'undefined' && btnCancel) btnCancel.style.display = 'none'; } catch (e) { /* ignore */ }
+    if (!outFiles.length) {
+      // 没有任何真实输出：区分「真的失败」与「被合理跳过/未勾选」，并把已收集的
+      // warnings 当作原因展示，而不是笼统的「未知错误」（#257）。
+      state.converting = false;
+      try { if (typeof btnCancel !== 'undefined' && btnCancel) btnCancel.style.display = 'none'; } catch (e) { /* ignore */ }
       setProgress(null);
       render();
-      toast('转换失败：' + (failed[0] || '未知错误'), 6000);
+      const reason = failed.length ? failed[0] : (warnings.length ? warnings[0] : '请勾选至少一支笔刷，或确认源文件没有被全部跳过');
+      toast((failed.length ? '转换失败：' : '没有产生输出文件：') + reason, 8000);
       return;
+    }
+    if (onlyAux) {
+      // 只生成了辅助文件（例如纹理 .pat / 参数文本）。原先这里直接 return，
+      // 会把已生成的 .pat 丢掉、安装说明与报告也永远不落盘（#261）。
+      warnings.push('本次没有生成笔刷文件，只生成了辅助文件（如纹理 .pat / 参数文本）；已按辅助文件打包');
     }
     // 输出体积提示：几百支大笔刷时提醒分批，避免浏览器内存爆掉
     let totalOut = 0;
@@ -1228,8 +1230,7 @@
     try {
       for (let i = 0; i < chunks.length; i++) {
         if (state.cancelRequested) break;
-        state.files = chunks[i];
-        await convertAllOnce(sink, true);
+        await convertAllOnce(sink, true, chunks[i]);
       }
     } finally {
       state.files = orig;
@@ -1366,7 +1367,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.47';
+  const APP_VERSION = '2.5.48';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {
