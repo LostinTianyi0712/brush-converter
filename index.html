@@ -27,7 +27,6 @@
     <button id="btnSelectAll" class="btn ghost" title="全选/取消全选所有笔刷">全选笔刷</button>
     <button id="btnCompare" class="btn ghost" title="查看原参数与目标格式的对比">参数对比</button>
     <button id="btnShare" class="btn ghost" title="分享/保存到文件（iOS 可用）">分享保存</button>
-    <button id="btnLog" class="btn ghost" title="导出本次运行日志">导出日志</button>
     <button id="btnClear" class="btn ghost" title="清空列表">清空</button>
     <button id="btnConvert" class="btn primary" disabled>转换并下载 ZIP</button>
     <button id="btnCancel" class="btn ghost" style="display:none">取消</button>
@@ -233,8 +232,20 @@
 
 <footer class="footer">
   <span>输出：.bru（画世界Pro）/ .abr（Photoshop）/ .brush/.brushset（Procreate）/ .gobrush/.gobrushes（天生会画）/ .bundle（Krita）/ .gbr/.gih（GIMP）/ .myb（MyPaint）/ .brushcategory（Painter）/ PNG 笔尖包；输入支持同格式 + ZIP。</span>
-  <span id="ver"></span>
+  <div class="footer-tools">
+    <button id="btnLog" class="btn ghost" title="导出本次运行日志">导出日志</button>
+    <span id="ver"></span>
+  </div>
 </footer>
+
+<div id="compareModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99;align-items:center;justify-content:center">
+  <div style="width:min(1100px,94vw);height:min(86vh,900px);background:#fff;border-radius:12px;overflow:hidden;display:flex;flex-direction:column">
+    <div style="padding:10px 14px;border-bottom:1px solid #eee;display:flex;justify-content:space-between;align-items:center">
+      <b>参数对比</b><button id="compareClose" class="btn tiny ghost">关闭</button>
+    </div>
+    <iframe id="compareFrame" style="flex:1;border:0;width:100%"></iframe>
+  </div>
+</div>
 
 <script src="./js/pako.min.js"></script>
 <script src="./js/util.js"></script>
@@ -273,13 +284,5 @@
 <script src="./js/convert.js"></script>
 <script src="./js/save-legacy.js"></script>
 <script src="./js/app.js"></script>
-<div id="compareModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99;align-items:center;justify-content:center">
-  <div style="width:min(1100px,94vw);height:min(86vh,900px);background:#fff;border-radius:12px;overflow:hidden;display:flex;flex-direction:column">
-    <div style="padding:10px 14px;border-bottom:1px solid #eee;display:flex;justify-content:space-between;align-items:center">
-      <b>参数对比</b><button id="compareClose" class="btn tiny ghost">关闭</button>
-    </div>
-    <iframe id="compareFrame" style="flex:1;border:0;width:100%"></iframe>
-  </div>
-</div>
 </body>
 </html>

@@ -1367,7 +1367,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.48';
+  const APP_VERSION = '2.5.49';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {
@@ -1472,7 +1472,7 @@
       }
       if (!brushes.length) { toast('先添加笔刷文件'); return; }
       try {
-        const html = BC.convert.buildCompareHtml(brushes.slice(0, 20), target, {});
+        const html = BC.convert.buildCompareHtml(brushes.slice(0, 20), target, { options: getOpts() });
         frame.srcdoc = html;
         modal.style.display = 'flex';
       } catch (e) { toast('生成对比失败：' + e.message); }
