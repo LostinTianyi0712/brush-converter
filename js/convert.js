@@ -757,7 +757,11 @@
     if (brush._grainRgba && brush._grainRgba.w > 0) {
       const g = brush._grainRgba, w = g.w, h = g.h;
       const gray = new Uint8Array(w * h);
-      for (let i = 0; i < w * h; i++) gray[i] = g.rgba[i * 4 + 3];
+      for (let i = 0; i < w * h; i++) {
+        const o=i*4;
+        const coverage=Math.round((g.rgba[o]+g.rgba[o+1]+g.rgba[o+2])*g.rgba[o+3]/765);
+        gray[i]=inv?255-coverage:coverage;
+      }
       return { w: w, h: h, gray: gray };
     }
     return null;
@@ -1600,19 +1604,8 @@ Write-Host 'restart MediBang Paint Pro'
      不生成程序化噪声（伪造纹理会让笔刷图案偏离原笔刷）。 */
   function bakeTextureIntoRGBA(rgba, w, h, brush, strength) {
     const k = Math.max(0, Math.min(1, strength === undefined ? 0.35 : strength));
-    let tex = null;
-    if (brush && brush._grainRgba && brush._grainRgba.w > 0) {
-      tex = { w: brush._grainRgba.w, h: brush._grainRgba.h, sample: function (x, y) { return brush._grainRgba.rgba[((y * brush._grainRgba.w) + x) * 4 + 3] / 255; } };
-    } else if (brush && brush._patternPixels && brush._patternPixels.w > 0) {
-      const pp = brush._patternPixels;
-      tex = {
-        w: pp.w, h: pp.h, sample: function (x, y) {
-          const o = (y * pp.w) + x;
-          if (pp.mode === 3) { const o3 = o * 3; return (pp.data[o3] + pp.data[o3 + 1] + pp.data[o3 + 2]) / 765; }
-          return pp.data[o] / 255;
-        }
-      };
-    }
+    const gray = textureGray(brush);
+    const tex = gray ? {w:gray.w,h:gray.h,sample:function(x,y){return gray.gray[y*gray.w+x]/255;}} : null;
     if (!tex) return rgba;
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
