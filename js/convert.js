@@ -609,8 +609,10 @@
       // ABR jitter is percent of a full circle; BRU stores the +/- degree range.
       angleJitterDeg: brush.source === 'abr' && brush.angleJitterDeg !== undefined ? Math.max(0, Math.min(180, brush.angleJitterDeg * 1.8)) : brush.angleJitterDeg,
       // Native UI calibration: 0 off, 1 direction, 2 initial, 3 pressure, 4 stylus side rotation.
-      // PS tilt/wheel/fade have no exact BRU control: do not force direction.
-      bruRotationMode: brush.bruRotationMode === undefined && brush.source === 'abr' ? ({0:0,2:3,5:2,6:1}[brush.dynamicsControlAngle || 0] || 0) : brush.bruRotationMode,
+      // Procreate/Krita/MyPaint 等来源没有「跟随笔迹方向」这个控制：之前留 undefined 会落到写入端默认值 1
+      // （笔迹方向），把角度随机（Procreate 的 Shape Scatter）在视觉上吞掉——同一支包浆从 .abr 进来是
+      // mode 0、从 .brushset 进来却是 1。无显式值时一律 0（关）。
+      bruRotationMode: brush.bruRotationMode !== undefined ? brush.bruRotationMode : (brush.source === 'abr' ? ({0:0,2:3,5:2,6:1}[brush.dynamicsControlAngle || 0] || 0) : 0),
       sizeJitterPct: brush.sizeJitterPct,
       spacingJitterPct: brush.spacingJitterPct,
       flowJitterPct: brush.flowJitterPct,
