@@ -466,10 +466,10 @@
         wetnessDynamics: wtVr ? jitterOf(wtVr) : undefined,
         mixDynamics: mxVr ? jitterOf(mxVr) : undefined,
         poseOn: usePose === true,
-        poseAngle: desc.unitValue(desc.getItem(preset, 'brushPoseAngle')),
-        poseTiltX: desc.unitValue(desc.getItem(preset, 'brushPoseTiltX')),
-        poseTiltY: desc.unitValue(desc.getItem(preset, 'brushPoseTiltY')),
-        posePressure: desc.unitValue(desc.getItem(preset, 'brushPosePressure')),
+        poseAngle: _descNum(desc.getItem(preset, 'brushPoseAngle')),
+        poseTiltX: _descNum(desc.getItem(preset, 'brushPoseTiltX')),
+        poseTiltY: _descNum(desc.getItem(preset, 'brushPoseTiltY')),
+        posePressure: _descNum(desc.getItem(preset, 'brushPosePressure')),
         colorDynamicsOn: useColorDyn === true,
         colorJitterHue: cdHue === undefined ? undefined : cdHue / 100,
         colorJitterSat: cdSat === undefined ? undefined : cdSat / 100,
@@ -733,6 +733,9 @@
   function _descItem(key, tag, valueBytes, stringId) {
     return util.concat([_descId(key, stringId), _ascii4(tag), valueBytes]);
   }
+  /* 读取端兼容 long（数值）与 UntF（unit 对象）：历史版本 pose 写出为 long，
+     而解析处用 unitValue 只能读 UntF，导致自己写的姿态字段读不回来。 */
+  function _descNum(v) { return typeof v === 'number' ? v : desc.unitValue(v); }
   function _descUntF(unit, value) {
     return util.concat([_ascii4(unit), _f64be(value)]);
   }
@@ -860,6 +863,8 @@
       let name = '', id = '';
       try {
         const nl = util.u32(data, p2); p2 += 4;
+        // 名称长度来自文件内任意 u32：超出剩余字节直接放弃解析，避免空转/堆涨到 OOM
+        if (nl > Math.max(0, Math.floor((data.length - p2) / 2))) throw new Error('pattern name overflow');
         const chars = [];
         for (let i = 0; i < nl; i++) { chars.push(String.fromCharCode(util.u16(data, p2))); p2 += 2; }
         name = chars.join('').replace(/ +$/, '');
@@ -882,7 +887,10 @@
       // Record includes u32 length, then u32 version, then image mode.
       let p = 8;
       const mode = util.u32(data, p); p += 8;
-      const nl = util.u32(data, p); p += 4 + nl * 2;
+      const nl = util.u32(data, p); p += 4;
+      // 名称长度来自文件内任意 u32，先校验剩余字节，避免损坏文件里循环空转/堆涨到 OOM
+      if (nl > (data.length - p) / 2) return null;
+      p += nl * 2;
       if (p >= data.length) return null;
       const idl = data[p]; p += 1 + idl;
       let palette = null;
@@ -1319,10 +1327,12 @@
         presetItems.push(_descItem('overridePoseTiltY', 'bool', _descBool(!!it.poseOverrideTiltY)));
         presetItems.push(_descItem('overridePosePressure', 'bool', _descBool(!!it.poseOverridePressure)));
         const pv = function (v, d) { return Math.round(Math.max(0, Math.min(100, (v === undefined ? d : v)))); };
+        // pose 角度/倾斜是带符号整度数：long 必须写完整 32 位，不能单字节钳位。
+        const long32 = function (v) { const n = Math.round(v || 0) | 0; return new Uint8Array([(n >> 24) & 255, (n >> 16) & 255, (n >> 8) & 255, n & 255]); };
         presetItems.push(_descItem('brushPosePressure', 'UntF', _descUntF('#Prc', pv(it.posePressure, 50))));
-        presetItems.push(_descItem('brushPoseTiltX', 'long', new Uint8Array([0, 0, 0, Math.max(0, Math.min(255, Math.round(it.poseTiltX || 0)))])));
-        presetItems.push(_descItem('brushPoseTiltY', 'long', new Uint8Array([0, 0, 0, Math.max(0, Math.min(255, Math.round(it.poseTiltY || 0)))])));
-        presetItems.push(_descItem('brushPoseAngle', 'long', new Uint8Array([0, 0, 0, Math.max(0, Math.min(255, Math.round(it.poseAngle || 0)))])));
+        presetItems.push(_descItem('brushPoseTiltX', 'long', long32(it.poseTiltX)));
+        presetItems.push(_descItem('brushPoseTiltY', 'long', long32(it.poseTiltY)));
+        presetItems.push(_descItem('brushPoseAngle', 'long', long32(((Math.round(it.poseAngle || 0) % 360) + 360) % 360)));
       }
       if (it.wetnessDynamics) presetItems.push(_descItem('wtVr', 'Objc', brv(0, it.wetnessDynamics, 0)));
       if (it.mixDynamics) presetItems.push(_descItem('mxVr', 'Objc', brv(0, it.mixDynamics, 0)));

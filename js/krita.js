@@ -123,9 +123,9 @@
 
     let sizePx = bd && bd.diameter ? parseFloat(bd.diameter) : 0;
     let spacingPct = bd && bd.spacing ? parseFloat(bd.spacing) * 100 : NaN;
-    let angle = bd && bd.angle ? parseFloat(bd.angle) : NaN;
+    let angle = bd && bd.angle !== null && isFinite(parseFloat(bd.angle)) ? parseFloat(bd.angle) * 180 / Math.PI : NaN;
     let roundnessPct = bd && bd.ratio ? parseFloat(bd.ratio) * 100 : NaN;
-    let hardness = bd && bd.hfade ? parseFloat(bd.hfade) : NaN;
+    let hardness = bd && bd.hfade !== null && isFinite(parseFloat(bd.hfade)) ? parseFloat(bd.hfade) : NaN;
 
     if (!isFinite(sizePx) || !sizePx) {
       const radiusHit = pick(params, [/brush.*radius/i, /^radius$/i, /diameter/i, /size/i]);
@@ -151,7 +151,7 @@
     if (flowPct > 1.5) flowPct /= 100;
     flowPct = clamp(flowPct, 0, 1);
 
-    if (!isFinite(hardness) || hardness <= 0) {
+    if (!isFinite(hardness)) {
       const softHit = pick(params, [/softness/i, /sharpness/i]);
       hardness = 1;
       if (softHit && isFinite(softHit.value)) {
@@ -342,7 +342,7 @@
     const spacing = Math.max(0.01, Math.min(5, (brush.spacingPct || 10) / 100));
     const opacity = Math.max(0, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity));
     const hardness = Math.max(0, Math.min(1, brush.hardness === undefined ? 1 : brush.hardness));
-    const angle = isFinite(brush.angle) ? brush.angle : 0;
+    const angleRad = (isFinite(brush.angle) ? brush.angle : 0) * Math.PI / 180;
     let ratio = brush.roundness === undefined ? 1 : brush.roundness / 100;
     ratio = Math.max(0.05, Math.min(1, ratio));
     const pressureSize = !!brush.pressureSize;
@@ -352,7 +352,7 @@
     const cdata = function (s) { return '<![CDATA[' + s + ']]>'; };
     const curve = '<![CDATA[<!DOCTYPE params> <params id="pressure"> <curve>0,0;1,1;</curve> </params> ]]>';
 
-    const brushDef = '<Brush spacing="' + num(spacing, 0.1) + '" autoSpacingCoeff="1" angle="' + num(angle, 0) +
+    const brushDef = '<Brush spacing="' + num(spacing, 0.1) + '" autoSpacingCoeff="1" angle="' + angleRad.toFixed(6) +
       '" BrushVersion="2" type="auto_brush" density="1" useAutoSpacing="1" randomness="0"> ' +
       '<MaskGenerator ratio="' + num(ratio, 1) + '" antialiasEdges="1" spikes="2" vfade="' + num(hardness, 1) +
       '" diameter="' + num(diameter, 40) + '" id="default" hfade="' + num(hardness, 1) + '" type="circle"/> </Brush> ';

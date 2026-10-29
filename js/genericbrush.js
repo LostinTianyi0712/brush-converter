@@ -212,12 +212,15 @@
         opacity: b.opacity === undefined ? 1 : b.opacity, hardness: b.hardness === undefined ? 0.8 : b.hardness };
     }) };
     files.push({ name: 'brushes/setting.json', data: util.utf8Encode(JSON.stringify(json, null, 2)) });
+    let tipCount = 0;
     brushes.forEach(function (b, i) {
       if (!b.tip || !b.tip.rgba) return;
+      tipCount++;
       files.push({ name: 'brushes/tip_' + i + '.png', data: png.encode(b.tip.w, b.tip.h, b.tip.rgba) });
       if (i === 0) files.push({ name: 'brushes/thumb.png', data: png.encode(b.tip.w, b.tip.h, b.tip.rgba) });
     });
-    if (!files.length) throw new Error('没有可写入 MDP 的数据');
+    // setting.json 总会入列，不能用 files.length 判断；没有任何笔尖时应当报错而不是产出空 .mdp
+    if (!tipCount) throw new Error('没有可写入 MDP 的笔尖图像数据');
     return z.write(files);
   }
 

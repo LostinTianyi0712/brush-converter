@@ -60,11 +60,17 @@
     if (t === 4) return util.i32(bytes, pos);
     if (t === 5) return ((bytes[pos] << 8) | bytes[pos + 1]) * 4294967296 + u32(bytes, pos + 2);
     if (t === 6 || t === 7) {
-      const sign = t === 6 ? -1 : 1;
-      // big-endian double
       const b = bytes.subarray(pos, pos + 8);
-      const dv = new DataView(b.buffer, b.byteOffset, 8);
-      return dv.getFloat64(0, false);
+      if (t === 7) {
+        // big-endian double
+        const dv = new DataView(b.buffer, b.byteOffset, 8);
+        return dv.getFloat64(0, false);
+      }
+      // serial type 6 是 64 位二补整数（与 type7 的 double 不同）。
+      // 不用 BigInt：bundle 要兼容 Chrome 61；|v|<2^53 时两段 32 位拼回是精确的。
+      const hi = util.i32(bytes, pos);
+      const lo = u32(bytes, pos + 4);
+      return hi * 4294967296 + lo;
     }
     if (t >= 12) {
       const len = (t - 12) >> 1;

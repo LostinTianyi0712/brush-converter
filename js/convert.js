@@ -210,12 +210,15 @@
             tip: { w: pt.width, h: pt.height, rgba: rgba },
             sizePx: Math.max(pt.width, pt.height),
             spacingPct: 100,
-            hasTexture: true,
+            // 图案本身就是笔尖形状：若再挂 hasTexture，makeBru/makeAbr 会把同一份像素
+            // 当纹理再烘一遍，笔尖被二次压暗。保留 _patternPixels 供其它分析使用，
+            // 但不再声明“独立纹理”。
+            hasTexture: false,
             _patternPixels: { w: pt.width, h: pt.height, mode: 1, data: pt.gray },
             source: 'pat'
           };
         }),
-        warnings: []
+        warnings: ['图案文件按笔尖图像导入：图案即笔尖形状，不再叠加为独立纹理（避免双重烘焙压暗）']
       };
     } else if (kind === 'mbini' || kind === 'mbini_set') {
       let text = util.utf8Decode(bytes);
@@ -813,7 +816,17 @@
       if (reader && reader.readPat) {
         const back = reader.readPat(bytes);
         selfCheck.readCount = back.length;
-        selfCheck.ok = back.length === records.length && back.every(function (pt, idx) {
+        let pixelsOk = back.length === records.length;
+        if (pixelsOk) {
+          for (let idx = 0; idx < list.length; idx++) {
+            const want = list[idx].t.gray, got = back[idx] && back[idx].gray;
+            if (!got || got.length !== want.length) { pixelsOk = false; break; }
+            for (let k = 0; k < want.length; k++) { if (want[k] !== got[k]) { pixelsOk = false; break; } }
+            if (!pixelsOk) break;
+          }
+        }
+        selfCheck.pixelsOk = pixelsOk;
+        selfCheck.ok = pixelsOk && back.every(function (pt, idx) {
           return pt.width === list[idx].t.w && pt.height === list[idx].t.h;
         });
         selfCheck.names = back.map(function (x) { return x.name; });
@@ -1226,6 +1239,20 @@
     return tip;
   }
 
+  /* 双笔混合模式归一：Procreate 解析出的是数字 0–11，其它格式可能是 'Mltp'/'scrn' 等 PS 码或英文名。
+     旧的烘焙分支只对字符串做 substr 匹配，数字与 0(normal) 全落到 multiply。 */
+  function dualBlendCode(m) {
+    if (m === undefined || m === null || m === '') return '';
+    if (typeof m === 'number') {
+      return ['', 'drkn', 'mltp', 'drkn', 'mltp', 'lghn', 'scrn', 'mltp', 'ovrl', 'mltp', 'mltp', 'mltp'][m] || '';
+    }
+    const s = String(m).toLowerCase().replace(/[^a-z]/g, '');
+    if (s.indexOf('scrn') >= 0 || s.indexOf('screen') >= 0 || s.indexOf('lghn') >= 0 || s.indexOf('lighten') >= 0) return 'scrn';
+    if (s.indexOf('ovrl') >= 0 || s.indexOf('overlay') >= 0) return 'ovrl';
+    if (s.indexOf('drkn') >= 0 || s.indexOf('darken') >= 0) return 'drkn';
+    return '';
+  }
+
   function bakeDualTip(tip, brush) {
     const d = brush.dualTip;
     if (!d || !tip || !tip.rgba) return tip;
@@ -1240,7 +1267,7 @@
     };
     const w = tip.w, h = tip.h;
     const out = new Uint8Array(w * h * 4);
-    const blend = String(brush.dualBlendMode || info.blend || '').toLowerCase();
+    const blend = dualBlendCode(brush.dualBlendMode !== undefined ? brush.dualBlendMode : info.blend);
     const ratio = info.diameter > 0 && brush.sizePx > 0 ? info.diameter / brush.sizePx : 1;
     // Convert logical diameter into main-image pixels, then into secondary-image
     // coordinates. Changing the secondary image resolution must not resize it.
@@ -1268,9 +1295,9 @@
         const a1 = tip.rgba[(y * w + x) * 4 + 3] / 255;
         const a2 = dualAlpha(x, y);
         let a;
-        if (blend.indexOf('scrn') >= 0 || blend.indexOf('lghn') >= 0) a = 1 - (1 - a1) * (1 - a2);
-        else if (blend.indexOf('drkn') >= 0) a = Math.min(a1, a2);
-        else if (blend.indexOf('ovrl') >= 0) a = a1 < 0.5 ? 2 * a1 * a2 : 1 - 2 * (1 - a1) * (1 - a2);
+        if (blend === 'scrn' || blend === 'lghn') a = 1 - (1 - a1) * (1 - a2);
+        else if (blend === 'drkn') a = Math.min(a1, a2);
+        else if (blend === 'ovrl') a = a1 < 0.5 ? 2 * a1 * a2 : 1 - 2 * (1 - a1) * (1 - a2);
         else a = a1 * a2;
         const o = (y * w + x) * 4;
         out[o] = tip.rgba[o]; out[o + 1] = tip.rgba[o + 1]; out[o + 2] = tip.rgba[o + 2];
@@ -1681,7 +1708,7 @@ Write-Host 'restart MediBang Paint Pro'
         'if (-not $dir) { Write-Host "未找到 GIMP 用户目录（先运行一次 GIMP）"; exit 1 }',
         '$brushes = Join-Path $dir.FullName "brushes"',
         'if (-not (Test-Path $brushes)) { New-Item -ItemType Directory -Path $brushes | Out-Null }',
-        'Get-ChildItem $PSScriptRoot -Include *.gbr,*.gih -File | Copy-Item -Destination $brushes -Force',
+        'Get-ChildItem -Path (Join-Path $PSScriptRoot \'*\') -Include *.gbr,*.gih -File | Copy-Item -Destination $brushes -Force',
         'Write-Host ("已复制到 " + $brushes)',
         'Write-Host "重启 GIMP 后生效"'
       ].join(NL));

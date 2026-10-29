@@ -77,7 +77,7 @@
     }
     const tipSource = tipFromShape ? 'shape' : (tipFromGrain ? 'grain' : 'none');
     const maxSize = toRatio(params.maxSize, 1);
-    const minSize = toRatio(params.minSize, 0.01);
+    const minSize = toRatio(params.minSize, 0.05);
     const pressSize = toRatio(params.dynamicsPressureSize, 0);
     const pressOpacity = toRatio(params.dynamicsPressureOpacity, 0);
     const maxOpacity = toRatio(params.maxOpacity, 1);
@@ -91,7 +91,7 @@
     const opacity = Math.max(0, Math.min(1, paintOpacity * maxOpacity));
     const minSizeRatio = pressSize > 0.05 ? Math.max(0, Math.min(1, minSize)) : 1;
     const minOpacityRatio = pressOpacity > 0.05 ? Math.max(0, Math.min(1, minOpacity)) : 1;
-    const nv = function (k, d) { const v = Number(params[k]); return isFinite(v) ? v : (d === undefined ? 0 : d); };
+    const nv = function (k, d) { const raw = params[k]; if (raw === null || raw === undefined || raw === '') return d === undefined ? 0 : d; const v = Number(raw); return isFinite(v) ? v : (d === undefined ? 0 : d); };
     // Procreate 的 shapeAngle 存的是弧度（真实样本 -1.5708 = -90°）
     const angleDeg = nv('shapeAngle') * 180 / Math.PI;
     const roundnessPct = nv('shapeRoundness', 1) * 100;
@@ -107,7 +107,7 @@
     const grainDepthJitter = nv('grainDepthJitter');
     const grainDepthMin = nv('grainDepthMinimum');
     const texScaleV = nv('textureScale', 1);
-    const texBrightV = nv('textureBrightness', 0.5);
+    const texBrightV = nv('textureBrightness', 0.51);
     const texContrastV = nv('textureContrast', 1);
     const plotJitterV = nv('plotJitter');
     const smoothingV = nv('plotSmoothing');
@@ -511,7 +511,8 @@
 
   const nativeFields={wetEdgesAccumulation:'dynamicsWetAccumulation',burntEdgesAmount:'burntEdgesAmount',
     dynamicsLoad:'dynamicsLoad',dynamicsGlazedFlow:'dynamicsGlazedFlow',dynamicsMix:'dynamicsMix',
-    dynamicsMixSoftening:'dynamicsMixSoftening',blendMode:'blendMode'};
+    dynamicsMixSoftening:'dynamicsMixSoftening',blendMode:'blendMode',
+    roundnessDynamics:'dynamicsPressureShapeRoundness'};
   function patchArchive(brush,opts) {
     const before=brush._rawNormalized||{},params=archiveParams(brush,opts),changes={};
     const mapping={sizePx:['paintSize'],spacingPct:['plotSpacing'],name:['name'],opacity:['maxOpacity','paintOpacity'],

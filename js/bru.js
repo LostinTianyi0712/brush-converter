@@ -246,6 +246,7 @@
     const meta = metadataFor(brush, opts);
     const embedded = brush.embeddedSubPng && brush.embeddedSubPng.length ? brush.embeddedSubPng : null;
     const total = BODY_START + meta.length + img.length + (embedded ? embedded.length : 0);
+    if (total > 0xffffffff) throw new Error('单支 BRU 超过 4GB，无法写出');
     const out = new Uint8Array(total);
     const dv = new DataView(out.buffer);
     out.set(util.utf8Encode(MAGIC), 0);
@@ -691,9 +692,12 @@
         metaStart = found;
         const pngAt = findPng(bytes, metaStart, 4 * 1024 * 1024);
         const nextMeta = findNextMeta(metaStart + 40, 64 * 1024 * 1024);
-        const metaEnd = pngAt > 0 && (nextMeta < 0 || pngAt < nextMeta) ? pngAt : (nextMeta > 0 ? nextMeta : bytes.length);
-        pushBrush(metaStart, metaEnd, pngAt > 0 && metaEnd === pngAt ? pngAt : -1,
-          nextMeta > 0 ? Math.max(pngAt, nextMeta - 50) : bytes.length);
+        const limit = nextMeta > 0 ? nextMeta : bytes.length;
+        const metaEnd = pngAt > 0 && pngAt < limit ? pngAt : limit;
+        // 用 PNG chunk 扫到 IEND 得到真实结束，不再拿 nextMeta-50 截断 IDAT；
+        // 副图尾部扫描上限传给 extraEnd，否则变体容器里的双笔内嵌副笔尖永远扫不到。
+        const pngEnd = pngAt > 0 ? pngEndAt(pngAt, limit) : -1;
+        pushBrush(metaStart, metaEnd, pngAt > 0 ? pngAt : -1, pngEnd, undefined, limit);
         pos = nextMeta > 0 ? nextMeta - 50 : bytes.length;
         continue;
       }

@@ -74,13 +74,11 @@
       for (let x = 0; x < w; x++) {
         let r, g, bl, al = 255;
         if (ct === 6) {
-          const o = x * 4;
-          r = line[o]; g = line[o + 1]; bl = line[o + 2]; al = line[o + 3];
-          if (bd === 16) { r = line[o]; g = line[o + 2]; bl = line[o + 4]; al = line[o + 6]; }
+          if (bd === 16) { const o = x * 8; r = line[o]; g = line[o + 2]; bl = line[o + 4]; al = line[o + 6]; }
+          else { const o = x * 4; r = line[o]; g = line[o + 1]; bl = line[o + 2]; al = line[o + 3]; }
         } else if (ct === 2) {
-          const o = x * 3;
-          if (bd === 16) { r = line[o]; g = line[o + 2]; bl = line[o + 4]; }
-          else { r = line[o]; g = line[o + 1]; bl = line[o + 2]; }
+          if (bd === 16) { const o = x * 6; r = line[o]; g = line[o + 2]; bl = line[o + 4]; }
+          else { const o = x * 3; r = line[o]; g = line[o + 1]; bl = line[o + 2]; }
         } else if (ct === 4) {
           const o = x * 2 * (bd === 16 ? 2 : 1);
           if (bd === 16) { r = g = bl = line[o]; al = line[o + 2]; }

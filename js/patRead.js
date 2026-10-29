@@ -38,11 +38,16 @@
       for (let i = 0; i < n; i++) out[i] = data[i * depthBytes];
       return out;
     }
-    // PackBits：每行 u16 长度 + 数据
+    // PackBits：先 h×2 字节的整张行长表，再按行依次放数据（与 PS/本仓库 pat.js rlePlane、abr.js rleEncode 一致）
     const out = new Uint8Array(n);
     let p = 0;
+    const rowLens = [];
     for (let y = 0; y < h; y++) {
-      const rowLen = u16(data, p); p += 2;
+      if (p + 2 > data.length) { rowLens.push(0); p = data.length; continue; }
+      rowLens.push(u16(data, p)); p += 2;
+    }
+    for (let y = 0; y < h; y++) {
+      const rowLen = rowLens[y];
       const row = unpackBits(data, p, Math.min(data.length, p + rowLen));
       p += rowLen;
       for (let x = 0; x < w; x++) out[y * w + x] = row[x * depthBytes] === undefined ? 0 : row[x * depthBytes];

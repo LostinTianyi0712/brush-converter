@@ -1,4 +1,4 @@
-﻿/* Easy Paint Tool SAI 2 scatter brush writer.
+/* Easy Paint Tool SAI 2 scatter brush writer.
    SAI2 brushes live in one folder: "<name>.bmp" (8-bit indexed brush shape)
    + "<name>.ini" (scatter-brush parameters).  There is no single bundled
    container, so a converted set is emitted as flat files (optionally zipped).
@@ -139,6 +139,7 @@
     const files = [];
     const used = {};
     const warnings = [];
+    let madeCount = 0;
     for (const brush of brushList || []) {
       let made;
       try { made = makeSai2Brush(brush); }
@@ -146,6 +147,7 @@
       let base = made.name, i = 2;
       while (used[base.toLowerCase()]) { base = made.name + '_' + i; i++; }
       used[base.toLowerCase()] = true;
+      madeCount++;
       for (const f of made.files) {
         const ext = f.name.slice(f.name.lastIndexOf('.'));
         files.push({ name: base + ext, data: f.data });
@@ -165,7 +167,7 @@
         '说明：SAI2 没有单文件笔刷格式，必须 bmp + ini 成对放入同一文件夹。\r\n'
       )
     });
-    return { bytes: zip.write(files), count: files.length >> 1, warnings: warnings };
+    return { bytes: zip.write(files), count: madeCount, warnings: warnings };
   }
 
   /* 生成 SAI2 toolnrm（笔刷预设 INI） */

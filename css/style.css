@@ -130,6 +130,8 @@ main {
 
 .files { display: flex; flex-direction: column; }
 .files > * + * { margin-top: 14px; }
+/* 转换中锁住卡片级操作（✕/全选/清空/勾选），与顶部按钮禁用保持一致 */
+.files.locked .file-card { pointer-events: none; opacity: 0.72; }
 .empty { text-align: center; color: #9aa4b2; padding: 26px 0; font-size: 13px; }
 
 .file-card { overflow: hidden; }

@@ -102,7 +102,12 @@
       minOpacityRatio = opacity>0 ? clamp(minOpacity/opacity,0,1) : 1;
       pressure = true;
     }
-    const name = (doc.parent_brush_name || fileName || 'mypaint').split('/').pop().replace(/\.[^.]+$/, '');
+    // 本工具导出的文件用 parent_brush_name='brushconv/<名字>' 存显示名；真实 MyPaint 文件里
+    // parent_brush_name 是内置父笔刷名（如 ink），应以文件名为主，避免整批被冠成同一个名字。
+    const parentRaw = doc.parent_brush_name ? String(doc.parent_brush_name) : '';
+    const parentName = parentRaw.split('/').pop();
+    const name = (/^brushconv\//.test(parentRaw) ? parentName : (fileName || parentName || 'mypaint'))
+      .replace(/\.[^.]+$/, '');
     if (smudge > 0.2) warnings.push('该 MyPaint 笔刷含涂抹/混色(smudge=' + smudge.toFixed(2) + ')，转换为普通笔刷时只保留基础形状');
     if (eraser > 0.5) warnings.push('该 MyPaint 笔刷是橡皮(eraser)，导入后需自行切换为橡皮模式');
     if(num(settings,'dabs_per_second',0)>0)warnings.push('该 MyPaint 笔刷含按时间喷点，静态间距只按基础/实际半径采样密度估算');

@@ -153,10 +153,9 @@
     if (props.shapeScatter !== undefined) out.scatter = props.shapeScatter;
     if (props.grainDepth !== undefined) out.textureDepth = props.grainDepth / 100;
     if (props.renderingFlow !== undefined) out.flowPct = Math.max(0, Math.min(1, props.renderingFlow / 100));
-    if (props.propertiesMaxSize > 0) {
-      if (props.propertiesMinSize !== undefined) out.minSizeRatio = Math.max(0, Math.min(1, props.propertiesMinSize / props.propertiesMaxSize));
-      if (props.propertiesMinAlpha !== undefined && props.propertiesMaxAlpha > 0) out.minOpacityRatio = Math.max(0, Math.min(1, props.propertiesMinAlpha / props.propertiesMaxAlpha));
-    }
+    if (props.propertiesMaxSize > 0 && props.propertiesMinSize !== undefined) out.minSizeRatio = Math.max(0, Math.min(1, props.propertiesMinSize / props.propertiesMaxSize));
+    // 最小不透明度是独立属性，不能被无关的 propertiesMaxSize 门控吞掉
+    if (props.propertiesMinAlpha !== undefined && props.propertiesMaxAlpha > 0) out.minOpacityRatio = Math.max(0, Math.min(1, props.propertiesMinAlpha / props.propertiesMaxAlpha));
     return out;
   }
 

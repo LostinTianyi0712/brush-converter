@@ -286,6 +286,10 @@
         head.set(le32(0), 8);
         head.set(le32(comp.length), 12);
         parts.push(head, comp);
+        // 每个 tile 的压缩数据后补齐到 4 字节：读取端 decodeBin 按 (p+3)&~3 跳转，
+        // 实际 MediBang 文件也如此；不补会对齐错位导致第 2 个及之后 tile 无法解析。
+        const pad = (4 - (comp.length & 3)) & 3;
+        if (pad) parts.push(new Uint8Array(pad));
       }
     }
     return util.concat(parts);

@@ -253,6 +253,7 @@
     btnClear.disabled = busy;
     ['#btnLog', '#btnShare', '#btnSelectAll', '#btnSaveDirectory'].forEach(function (id) { const el=$(id); if(el)el.disabled=busy; });
     document.querySelectorAll('#options input, #options select').forEach(function (el) { el.disabled=busy; });
+    filesEl.classList.toggle('locked', busy);
     dz.setAttribute('aria-disabled', String(busy));
     btnConvert.textContent = total
       ? outText + '（已选 ' + total + ' 支 · ' + fmtLabel + '）'
@@ -357,6 +358,9 @@
   }
 
   function render() {
+    // render() 会整体重建卡片：旧 canvas 必须从 observer 里断开，
+    // 否则反复切换目标格式时旧 canvas（含 _brush 像素引用）一直被持有。
+    if (previewObserver) { previewObserver.disconnect(); previewObserver = null; }
     filesEl.innerHTML = '';
     previewQueue.length = 0;
     previewScheduled = false;
@@ -566,7 +570,12 @@
     for (const inner of res.files) {
       const rec = makeRecord(name + ' / ' + inner.name, inner.bytes);
       const innerOpts = inner.decrypted ? { decrypted: inner.decrypted } : null;
-      parseRecord(rec, inner.name, inner.bytes, innerOpts);
+      // 大文件会走 Worker/异步分块解析：必须 await 后重新 render，否则卡片停在「解析中」
+      // 且首次导入时转换按钮一直禁用。
+      rec.parsing = true;
+      render();
+      await parseRecord(rec, inner.name, inner.bytes, innerOpts);
+      rec.parsing = false;
       rec.fromZip = name;
       added++;
       render();
@@ -641,7 +650,7 @@
         const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
         setProgress(null, '解析中：' + f.name + (mb > 100 ? '（大文件，请稍候…）' : ''));
         await sleep(0);
-        await parseRecord(rec, f.name, bytes);
+        await parseRecord(rec, f.name, bytes, opts);
         rec.parsing = false;
         rec.parseMs = Math.max(1, Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0));
         setProgress(null);
@@ -737,7 +746,14 @@
   }
 
   function setProgress(p, text) {
-    if (p === null) { progressEl.classList.add('hidden'); return; }
+    if (p === null) {
+      // 有文字时保留面板显示阶段提示（解压中/解析中）；无文字才隐藏进度条
+      if (!text) { progressEl.classList.add('hidden'); return; }
+      progressEl.classList.remove('hidden');
+      progressEl.querySelector('.bar').style.width = '0%';
+      progressEl.querySelector('.ptext').textContent = text;
+      return;
+    }
     progressEl.classList.remove('hidden');
     progressEl.querySelector('.bar').style.width = Math.round(p * 100) + '%';
     progressEl.querySelector('.ptext').textContent = text || '';
@@ -1077,7 +1093,10 @@
 
     setProgress(0.99, opts.packOut === false ? '正在保存文件…' : '正在打包 ZIP…');
     await sleep(10);
-    if (!outFiles.length) {
+    const onlyAux = outFiles.length > 0 && outFiles.every(function (f) {
+      return /^(安装\/|转换报告\.txt$|参数对比\.html$|纹理图案_|优动漫导入说明\.txt$|.*_优动漫导入说明\.txt$|.*_参数\.txt$)/.test(f.name);
+    });
+    if (!outFiles.length || onlyAux) {
       // 附带：一键安装说明 + 转换差异报告
     try {
       const allTargets = opts.target === 'all' ? ALL_FORMATS : [opts.target || 'bru'];
@@ -1347,7 +1366,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.44';
+  const APP_VERSION = '2.5.45';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {
