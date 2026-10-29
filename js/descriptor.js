@@ -1,4 +1,4 @@
-﻿/* Photoshop Action Descriptor parser (used by ABR desc blocks) */
+/* Photoshop Action Descriptor parser (used by ABR desc blocks) */
 (function (root) {
   'use strict';
   const isNode = typeof module !== 'undefined' && module.exports && typeof process !== 'undefined';
@@ -15,6 +15,7 @@
     i32: function () { const b = this.b, p = this.p; this.p += 4; return (b[p] << 24) | (b[p + 1] << 16) | (b[p + 2] << 8) | b[p + 3]; },
     u32: function () { const b = this.b, p = this.p; this.p += 4; return ((b[p] << 24) | (b[p + 1] << 16) | (b[p + 2] << 8) | b[p + 3]) >>> 0; },
     f64: function () { const v = util().f64(this.b, this.p); this.p += 8; return v; },
+   f32be: function () { const v = new DataView(this.b.buffer, this.b.byteOffset + this.p, 4).getFloat32(0, false); this.p += 4; return v; },
     raw: function (n) { const v = this.b.subarray(this.p, this.p + n); this.p += n; return v; },
     left: function () { return this.b.length - this.p; }
   };
@@ -95,15 +96,29 @@
         return { type: 'path', n };
       }
       case 'UnFl': {
-        const n = r.u32(); const arr = [];
-        for (let i = 0; i < n; i++) { const v = util().f32(r.b, r.p); r.p += 4; arr.push(v); }
-        return { type: 'floatlist', items: arr };
+        // PS 规范：4 字节单位签名（如 '#Pxl'）+ 单个大端 float32。
+        // 旧实现把签名当 count、再按小端读 float32，纯读取路径必错。
+        const unit = util().ascii(r.b, r.p, 4); r.p += 4;
+        const v = r.f32be();
+        return { type: 'floatlist', items: [v], unit: unit };
       }
       case 'ObAr': {
         const n = r.u32();
         const desc = readDescriptorBody(r, depth + 1);
-        for (let i = 0; i < n; i++) { const t = readTypeTag(r); readValue(r, t, depth + 1); }
-        return { type: 'objectarray', n, desc };
+        const items = [];
+        for (let i = 0; i < n; i++) {
+          const t = readTypeTag(r);
+          if (t === 'UnFl') {
+            // Adobe 怪癖：ObAr 内的 UnFl 是「单位签名 + count + count×大端 float64」
+            const unit = util().ascii(r.b, r.p, 4); r.p += 4;
+            const cnt = r.u32(); const arr = [];
+            for (let k = 0; k < cnt; k++) arr.push(r.f64());
+            items.push({ tag: t, unit: unit, items: arr });
+          } else {
+            items.push({ tag: t, value: readValue(r, t, depth + 1) });
+          }
+        }
+        return { type: 'objectarray', n, desc, items };
       }
       case 'type':
       case 'GlbC':

@@ -1,4 +1,4 @@
-﻿/* Corel Painter 笔刷库（.brushlibrary / .brushcategory）读取
+/* Corel Painter 笔刷库（.brushlibrary / .brushcategory）读取
  *  - 本质是 ZIP：<序号 分类>/<笔刷>.{xml,nib,stk}
  *  - .xml 是完整参数（radius / min-radius-fraction / advance / opacity / flow / base-angle / thinness / random-size …）
  *  - .nib 是小尺寸 JPEG（暗色 dab 画在浅灰底），反相取 alpha 得到笔尖
@@ -31,8 +31,14 @@
     try { img = jpeg.decode(bytes); } catch (e) { return null; }
     const w = img.width, h = img.height, n = w * h;
     const rgba = new Uint8Array(n * 4);
-    // 背景色取左上角，dab 是比背景更暗的像素
-    const bg = (img.rgba[0] + img.rgba[1] + img.rgba[2]) / 3;
+    // 背景色取全图最大亮度：某些 nib 的角落就是深色 dab（实心/满覆盖纹理），
+    // 取 (0,0) 会把整张笔尖清零。全图最大值对绝大多数 nib 与原行为一致
+    // （David Gell 573 支实测平均差 0.9/255，仅 2 支从全零恢复动态范围）。
+    let bg = 0;
+    for (let i = 0; i < n; i++) {
+      const lum = (img.rgba[i * 4] + img.rgba[i * 4 + 1] + img.rgba[i * 4 + 2]) / 3;
+      if (lum > bg) bg = lum;
+    }
     const scale = bg > 8 ? 255 / bg : 1;
     for (let i = 0; i < n; i++) {
       const lum = (img.rgba[i * 4] + img.rgba[i * 4 + 1] + img.rgba[i * 4 + 2]) / 3;
