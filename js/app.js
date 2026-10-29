@@ -1341,8 +1341,8 @@
   }
 
   /* Output saving is delegated to the environment adapter (window.BCSaver):
-     - web / desktop / android builds load save-legacy.js
-     - the minitool build loads save-minitool.js (container file system API) */
+     web / desktop / android builds all load save-legacy.js
+     （小红书小工具容器版已于 v2.5.57 停止支持，save-minitool.js 已删除） */
   async function saveOutputs(files, saveOpts) {
     const saver = window.BCSaver;
     if (!saver || typeof saver.save !== 'function') {
@@ -1415,8 +1415,8 @@
   }
 
   /* ---------------- built-in sample brushes ---------------- */
-  /* The minitool container can only pick images/videos, so the packaged
-     minitool build offers these runtime-generated sample brushes. */
+  /* 运行时生成的示例笔刷（原先给小红书小工具容器用；容器版已停止支持，
+     这里保留能力，供页面按钮或调试脚本调用 window.BCDemo.loadSample()）。 */
   window.BCDemo = {
     loadSample: function () {
       if (state.converting) return;
@@ -1460,7 +1460,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.56';
+  const APP_VERSION = '2.5.57';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {
