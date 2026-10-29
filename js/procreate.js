@@ -490,6 +490,11 @@
       importedFromABR: brush.source === 'abr',
       name: brush.name || 'brush'
     });
+    // Preserve already parsed native fields without inventing cross-engine
+    // mappings. Leave template defaults intact when the source lacks a field.
+    Object.keys(nativeFields).forEach(function(key){
+      if(brush[key] !== undefined) params[nativeFields[key]]=brush[key];
+    });
     return params;
   }
   function buildArchive(brush, opts) {
@@ -503,6 +508,9 @@
       brush._rawGrainState===util.brushFingerprint({tip:brush._grainRgba});
   }
 
+  const nativeFields={wetEdgesAccumulation:'dynamicsWetAccumulation',burntEdgesAmount:'burntEdgesAmount',
+    dynamicsLoad:'dynamicsLoad',dynamicsGlazedFlow:'dynamicsGlazedFlow',dynamicsMix:'dynamicsMix',
+    dynamicsMixSoftening:'dynamicsMixSoftening',blendMode:'blendMode'};
   function patchArchive(brush,opts) {
     const before=brush._rawNormalized||{},params=archiveParams(brush,opts),changes={};
     const mapping={sizePx:['paintSize'],spacingPct:['plotSpacing'],name:['name'],opacity:['maxOpacity','paintOpacity'],
@@ -522,6 +530,7 @@
       wetEdgesOn:['wetEdgesAmount'],wetEdgesAmount:['wetEdgesAmount'],smudgeOn:['smudgeSize','smudgeOpacity'],
       smudgeAmount:['smudgeSize','smudgeOpacity'],colorJitterHue:['dynamicsJitterHue'],colorJitterSat:['dynamicsJitterSaturation'],
       colorJitterVal:['dynamicsJitterLightness']};
+    Object.keys(nativeFields).forEach(key=>{mapping[key]=[nativeFields[key]];});
     Object.keys(mapping).forEach(function(key){if(brush[key]!==before[key])mapping[key].forEach(k=>{changes[k]=params[k];});});
     if(changes.paintSize!==undefined){const old=plist.unarchive(brush._rawArchive);if(old.maxSize<changes.paintSize)changes.maxSize=changes.paintSize;}
     return bplist.patchKeyedArchive(brush._rawArchive,changes);
