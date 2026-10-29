@@ -38,8 +38,8 @@
     <div class="dz-inner">
       <div class="dz-icon">＋</div>
       <p class="dz-title">拖入笔刷文件，或点击选择</p>
-      <p class="dz-sub">支持 .bru / .abr / .brush / .brushset / .gobrush / .sut / .kpp / .bundle 等格式，也可直接拖入 <b>ZIP</b> 自动解压识别<br>优动漫 / CSP .sut 为部分读取，加密笔尖只能提取缩略图<br>默认把一个笔刷包里的全部笔刷打成 <b>1 个文件</b>，整套保留<br>ABR 参数化笔刷没有采样笔尖，无法转换；Procreate 没有 Shape 图的笔刷会自动生成圆头笔尖</p>
-      <input id="fileInput" type="file" multiple accept=".abr,.brush,.brushset,.bru,.zip,.myb,.gbr,.gih,.kpp,.bundle,.brushcategory,.brushlibrary,.sut,.gobrush,.gobrushes" hidden>
+      <p class="dz-sub">支持 .bru / .abr / .brush / .brushset / .gobrush / .sut / .mtd / .kpp / .bundle 等格式，也可直接拖入 <b>ZIP</b> 自动解压识别<br>优动漫 / CSP .sut 为部分读取，加密笔尖只能提取缩略图<br>默认把一个笔刷包里的全部笔刷打成 <b>1 个文件</b>，整套保留<br>ABR 参数化笔刷没有采样笔尖，无法转换；Procreate 没有 Shape 图的笔刷会自动生成圆头笔尖</p>
+      <input id="fileInput" type="file" multiple accept=".abr,.brush,.brushset,.bru,.zip,.myb,.gbr,.gih,.kpp,.bundle,.brushcategory,.brushlibrary,.sut,.mtd,.gobrush,.gobrushes" hidden>
     </div>
   </section>
 
@@ -194,6 +194,8 @@
         <option value="bru" selected>画世界Pro .bru</option>
         <option value="abr">Photoshop .abr</option>
         <option value="udongman">优动漫 CSP .abr（兼容）</option>
+        <option value="udongman_sut">优动漫 CSP 原生 .sut（实验·笔尖为模板占位）</option>
+        <option value="udongman_mtd">优动漫 .mtd 绘画助手包（实验·内含 .sut）</option>
         <option value="gopaint_abr">天生会画 .abr（兼容）</option>
         <option value="brushset">Procreate .brushset</option>
         <option value="brush">Procreate .brush</option>
@@ -267,6 +269,8 @@
 <script src="./js/gobrushWrite.js"></script>
 <script src="./js/infpainter.js"></script>
 <script src="./js/csp.js"></script>
+<script src="./js/sutWrite.js"></script>
+<script src="./js/udongmanTemplate.js"></script>
 <script src="./js/gimp.js"></script>
 <script src="./js/mypaint.js"></script>
 <script src="./js/kritaPreview.js"></script>

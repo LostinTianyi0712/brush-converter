@@ -239,6 +239,16 @@
       }
       el.style.display = '';
     } catch (e) { el.style.display = 'none'; }
+    // 没有笔尖（shape）图的笔刷在预检里也要说清楚：转出后是参数生成的圆形/椭圆笔尖。
+    try {
+      const audit = BC.convert.tipSourceAudit ? BC.convert.tipSourceAudit(brushes) : null;
+      if (audit && (audit.noTip.length || audit.grainOnly.length) && el.style.display !== 'none') {
+        const parts = [];
+        if (audit.noTip.length) parts.push(audit.noTip.length + ' 支没有笔尖(shape)图、会用参数生成笔尖');
+        if (audit.grainOnly.length) parts.push(audit.grainOnly.length + ' 支只有纹理(grain)图当笔尖');
+        el.textContent += '；另 ' + parts.join('，');
+      }
+    } catch (e) { /* ignore */ }
   }
   function updateConvertButton() {
     const allBrushes = state.files.reduce(function (acc, f) { return acc.concat(f.brushes || []); }, []);
@@ -647,7 +657,7 @@
         await sleep(0);
         if (!kind) {
           rec.parsing = false;
-          rec.error = '无法识别的文件格式（支持 .abr/.bru/.brush/.brushset/.sut/.gobrush/.gbr/.gih/.myb/.kpp/.bundle/.brushcategory、toolnrm 等，或包含笔刷的 ZIP）';
+          rec.error = '无法识别的文件格式（支持 .abr/.bru/.brush/.brushset/.sut/.mtd/.gobrush/.gbr/.gih/.myb/.kpp/.bundle/.brushcategory、toolnrm 等，或包含笔刷的 ZIP）';
           render();
           continue;
         }
@@ -778,6 +788,14 @@
     const outFiles = [];
     const failed = [];
     const warnings = [];
+    // 源文件没有 shape（笔尖/形状）图的笔刷：转出时需要明确提示（用户反馈：以前只阴在解析日志里）
+    try {
+      const auditList = [];
+      for (const rec of records) for (const b of (rec.brushes || [])) auditList.push(b);
+      if (BC.convert.tipSourceHint) {
+        BC.convert.tipSourceHint(BC.convert.tipSourceAudit(auditList)).forEach(function (m) { warnings.push(m); });
+      }
+    } catch (e) { /* 提示失败不影响转换 */ }
     // ABR 目标：把源笔刷的真实纹理导出为 PNG，用户可在 PS「编辑→定义图案」后手动指定（可调纹理）
     if (opts.target === 'abr' || opts.target === 'all') {
       try {
@@ -986,6 +1004,17 @@
               outFiles.push({ name: uniqueFile(base + '_优动漫', '.abr'), data: made.bytes });
               outFiles.push({ name: uniqueFile(base + '_优动漫导入说明', '.txt'), data: BC.util.utf8Encode(made.importGuide) });
               warnings.push(...made.warnings);
+            } else if (fmt === 'udongman_sut') {
+              const made = BC.convert.makeUdongmanSutPack(list, commonOpts(rec));
+              const dir = base + '_优动漫SUT/';
+              for (const f of made.files) outFiles.push({ name: dir + f.name, data: f.data });
+              outFiles.push({ name: uniqueFile(base + '_优动漫SUT导入说明', '.txt'), data: BC.util.utf8Encode(made.importGuide) });
+              warnings.push(...made.warnings);
+            } else if (fmt === 'udongman_mtd') {
+              const made = BC.convert.makeUdongmanMtdPack(list, commonOpts(rec));
+              outFiles.push({ name: uniqueFile(base, '.mtd'), data: made.bytes });
+              outFiles.push({ name: uniqueFile(base + '_优动漫MTD导入说明', '.txt'), data: BC.util.utf8Encode(made.importGuide) });
+              warnings.push(...made.warnings);
             } else if (fmt === 'abr') {
               // 源就是 .abr 且整包导出时：原样透传，100% 保留文件夹分组 / 动态 / 计算画笔
               const isAbrSource = /^abr$/i.test(rec.kind || '') || /\.abr$/i.test(rec.name || '');
@@ -1057,6 +1086,10 @@
             }
             const made = fmt === 'udongman'
               ? BC.convert.makeUdongmanPack([b], co)
+              : fmt === 'udongman_sut'
+              ? BC.convert.makeUdongmanSutPack([b], co)
+              : fmt === 'udongman_mtd'
+              ? BC.convert.makeUdongmanMtdPack([b], co)
               : fmt === 'abr'
               ? BC.convert.makeAbrPack([b], co)
               : fmt === 'gopaint' ? BC.convert.makeGoPaintBrush(b, co)
@@ -1073,10 +1106,18 @@
               : fmt === 'png' ? BC.convert.makeTipPng(b, co)
               : BC.convert.makeBru(b, co);
             const extOut = { painter: '.brushcategory', kbundle: '.bundle', sai2: '.zip', medibang: '.zip', mbini: '.zip',
-              udongman: '.abr', gopaint: '.gobrush', gopaint_abr: '.abr', gopaint_set: '.gobrushes' }[fmt] || ('.' + fmt);
+              udongman: '.abr', udongman_sut: '.sut', udongman_mtd: '.mtd', gopaint: '.gobrush', gopaint_abr: '.abr', gopaint_set: '.gobrushes' }[fmt] || ('.' + fmt);
             outFiles.push({ name: folder + uniqueFile(base, extOut), data: made.bytes });
             if (fmt === 'udongman') {
               if (!outFiles.some(f => f.name === '优动漫导入说明.txt')) outFiles.push({ name: '优动漫导入说明.txt', data: BC.util.utf8Encode(made.importGuide) });
+              made.warnings.forEach(w => { if (warnings.indexOf(w) < 0) warnings.push(w); });
+            }
+            if (fmt === 'udongman_sut') {
+              if (!outFiles.some(f => f.name === '优动漫SUT导入说明.txt')) outFiles.push({ name: '优动漫SUT导入说明.txt', data: BC.util.utf8Encode(made.importGuide) });
+              made.warnings.forEach(w => { if (warnings.indexOf(w) < 0) warnings.push(w); });
+            }
+            if (fmt === 'udongman_mtd') {
+              if (!outFiles.some(f => f.name === '优动漫MTD导入说明.txt')) outFiles.push({ name: '优动漫MTD导入说明.txt', data: BC.util.utf8Encode(made.importGuide) });
               made.warnings.forEach(w => { if (warnings.indexOf(w) < 0) warnings.push(w); });
             }
             if (fmt === 'png') {
@@ -1273,7 +1314,6 @@
       if (failedCount) msg += '，' + failedCount + ' 支失败';
       toast(msg + (savedMsg ? '｜' + savedMsg : ''), 9000);
       setOutputLocation(savedMsg);
-    renderResultPanel();
     } catch (e) {
       toast('保存失败：' + (e && e.message ? e.message : e), 7000);
     }
@@ -1355,17 +1395,15 @@
       save.className = 'btn ghost';
       save.textContent = '保存';
       save.addEventListener('click', function () {
-        const saver = window.BCSaver;
-        if (!saver || typeof saver.downloadOne !== 'function') { toast('当前环境不支持保存', 6000); return; }
-        saver.downloadOne(f);
+        if (!window.BCSaver || typeof window.BCSaver.downloadOne !== 'function') { toast('当前环境不支持保存', 6000); return; }
+        window.BCSaver.downloadOne(f);
         toast('已发起下载：' + f.name + '（若无反应，试「新标签打开」或右上「分享保存」）', 7000);
       });
       const open = document.createElement('button');
       open.className = 'btn ghost';
       open.textContent = '新标签打开';
       open.addEventListener('click', function () {
-        const saver = window.BCSaver;
-        if (!saver || typeof saver.openOne !== 'function' || !saver.openOne(f)) {
+        if (!window.BCSaver || typeof window.BCSaver.openOne !== 'function' || !window.BCSaver.openOne(f)) {
           toast('这个文件无法在新标签打开（太大或浏览器限制），请用右上「分享保存」', 7000);
         }
       });
@@ -1422,7 +1460,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.54';
+  const APP_VERSION = '2.5.55';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {

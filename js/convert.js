@@ -14,6 +14,8 @@
   const krita = isNode ? require('./krita.js') : root.BC.krita;
   const genericBrush = isNode ? require('./genericbrush.js') : root.BC.genericBrush;
   const csp = isNode ? require('./csp.js') : root.BC.csp;
+  const sutWrite = isNode ? require('./sutWrite.js') : root.BC.sutWrite;
+  const udongmanTemplate = isNode ? require('./udongmanTemplate.js') : root.BC.udongmanTemplate;
   const medibang = isNode ? require('./medibang.js') : root.BC.medibang;
   const medibangIni = isNode ? require('./medibangIni.js') : root.BC.medibangIni;
   const sai2read = isNode ? require('./sai2read.js') : root.BC.sai2read;
@@ -79,8 +81,10 @@
         if (zentries.some(e => /^brush2\.ini$/i.test(e.name.replace(/^.*\//, '')))) return 'mbini_set';
         if (zentries.some(e => /(^|\/)(brushform|brushtex|papertex|scatter|bristle)\.conf$/i.test(e.name))) return 'sai2pack';
         if (zentries.some(e => /^paintoppresets\/[^/]+\.kpp$/i.test(e.name))) return 'kbundle';
+        if (lower.endsWith('.mtd')) return 'mtd'; // 优动漫绘画助手素材包（zip 壳），须先于 Painter 库判定
         if (painterlib && safe(function () { return painterlib.isLibraryZip(bytes); })) return 'painter';
         if (zentries.some(e => /Brush\.archive$/i.test(e.name))) return 'procreate';
+        if (lower.endsWith('.mtd')) return 'mtd';
       }
       return null;
     }
@@ -100,6 +104,7 @@
     if (lower.endsWith('.myb')) return 'myb';
     if (lower.endsWith('.brushcategory') || lower.endsWith('.brushlibrary')) return 'painter';
     if (lower.endsWith('.sut')) return 'sut';
+    if (lower.endsWith('.mtd')) return 'mtd';
     if (lower.endsWith('.gobrush') || lower.endsWith('.gobrushes')) return 'gobrush';
     return null;
   }
@@ -173,9 +178,68 @@
     return out;
   }
 
+  /** 优动漫 .mtd（绘画助手素材包，实测与逆向确认的 zip 壳）。两种形态：
+   *  1) 内含 .sut 成员 → 逐个 parseSut，参数真实可转换；
+   *  2) 仅 CSP 素材文件夹（catalog.xml + data/material.layer + thumbnail）→
+   *     material.layer 是 C2F 私有加密容器（实测高熵，无法解出参数），
+   *     此时诚实报错并给出解锁路径，不产出假笔刷。 */
+  function parseMtd(name, bytes) {
+    let entries;
+    try { entries = zip.read(bytes); } catch (e) { throw new Error('这个 .mtd 不是有效的 zip 素材包：' + e.message); }
+    const warnings = [];
+    const sutEntries = [];
+    let catalogXml = null;
+    let hasMaterialLayer = false;
+    for (const e of entries) {
+      if (e.dir) continue;
+      const norm = e.name.replace(/\\/g, '/');
+      const base = norm.split('/').pop();
+      if (/\.sut$/i.test(base)) sutEntries.push({ name: base, data: e.data() });
+      else if (/^catalog\.xml$/i.test(base)) {
+        // 取最浅层（zip 可能包一层 uuid 目录）
+        if (!catalogXml || norm.split('/').length < catalogXml.path.split('/').length) catalogXml = { data: e.data(), path: norm };
+      } else if (/material\.layer$/i.test(norm)) hasMaterialLayer = true;
+    }
+    if (sutEntries.length) {
+      const brushes = [];
+      for (const s of sutEntries) {
+        let r;
+        try { r = csp.parseSut(s.data, s.name); } catch (err) { warnings.push('跳过无法解析的 ' + s.name + '：' + err.message); continue; }
+        for (const b of (r.brushes || [])) brushes.push(Object.assign({}, b, { source: 'mtd' }));
+        if (r.warnings && r.warnings.length) warnings.push(...r.warnings);
+      }
+      if (!brushes.length) throw new Error('这个 .mtd 里的 .sut 都无法解析');
+      warnings.unshift('已从优动漫素材包' + (name ? '「' + name + '」' : '') + '内的 ' + sutEntries.length + ' 个 .sut 解析出笔刷');
+      return { brushes: brushes, warnings: warnings };
+    }
+    if (catalogXml || hasMaterialLayer) {
+      let matName = '';
+      if (catalogXml) {
+        try {
+          const text = util.utf8Decode(catalogXml.data);
+          const m = text.match(/<name>([\s\S]*?)<\/name>/);
+          if (m) matName = m[1].trim();
+        } catch (e) { void e; }
+      }
+      throw new Error(
+        '这是优动漫「绘画助手」导出的加密素材包（.mtd）：笔刷参数存于 CELSYS 私有加密容器（material.layer），本工具无法读取' +
+        (matName ? '（素材名：' + xmlUnescape(matName) + '）' : '') + '。' +
+        '要转换参数请：双击 .mtd 用绘画助手安装到优动漫 PAINT → 在子工具面板选中该笔刷 → 面板菜单导出子工具（.sut）→ 再把 .sut 拖入本工具。'
+      );
+    }
+    throw new Error('.mtd 里既没有 .sut 也没有 CSP 素材结构（catalog.xml / material.layer），无法识别');
+  }
+
+  function xmlUnescape(s) {
+    return String(s || '')
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+      .replace(/&amp;/g, '&');
+  }
+
   function parseFile(name, bytes, opts) {
     const kind = detect(name, bytes);
-    if (!kind) throw new Error('无法识别的文件格式（支持 .bru/.abr/.brush/.brushset/.gobrush/.gobrushes/.sut/.kpp/.gbr/.gih/.myb/.brushcategory/.brushlibrary，或包含笔刷的 ZIP）');
+    if (!kind) throw new Error('无法识别的文件格式（支持 .bru/.abr/.brush/.brushset/.gobrush/.gobrushes/.sut/.mtd/.kpp/.gbr/.gih/.myb/.brushcategory/.brushlibrary，或包含笔刷的 ZIP）');
     let result;
     if (kind === 'bru') {
       result = bru.parseBru(bytes);
@@ -266,6 +330,8 @@
       }
     } else if (kind === 'gobrush') {
       result = gobrush.parse(bytes, name);
+    } else if (kind === 'mtd') {
+      result = parseMtd(name, bytes);
     } else if (kind === 'sut') {
       // Prefer a decrypted companion dump when it exists next to the .sut:
       // <dir>/_decrypted/<basename>/<name>.params.json + real material tips.
@@ -1064,6 +1130,108 @@
     return made;
   }
 
+  /* 通用笔刷模型 → CSP Variant 列值（仅标量；模板缺列由 sutWrite 覆写时报错前过滤）。 */
+  function variantParamsForSut(brush) {
+    const clamp = function (v, a, b) { return v < a ? a : (v > b ? b : v); };
+    const num = function (v, d) { return (typeof v === 'number' && isFinite(v)) ? v : d; };
+    const p = {};
+    p.BrushSize = clamp(Math.round(num(brush.sizePx, 80)), 1, 4000);
+    p.BrushSizeUnit = 0;
+    p.BrushInterval = clamp(Math.round(num(brush.spacingPct, 10) * 10) / 10, 1, 1000);
+    p.Opacity = Math.round(clamp(num(brush.opacity, 1), 0, 1) * 100);
+    p.BrushFlow = Math.round(clamp(num(brush.flowPct, 1), 0, 1) * 100);
+    p.BrushHardness = Math.round(clamp(num(brush.hardness, 1), 0, 1) * 100);
+    p.BrushThickness = clamp(Math.round(num(brush.roundness, 100)), 1, 100);
+    let ang = num(brush.angle, 0) % 360;
+    if (ang < 0) ang += 360;
+    p.BrushRotation = ang;
+    return p;
+  }
+
+  /** 优动漫 / CSP 原生 .sut 输出（实验）：以内嵌 Astereacae 模板做参数级覆写。
+      真实写入：尺寸/间距/不透明度/流量/硬度/厚扁/旋转 + 笔刷名 + 缩略图（预览=本笔刷笔尖）。
+      已知限制（写入 warnings 与随包说明）：
+      · 笔尖位图沿用模板（material.layer 是 CELSYS 私有位流，像素无法程序化生成），
+        画出来的笔触形状/纹理是模板的；要真实笔尖请用「优动漫 CSP .abr（兼容）」目标；
+      · 压感动态暂不写入（Effector 曲线 blob 格式未公开，模板为中性曲线）；
+      · 双笔（UseDualBrush）不支持——模板没有该列。 */
+  function makeUdongmanSutPack(brushList, opts) {
+    opts = opts || {};
+    if (!sutWrite || !udongmanTemplate) throw new Error('优动漫原生 SUT 组件未加载（sutWrite/udongmanTemplate）');
+    const tpl = udongmanTemplate.getBytes();
+    const files = [];
+    const nameSeq = {};
+    for (const rawBrush of brushList) {
+      const brush = withExportSettings(rawBrush, opts);
+      if (!brush) continue;
+      const tip = makeTipPng(brush, { maxTipSize: 1024 });
+      const base0 = sanitizeName(brush.name || 'brush', 0) || 'brush';
+      nameSeq[base0] = (nameSeq[base0] || 0) + 1;
+      const name = nameSeq[base0] > 1 ? base0 + ' ' + nameSeq[base0] : base0;
+      const bytes = sutWrite.buildSut(tpl, [{
+        thumbnailPng: tip.bytes,
+        params: variantParamsForSut(brush),
+        nodeName: name
+      }]);
+      files.push({ name: name + '.sut', data: bytes });
+    }
+    return {
+      files: files,
+      count: files.length,
+      bytes: files.length ? files[0].data : new Uint8Array(0),
+      fileName: files.length ? files[0].name : 'brush.sut',
+      format: 'sut',
+      target: 'udongman_sut',
+      importGuide: [
+        '优动漫 PAINT / CLIP STUDIO PAINT：原生 SUT 导入（实验性）',
+        '1）解压后得到若干 .sut（每支笔刷一个文件）',
+        '2）优动漫 PAINT：子工具面板 → 面板菜单 → 「载入子工具」，选择 .sut 导入（也可把 .sut 直接拖进子工具面板）',
+        '3）导入后选中笔刷先试画核对',
+        '',
+        '重要说明（参数级导出的已知限制）：',
+        '· 尺寸/间距/不透明度/流量/硬度/厚扁/旋转等参数已真实写入',
+        '· 笔尖位图暂为模板占位：CSP 素材容器（material.layer）是私有编码，无法程序化生成笔尖像素。',
+        '  画出来的笔触形状是模板笔尖；导入后在「笔尖形状」里手动换成想要的形状，或改用「优动漫 CSP .abr（兼容）」目标获得真实笔尖',
+        '· 压感动态暂未写入（Effector 曲线格式未公开）',
+        '官方说明：https://www.udongman.cn/resource/details/doc/25050'
+      ].join('\n'),
+      warnings: [
+        '优动漫原生 .sut（实验）：参数真实写入；笔尖位图为模板占位（CSP 私有编码无法生成笔尖像素），压感动态暂不写入；需要真实笔尖请用「优动漫 CSP .abr（兼容）」目标'
+      ]
+    };
+  }
+
+  /** 优动漫 .mtd（绘画助手素材包）：把生成的 .sut 打进 zip 壳，双击可被绘画助手识别导入。
+   *  实验性：官方 mtd 亦可能为「素材文件夹」形态（catalog.xml+加密 material.layer），
+   *  该形态因 C2F 加密无法程序化生成参数，此处不做；zip+sut 形态未真机验证。 */
+  function makeUdongmanMtdPack(brushList, opts) {
+    const inner = makeUdongmanSutPack(brushList, opts);
+    if (!inner.files.length) throw new Error('没有可导出的笔刷');
+    const entries = inner.files.map(function (f) { return { name: f.name, data: f.data }; });
+    const bytes = zip.write(entries);
+    return {
+      bytes: bytes,
+      files: [{ name: 'brushes.mtd', data: bytes }],
+      count: inner.count,
+      fileName: (inner.fileName || 'brush.sut').replace(/\.sut$/i, '.mtd'),
+      format: 'mtd',
+      target: 'udongman_mtd',
+      importGuide: [
+        '优动漫 PAINT：.mtd 绘画助手素材包导入（实验性）',
+        '1）双击 .mtd（需已安装优动漫「绘画助手」），或打开绘画助手 → 素材 → 本地管理 → 导入',
+        '2）导入成功后素材出现在优动漫 PAINT 的素材库「下载」分类',
+        '3）笔刷素材：素材面板拖到子工具面板即可使用；导入后先试画核对',
+        '',
+        '重要说明：',
+        '· 包内为参数级真实的 .sut（同「优动漫 CSP 原生 .sut」目标的限制）：笔尖位图为模板占位，压感动态暂不写入',
+        '· 此导出未经优动漫官方真机验证；如绘画助手拒绝导入，请改用「优动漫 CSP 原生 .sut」直接拖入子工具面板，或「优动漫 CSP .abr（兼容）」目标'
+      ].join('\n'),
+      warnings: [
+        '优动漫 .mtd（实验）：zip+sut 壳，未经真机导入验证；笔尖位图为模板占位（同 .sut 目标限制）'
+      ]
+    };
+  }
+
   /** Convert one brush to a Procreate .brush file (zip). */
   function makeProcreateBrush(brush, opts) {
     opts = opts || {};
@@ -1771,7 +1939,7 @@ Write-Host 'restart MediBang Paint Pro'
 
   /* ---------- 转换差异报告：每支笔刷在目标格式里保留了哪些、丢了哪些 ---------- */
   function reportTarget(target) {
-    return {udongman:'abr',gopaint:'gobrush',gopaint_set:'gobrush',gopaint_abr:'abr'}[target] || target;
+    return {udongman:'abr',udongman_sut:'sut',udongman_mtd:'mtd',gopaint:'gobrush',gopaint_set:'gobrush',gopaint_abr:'abr'}[target] || target;
   }
 
   function conversionStatus(brush, target, key, supported, opts, rawCache) {
@@ -1853,7 +2021,7 @@ Write-Host 'restart MediBang Paint Pro'
 
   /* 生成「参数对比页」HTML（原参数 vs 目标格式支持情况 + 笔尖缩略图），无需外部样本 */
   function buildCompareHtml(brushList, target, meta) {
-    const targetLabel = target === 'udongman' ? '优动漫 / CSP（ABR兼容）' : target;
+    const targetLabel = target === 'udongman' ? '优动漫 / CSP（ABR兼容）' : target === 'udongman_sut' ? '优动漫 / CSP 原生 .sut（实验）' : target === 'udongman_mtd' ? '优动漫 / .mtd 绘画助手包（实验）' : target;
     const rawCache = new WeakMap();
     target = reportTarget(target);
     const NL = String.fromCharCode(10);
@@ -1985,8 +2153,48 @@ Write-Host 'restart MediBang Paint Pro'
     gopaint_abr: '文本参数有限，需在目标软件里补全'
   };
 
+  /* 转出前审计：哪些笔刷**源文件没有 shape（笔尖/形状）图片**。
+     这类笔刷转出时只能按参数生成圆形/椭圆笔尖（computed），或只有纹理图（grain）。
+     用户要求「转出时明确提示」，所以判断集中在这里，UI 只负责显示。 */
+  function tipSourceAudit(brushList) {
+    const out = { noTip: [], procedural: [], grainOnly: [] };
+    for (const b of (brushList || [])) {
+      if (!b || b.enabled === false) continue;
+      const hasTip = !!(b.tip || b.dualTip);
+      if (!hasTip) {
+        out.noTip.push(b.name);
+        if (b.computed) out.procedural.push(b.name);
+      } else if (b.tipSource === 'grain') {
+        out.grainOnly.push(b.name);
+      }
+    }
+    return out;
+  }
+
+  function tipSourceHint(audit) {
+    const msgs = [];
+    const list = audit || { noTip: [], procedural: [], grainOnly: [] };
+    function names(arr, n) {
+      const head = arr.slice(0, n).join('、');
+      return arr.length > n ? head + ' 等' : head;
+    }
+    if (list.noTip.length) {
+      let m = list.noTip.length + ' 支笔刷源文件没有笔尖（shape）图片：' + names(list.noTip, 3) +
+        '；转出时只能用参数生成的圆形/椭圆笔尖，笔触、纹理与源文件不同';
+      if (list.procedural.length === list.noTip.length) m += '（这些笔刷本身就是参数化笔刷，没有采样图像）';
+      else if (list.procedural.length) m += '（其中 ' + list.procedural.length + ' 支为参数化生成）';
+      msgs.push(m);
+    }
+    if (list.grainOnly.length) {
+      msgs.push(list.grainOnly.length + ' 支笔刷只有纹理（grain）图、没有形状（shape）图：' + names(list.grainOnly, 3) +
+        '；已用纹理图当笔尖，边缘与密度可能与源文件不同');
+    }
+    return msgs;
+  }
+
   function brushLossReport(brushList, targets, opts) {
     const NL = String.fromCharCode(10);
+    if (!Array.isArray(targets)) targets = [targets]; // 防呆：传字符串时按字符迭代会生成逐字符假报告
     const fields = [
       ['尺寸', 'sizePx', function (v) { return Math.round(v) + 'px'; }],
       ['间距', 'spacingPct', function (v) { return (Math.round(v * 10) / 10) + '%'; }],
@@ -2051,8 +2259,10 @@ Write-Host 'restart MediBang Paint Pro'
       const target = reportTarget(requestedTarget);
       const keep = support[target] || [];
       const rawCache = new WeakMap();
-      lines.push('【目标格式：' + (requestedTarget === 'udongman' ? '优动漫 / CSP（ABR兼容）' : target) + '】');
+      lines.push('【目标格式：' + (requestedTarget === 'udongman' ? '优动漫 / CSP（ABR兼容）' : requestedTarget === 'udongman_sut' ? '优动漫 / CSP 原生 .sut（实验）' : requestedTarget === 'udongman_mtd' ? '优动漫 / .mtd 绘画助手包（实验）' : target) + '】');
       if (requestedTarget === 'udongman') lines.push('  兼容说明：导出ABR，不是原生SUT；在子工具面板导入，动态/混色/双笔/纹理效果需目标软件核对。');
+      if (requestedTarget === 'udongman_sut') lines.push('  兼容说明：原生SUT参数级导出（实验）；尺寸/间距/不透明度/流量/硬度/厚扁/旋转真实写入；笔尖位图为模板占位（CSP私有编码无法生成笔尖像素），压感动态暂不写入；需要真实笔尖请用「优动漫 CSP .abr（兼容）」目标。');
+      if (requestedTarget === 'udongman_mtd') lines.push('  兼容说明：.mtd=zip+sut绘画助手素材包（实验，未真机验证）；参数限制同.sut目标（笔尖为模板占位）；如绘画助手拒绝导入请改用.sut或ABR兼容目标。');
       if (reason[target]) lines.push('  说明：' + reason[target]);
       let lostTotal = 0, keptTotal = 0;
       brushList.forEach(function (b, i) {
@@ -2076,6 +2286,8 @@ Write-Host 'restart MediBang Paint Pro'
       });
       lines.push('  小结：写入参数 ' + keptTotal + ' 项，近似/未完整写入/丢失 ' + lostTotal + ' 项');
       if (requestedTarget === 'udongman') lines.push('  手动补全建议：通过子工具/工具组面板导入ABR后检查尺寸、间距与纹理，不把PS图案安装步骤视为优动漫原生流程。');
+      else if (requestedTarget === 'udongman_sut') lines.push('  手动补全建议：导入后在「笔尖形状」里选择想要的笔尖，压感等动态在「子工具详情」面板手动开启。');
+      else if (requestedTarget === 'udongman_mtd') lines.push('  手动补全建议：双击 .mtd 用绘画助手导入；笔尖位图为模板占位，导入后在「笔尖形状」里更换；如绘画助手拒绝导入请改用 .sut 或 ABR 兼容目标。');
       else if (MANUAL_ADVICE[target]) lines.push('  手动补全建议：' + MANUAL_ADVICE[target]);
       lines.push('');
     }
@@ -2196,7 +2408,7 @@ Write-Host 'restart MediBang Paint Pro'
     });
   }
 
-  const api = { detect, parseFile, expandArchive, synthTip, makeBru, makeBruPack, makeBruDualPair, buildBruDualPairBrushes, makeAbrPack, makeUdongmanPack, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
+  const api = { detect, parseFile, expandArchive, synthTip, makeBru, makeBruPack, makeBruDualPair, buildBruDualPairBrushes, makeAbrPack, makeUdongmanPack, makeUdongmanSutPack, makeUdongmanMtdPack, parseMtd, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, tipSourceAudit, tipSourceHint, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { convert: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);
