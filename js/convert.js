@@ -806,7 +806,7 @@
       const nm = (base || ('纹理 ' + i)).slice(0, 26) + ' ' + item.t.w + 'x' + item.t.h + (i > 1 ? (' #' + i) : '');
       const p = patMod.buildPattern(nm, item.t.w, item.t.h, [item.t.gray, item.t.gray, item.t.gray], undefined, true);
       records.push(p);
-      refs.set(item.key, { id: p.id, name: p.name });
+      refs.set(item.key, { id: p.id, name: p.name, inversionBaked: true });
     }
     const bytes = patMod.buildPat(records);
     // 自检：用内置 .pat 读取器回读，确认图案数量/尺寸与预期一致（不需要真实 PS）
@@ -832,7 +832,7 @@
         selfCheck.names = back.map(function (x) { return x.name; });
       }
     } catch (e) { selfCheck.ok = false; selfCheck.error = e.message; }
-    return { bytes: bytes, count: records.length, refs: refs, ref: records[0] ? { id: records[0].id, name: records[0].name } : null, width: list[0].t.w, height: list[0].t.h, selfCheck: selfCheck };
+    return { bytes: bytes, count: records.length, refs: refs, ref: records[0] ? { id: records[0].id, name: records[0].name, inversionBaked: true } : null, width: list[0].t.w, height: list[0].t.h, selfCheck: selfCheck };
   }
 
   function makeAbrPack(brushList, opts) {
@@ -895,6 +895,7 @@
       const willUseRaw = keepRaw && !!brush._rawPreset;
       const textureMode = opts.textureMode === 'pattern';
       const usePsTexture = !!brush.hasTexture && (textureMode || willUseRaw);
+      const patternRef = (usePsTexture && ((opts.patternRefs && opts.patternRefs.get(textureKey(brush))) || opts.patternRef)) || null;
       // 只有拿到真实纹理像素才烘焙：纹理开关 + 缺原图时伪造程序化噪声会直接改变笔刷图案
       // （与第66轮 BRU「空纹理保持关闭、不用噪声兜底」的策略一致）。
       // 烘焙前复制 rgba：bakeTextureIntoRGBA 就地修改，否则会污染 brush.tip.rgba，
@@ -981,11 +982,11 @@
         colorJitterVal: brush.colorJitterVal,
         colorJitterPurity: brush.colorJitterPurity,
         psTexture: usePsTexture,
-        patternRef: (usePsTexture && ((opts.patternRefs && opts.patternRefs.get(textureKey(brush))) || opts.patternRef)) || null,
+        patternRef: patternRef,
         textureDepth: brush.textureDepth,
         textureScale: brush.textureScale,
         textureEnabled: !!brush.hasTexture,
-        textureInverted: !!brush.textureInverted,
+        textureInverted: !willUseRaw && patternRef && patternRef.inversionBaked ? false : !!brush.textureInverted,
         // 源就是 ABR 时，保留原始描述符/样本字节（部分导出也能保住 PS 原版特性）
         rawPreset: keepRaw ? brush._rawPreset : undefined,
         rawPatchPaths: Array.from(paths), mainTipChanged:tipChanged,
