@@ -481,7 +481,7 @@
       name: sanitizeName(brush.name || 'brush', 0).slice(0, 54) + '_副笔尖',
       tip: tip,
       sizePx: Math.max(1, Math.round(info.diameter || brush.sizePx || 100)),
-      spacingPct: info.spacing !== undefined ? info.spacing : (brush.spacingPct || 10),
+      spacingPct: info.spacing !== undefined ? info.spacing : (brush.spacingPct === undefined ? 10 : brush.spacingPct),
       opacity: sub.opacity === undefined ? 1 : sub.opacity,
       angle: info.angle || 0,
       roundness: info.roundness === undefined ? 100 : info.roundness,
@@ -578,7 +578,7 @@
     let sizePx = (brush.sizePx || 100) * sizeScale;
     if (!isFinite(sizePx) || sizePx < 1) sizePx = Math.max(4, Math.max(w, h));
     sizePx = Math.max(1, Math.min(3000, Math.round(sizePx * 100) / 100));
-    let spacingPct = opts.spacingOverride > 0 ? opts.spacingOverride : (brush.spacingPct || 10);
+    let spacingPct = opts.spacingOverride > 0 ? opts.spacingOverride : (brush.spacingPct === undefined ? 10 : brush.spacingPct);
     spacingPct = Math.max(0.1, Math.min(1000, spacingPct));
     const usePressure = opts.pressure === undefined ? (pressureSizeOn(brush) || !!brush.pressureOpacity) : !!opts.pressure;
     const rawUnchanged = !brush._rawState || Object.keys(brush._rawState).every(function (key) { return brush[key] === brush._rawState[key]; });
@@ -1761,6 +1761,10 @@ Write-Host 'restart MediBang Paint Pro'
        (target === 'myb' && brush._rawMyb && rawBrushUnchanged(brush, opts)));
     if (rawCache) rawCache.set(brush, raw);
     if (raw) return '原样保留';
+    if (key === 'spacingPct' && target === 'bru' &&
+        (opts.spacingOverride > 0 ? opts.spacingOverride : brush.spacingPct) < 0.1) {
+      return '近似（按当前BRU写出下限设为0.1%，未保留零间距）';
+    }
     if(opts.pressure===false && ['abr','brush','brushset','myb','kbundle','sai2','bru'].indexOf(target)>=0 &&
         (key==='pressureSize' || key==='pressureOpacity')) return '参数映射（按导出设置关闭压感）';
     if(supported && opts.fidelity!==false && !opts.forceRebuild &&

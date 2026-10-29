@@ -158,7 +158,7 @@
       _rawGrain: grainEntry ? grainEntry.data() : null,
       _grainRgba: grainRgba,
       sizePx,
-      spacingPct: Math.max(0.5, Math.min(1000, spacing * 100)),
+      spacingPct: Math.max(0, Math.min(1000, spacing * 100)),
       opacity,
       minSizeRatio,
       minOpacityRatio,
@@ -436,7 +436,7 @@
       minOpacity: 0,
       paintOpacity: 1,
       // Procreate 间距允许 >100%（印章笔样本 121%），不要钳到 100
-      plotSpacing: Math.max(0.001, Math.min(10, (brush.spacingPct || 10) / 100)),
+      plotSpacing: Math.max(0, Math.min(10, (brush.spacingPct === undefined ? 10 : brush.spacingPct) / 100)),
       // PS 圆度 0% 是合法值（扁线），不要抬到 5%
       shapeRoundness: Math.max(0, Math.min(1, (brush.roundness === undefined ? 100 : brush.roundness) / 100)),
       shapeAngle: ((brush.angle || 0) * Math.PI / 180),
