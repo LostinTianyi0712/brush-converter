@@ -297,7 +297,8 @@
   function synthRoundTip(brush, n) {
     n = n || 256;
     const hard = Math.max(0.05, Math.min(1, brush.hardness === undefined ? 0.75 : brush.hardness));
-    const round = Math.max(0.05, Math.min(1, brush.roundness === undefined ? 1 : brush.roundness));
+    // Shape geometry is applied by shapeRoundness/shapeAngle in the archive.
+    const round = 1;
     const rgba = new Uint8Array(n * n * 4);
     const c = (n - 1) / 2;
     for (let y = 0; y < n; y++) {
@@ -358,7 +359,7 @@
     const stamp = png.resize(tip.rgba, tipW, tipH, sw, sh);
     const spacing = Math.max(0.05, Math.min(1, (opts.spacingPct || 10) / 100));
     const step = Math.max(1.5, sw * spacing);
-    const alpha = Math.max(0.2, Math.min(1, opts.opacity === undefined ? 1 : opts.opacity));
+    const alpha = Math.max(0, Math.min(1, opts.opacity === undefined ? 1 : opts.opacity));
     for (let x = 8; x < W - 8; x += step) {
       const t = (x - 8) / (W - 16);
       const cy = H / 2 + Math.sin(t * Math.PI * 1.7) * 26;

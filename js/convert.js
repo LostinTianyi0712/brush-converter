@@ -1049,7 +1049,7 @@
       const bytes = procreate.writeBrush(brush, opts);
       return { bytes: bytes, name: brush.name || 'brush', passthrough: procreate.unchanged(brush,opts), nativePatched:!procreate.unchanged(brush,opts) };
     }
-    const tip = tipToRGBA(brush) || synthTip(brush, 256, opts);
+    const tip = tipToRGBA(brush) || synthTip(Object.assign({},brush,{roundness:100,angle:0}), 256, opts);
     const b2 = Object.assign({}, brush, { tip: { w: tip.w, h: tip.h, rgba: tip.rgba } });
     const bytes = procreate.writeBrush(b2, opts);
     void b2;
@@ -1061,7 +1061,7 @@
     opts = opts || {};
     const list = brushList.map(function (b) {
       b=withExportSettings(b,opts);
-      const tip = tipToRGBA(b) || synthTip(b, 256, opts);
+      const tip = tipToRGBA(b) || synthTip(Object.assign({},b,{roundness:100,angle:0}), 256, opts);
       return Object.assign({}, b, { tip: { w: tip.w, h: tip.h, rgba: tip.rgba } });
     });
     const bytes = procreate.writeBrushset(list, opts);
