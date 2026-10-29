@@ -1385,6 +1385,32 @@
     }
     panel.style.display = '';
     list.innerHTML = '';
+    /* 夸克/UC 这类浏览器只肯下载真实 http(s) 文件，网页生成的文件会被静默拦掉
+       （实测 blob:/data:/新标签打开 全部无效）。给出可用的替代路径。 */
+    const hostile = window.BCSaver && typeof window.BCSaver.downloadHostileName === 'function'
+      ? window.BCSaver.downloadHostileName() : '';
+    if (hostile) {
+      const note = document.createElement('div');
+      note.className = 'result-item result-warn';
+      const txt = document.createElement('span');
+      txt.className = 'result-name';
+      txt.textContent = '当前浏览器（' + hostile + '）不允许保存网页生成的文件。请装安卓版 APK（直接存到手机 Downloads），或复制本页地址用 Chrome 打开。';
+      const apk = document.createElement('button');
+      apk.className = 'btn primary';
+      apk.textContent = '安装安卓版 APK';
+      apk.addEventListener('click', function () {
+        const a = document.createElement('a');
+        a.href = 'apk/brushconv.apk';
+        a.download = '笔刷转换器.apk';
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(function () { try { document.body.removeChild(a); } catch (e) { /* ignore */ } }, 4000);
+        toast('正在下载安卓版 APK：装好后用 App 保存，不受浏览器下载限制', 9000);
+      });
+      note.appendChild(txt);
+      note.appendChild(apk);
+      list.appendChild(note);
+    }
     files.forEach(function (f) {
       const row = document.createElement('div');
       row.className = 'result-item';
@@ -1460,7 +1486,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.58';
+  const APP_VERSION = '2.5.59';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {

@@ -336,6 +336,8 @@ main {
 }
 .result-name { flex: 1 1 220px; font-size: 13px; color: #1d4e79; word-break: break-all; }
 .result-item .btn { padding: 6px 12px; font-size: 13px; }
+.result-warn { background: #fff7ed; border-color: #fed7aa; }
+.result-warn .result-name { color: #9a3412; }
 
 
 /* 首次打开公告弹窗 */

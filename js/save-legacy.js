@@ -25,6 +25,21 @@
     return false;
   }
 
+  /* 只认「真实 http(s) 文件」的浏览器：夸克实测对 blob:/data:/window.open(blob)/
+     a[target=_blank](blob) 全部静默失败；它自己的下载器还会绕过页面里的 Service Worker
+     重新请求 URL。这类环境只能引导用户装 APK 或换浏览器。 */
+  function downloadHostileName() {
+    try {
+      var ua = navigator.userAgent || '';
+      if (/Quark/i.test(ua)) return '夸克';
+      if (/UCBrowser|UBrowser/i.test(ua)) return 'UC';
+      if (/MQQBrowser|QQBrowser/i.test(ua)) return 'QQ浏览器';
+      if (/MicroMessenger/i.test(ua)) return '微信';
+      if (/Weibo/i.test(ua)) return '微博';
+    } catch (e) { /* ignore */ }
+    return '';
+  }
+
   function mimeFor(name) {
     var ext = String(name || '').toLowerCase().split('.').pop();
     var map = {
@@ -121,6 +136,8 @@
       if (window.BrushDesktop && window.BrushDesktop.getOutputFolder) return window.BrushDesktop.getOutputFolder();
       return webFolder ? webFolder.name : null;
     },
+    /* UI 用：这个浏览器是否「不认网页生成的文件」；返回浏览器名或 '' */
+    downloadHostileName: function () { return downloadHostileName(); },
     chooseDirectory: async function () {
       if (window.BrushDesktop) return window.BrushDesktop.chooseFolder();
       if (typeof window.showDirectoryPicker !== 'function') return null;
@@ -223,6 +240,10 @@
         await sleep(180);
       }
       if (bigOnMobile) return '已发起 ' + files.length + ' 个下载；其中有超过 8MB 的文件，手机浏览器常拦这种大文件，建议把输出改成「单独文件」再转一次';
+      var hostile = downloadHostileName();
+      if (hostile) {
+        return '当前浏览器（' + hostile + '）会拦网页生成的文件，下载多半存不下来；请点下方「安装安卓版 APK」（原生保存到手机），或复制本页地址用 Chrome 打开';
+      }
       return '已发起 ' + files.length + ' 个下载；手机浏览器若没反应，请点下方「结果文件」里的保存按钮重试';
     }
   };
