@@ -518,6 +518,7 @@
       textureBrightness:['textureBrightness'],textureContrast:['textureContrast'],textureRotation:['textureRotation'],
       textureInverted:['textureInverted'],grainBlendMode:['grainBlendMode'],dualBlendMode:['dualBlendMode'],
       taperOn:['taperSize','taperOpacity','taperStartLength','taperEndLength'],taperSize:['taperSize'],taperOpacity:['taperOpacity'],
+      taperStartLength:['taperStartLength'],taperEndLength:['taperEndLength'],
       wetEdgesOn:['wetEdgesAmount'],wetEdgesAmount:['wetEdgesAmount'],smudgeOn:['smudgeSize','smudgeOpacity'],
       smudgeAmount:['smudgeSize','smudgeOpacity'],colorJitterHue:['dynamicsJitterHue'],colorJitterSat:['dynamicsJitterSaturation'],
       colorJitterVal:['dynamicsJitterLightness']};
@@ -530,15 +531,23 @@
   function secondaryBrush(brush) {
     const sub = brush.dualSubBrush || {};
     const info = brush.dualBrush || {};
+    // Parsed dualBrush aliases are snapshots of the secondary. Do not let an
+    // unchanged snapshot erase a later edit of the actual secondary brush.
+    // Explicitly changed aliases still take priority, as for imported ABR data.
+    function value(alias,key,fallback) {
+      const before=sub._rawNormalized;
+      if (before && sub[key] !== undefined && sub[key] !== before[key] && info[alias] === before[key]) return sub[key];
+      return info[alias] === undefined ? (sub[key] === undefined ? fallback : sub[key]) : info[alias];
+    }
     return Object.assign({}, info, sub, {
-      name: info.name || sub.name || (brush.name + ' 2'),
+      name: value('name','name',brush.name + ' 2'),
       tip: brush.dualTip,
-      sizePx: info.diameter === undefined ? (sub.sizePx || brush.sizePx || 100) : info.diameter,
-      spacingPct: info.spacing === undefined ? (sub.spacingPct === undefined ? 25 : sub.spacingPct) : info.spacing,
+      sizePx: value('diameter','sizePx',brush.sizePx || 100),
+      spacingPct: value('spacing','spacingPct',25),
       scatterOn: info.useScatter === undefined ? (sub.scatterOn === undefined ? !!info.scatterOn : !!sub.scatterOn) : !!info.useScatter,
       scatterCount: info.count === undefined ? (sub.scatterCount || info.scatterCount || 1) : info.count,
       scatterBothAxes: info.bothAxes === undefined ? !!(sub.scatterBothAxes || info.scatterBothAxes) : !!info.bothAxes,
-      scatterPct: info.scatterPct === undefined ? sub.scatterPct : info.scatterPct,
+      scatterPct: value('scatterPct','scatterPct',undefined),
       dualOn: false, dualTip: undefined, dualSubBrush: undefined,
       _rawArchive: sub._rawArchive || brush._rawSubArchive,
       _rawShape: sub._rawShape || brush._rawSubShape,
