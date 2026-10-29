@@ -1,4 +1,4 @@
-﻿/* PNG decode/encode (8-bit RGBA output), plus image helpers */
+/* PNG decode/encode (8-bit RGBA output), plus image helpers */
 (function (root) {
   'use strict';
   const isNode = typeof module !== 'undefined' && module.exports && typeof process !== 'undefined';
@@ -128,7 +128,7 @@
   }
 
   /* Encode RGBA8 -> PNG bytes, with adaptive filtering (chooses best per row) */
-  function encode(width, height, rgba) {
+  function encode(width, height, rgba, level) {
     const stride = width * 4;
     const raw = new Uint8Array((stride + 1) * height);
     const prev = new Uint8Array(stride);
@@ -165,7 +165,9 @@
     dv.setUint32(0, width, false);
     dv.setUint32(4, height, false);
     ihdr[8] = 8; ihdr[9] = 6; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
-    const idat = zlib.deflate(raw, 9);
+    // 压缩级别：9 在纯 JS pako 下非常慢（512² 约 0.2~0.9s/张），大笔刷库转换会被
+    // 拖到几十分钟。默认 6 在体积只增 5~15% 的前提下快约 5 倍；需要极限压缩可显式传 9。
+    const idat = zlib.deflate(raw, level === undefined ? 6 : level);
     return util.concat([
       new Uint8Array(PNG_SIG),
       crcChunk('IHDR', ihdr),
@@ -175,7 +177,7 @@
   }
 
   /* Encode an 8-bit RGB image (no alpha; GoPaint grain resources use this) */
-  function encodeRgb(width, height, rgb) {
+  function encodeRgb(width, height, rgb, level) {
     const stride = width * 3;
     const raw = new Uint8Array((stride + 1) * height);
     const prev = new Uint8Array(stride);
@@ -212,7 +214,9 @@
     dv.setUint32(0, width, false);
     dv.setUint32(4, height, false);
     ihdr[8] = 8; ihdr[9] = 2; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
-    const idat = zlib.deflate(raw, 9);
+    // 压缩级别：9 在纯 JS pako 下非常慢（512² 约 0.2~0.9s/张），大笔刷库转换会被
+    // 拖到几十分钟。默认 6 在体积只增 5~15% 的前提下快约 5 倍；需要极限压缩可显式传 9。
+    const idat = zlib.deflate(raw, level === undefined ? 6 : level);
     return util.concat([
       new Uint8Array(PNG_SIG),
       crcChunk('IHDR', ihdr),
@@ -222,7 +226,7 @@
   }
 
   /* Encode an 8-bit grayscale image (Procreate Shape.png convention: white = opaque) */
-  function encodeGray(width, height, gray) {
+  function encodeGray(width, height, gray, level) {
     const stride = width;
     const raw = new Uint8Array((stride + 1) * height);
     const prev = new Uint8Array(stride);
@@ -259,7 +263,9 @@
     dv.setUint32(0, width, false);
     dv.setUint32(4, height, false);
     ihdr[8] = 8; ihdr[9] = 0; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
-    const idat = zlib.deflate(raw, 9);
+    // 压缩级别：9 在纯 JS pako 下非常慢（512² 约 0.2~0.9s/张），大笔刷库转换会被
+    // 拖到几十分钟。默认 6 在体积只增 5~15% 的前提下快约 5 倍；需要极限压缩可显式传 9。
+    const idat = zlib.deflate(raw, level === undefined ? 6 : level);
     return util.concat([
       new Uint8Array(PNG_SIG),
       crcChunk('IHDR', ihdr),

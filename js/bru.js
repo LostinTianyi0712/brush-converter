@@ -103,7 +103,7 @@
     parts.push(u8arr(fVarint(16, -1)));                         // COLOR (white)
     const spacing = Math.max(0.001, Math.min(10, (b.spacingPct === undefined ? 10 : b.spacingPct) / 100));
     parts.push(u8arr(fF32(17, spacing)));                       // SPACING
-    parts.push(u8arr(fVarint(19, 1)));                          // ROTFLOWFINGER
+    parts.push(u8arr(fVarint(19, b.bruRotationMode === undefined ? 1 : (b.bruRotationMode === 1 ? 1 : 0)))); // legacy direction flag
     const roundness = Math.max(0.01, Math.min(1, (b.roundness === undefined ? 100 : b.roundness) / 100));
     parts.push(u8arr(fF32(22, roundness)));                     // ROUNDNESS
     const hardness = Math.max(0, Math.min(1, b.hardness === undefined ? 1 : b.hardness));
@@ -202,7 +202,7 @@
     parts.push(u8arr(fF32(94, b.borderStrength === undefined ? 1 : Math.max(0, Math.min(1, b.borderStrength / 100)))));
     parts.push(u8arr(fVarint(95, b.borderBlend === undefined ? 4 : Math.max(0, Math.round(b.borderBlend)))));
     parts.push(u8arr(fVarint(97, Math.max(1, Math.round(b.renderCount || 1))))); // RENDERCOUNT
-    parts.push(u8arr(fVarint(115, 1)));                         // SHAPEROTTYPE
+    parts.push(u8arr(fVarint(115, b.bruRotationMode === undefined ? 1 : b.bruRotationMode))); // native rotation control
     parts.push(u8arr(fF32(135, maxSize / 500)));                // BRUWMAXSCALE
     parts.push(u8arr(fF32(136, size / maxSize)));               // BRUWSCALE
     return util.concat(parts.map(u8arr));
@@ -569,6 +569,7 @@
         countJitterPct: countJitterPct,
         angle: angleDeg,
         angleJitterDeg: angleJitterDeg,
+        bruRotationMode: Math.max(0, Math.min(4, Math.round(num(o[115], o[19] ? 1 : 0)))),
         roundness: roundnessPct,
         hardness: hardnessPct / 100,
         smoothingStrength: smoothingStrength,

@@ -606,7 +606,11 @@
       hardness: brush.hardness,
       smoothingStrength: brush.smoothingStrength,
       angle: brush.angle,
-      angleJitterDeg: brush.angleJitterDeg,
+      // ABR jitter is percent of a full circle; BRU stores the +/- degree range.
+      angleJitterDeg: brush.source === 'abr' && brush.angleJitterDeg !== undefined ? Math.max(0, Math.min(180, brush.angleJitterDeg * 1.8)) : brush.angleJitterDeg,
+      // Native UI calibration: 0 off, 1 direction, 2 initial, 3 pressure, 4 stylus side rotation.
+      // PS tilt/wheel/fade have no exact BRU control: do not force direction.
+      bruRotationMode: brush.bruRotationMode === undefined && brush.source === 'abr' ? ({0:0,2:3,5:2,6:1}[brush.dynamicsControlAngle || 0] || 0) : brush.bruRotationMode,
       sizeJitterPct: brush.sizeJitterPct,
       spacingJitterPct: brush.spacingJitterPct,
       flowJitterPct: brush.flowJitterPct,
@@ -661,7 +665,7 @@
     if(meta._rawMeta){
       const old=brush._rawState||{},fields=new Set();
       const mapping={name:[3],pkgId:[2],sizePx:[8,9,12,50,135,136],spacingPct:[17],opacity:[13,14],minSizeRatio:[9,50],minOpacityRatio:[14],
-        pressure:[36,47,9,50,14],pressureSize:[36],pressureOpacity:[47],bruShapeInverted:[32],flowPct:[25,26,51],minFlowRatio:[26,51],angle:[20],angleJitterDeg:[21],
+        pressure:[36,47,9,50,14],pressureSize:[36],pressureOpacity:[47],bruShapeInverted:[32],flowPct:[25,26,51],minFlowRatio:[26,51],angle:[20],angleJitterDeg:[21],bruRotationMode:[19,115],
         roundness:[22],hardness:[23],sizeJitterPct:[10],spacingJitterPct:[18],flowJitterPct:[27],countJitterPct:[60],
         hasTexture:[28,123],textureInverted:[29],textureDepth:[123],textureScale:[24],textureBrightness:[35],textureContrast:[33],scatterOn:[56,57,58,59],
         scatterPct:[58],scatterCount:[59],scatterBothAxes:[57],taperOn:[74,77,78],taperSize:[77],taperOpacity:[78],wetEdgesOn:[100,101,129],
@@ -1783,6 +1787,11 @@ Write-Host 'restart MediBang Paint Pro'
     if (rawCache) rawCache.set(brush, raw);
     if (raw) return '原样保留';
     if (key === 'scatterPct' && brush.scatterOn === false) return '未启用';
+    if (key === 'angleJitterDeg' && target === 'bru' && brush.source === 'abr') {
+      const unsupported = [1,3,4,7,8].indexOf(brush.dynamicsControlAngle) >= 0;
+      if (!brush.angleJitterDeg && !unsupported) return '参数映射（无角度随机，旋转方式按已知控制源写入）';
+      return '近似（PS角度随机百分比换算为BRU角度范围' + (unsupported ? '；源角度控制未映射，未强制跟随笔迹' : '；旋转方式按已知控制源映射') + '，实际笔迹待验证）';
+    }
     if (key === 'spacingPct' && target === 'bru') {
       const override = opts.spacingOverride > 0 ? opts.spacingOverride : undefined;
       const affected = [];
@@ -1934,6 +1943,7 @@ Write-Host 'restart MediBang Paint Pro'
         if (v === undefined || v === null || v === '' || v === false) continue;
         let text = f[2] ? f[2](v) : String(v);
         if (f[0] === '双笔刷') text = dualDesc(b);
+        if (f[1] === 'angleJitterDeg' && b.source === 'abr') text = Math.round(v) + '%（PS）';
         const status = conversionStatus(b, target, f[1], keep.indexOf(f[0]) >= 0, meta && meta.options, rawCache);
         const ok = /^(原样|原生|参数映射)/.test(status);
         out.push('<tr><td>' + esc(f[0]) + '</td><td>' + esc(text) + '</td><td class="' + (status === '未启用' ? 'off' : ok ? 'ok' : 'no') + '">' + esc(status) + '</td></tr>');
@@ -2051,6 +2061,7 @@ Write-Host 'restart MediBang Paint Pro'
           if (!present) continue;
           let text = f[2] ? f[2](v) : String(v);
           if (f[0] === '双笔刷') text = dualDesc(b);
+          if (f[1] === 'angleJitterDeg' && b.source === 'abr') text = Math.round(v) + '%（PS）';
           const status = conversionStatus(b, target, f[1], keep.indexOf(f[0]) >= 0, opts, rawCache);
           if (status === '未启用') continue;
           const entry = f[0] + '(' + text + ')：' + status;
