@@ -292,10 +292,10 @@
       }
       var hostile = downloadHostileName();
       if (hostile) {
-        return '已请求下载；请确认' + hostile + '的下载提示。若未拉起下载，请点下方「下载ZIP」重试，或用 Chrome / 安卓版 APK 保存';
+        return '已请求下载。没反应？点下面「下载ZIP」';
       }
       if (isWebKitIOS()) {
-        return '已发起 ' + files.length + ' 个下载；苹果设备请到「文件」App →「下载」里查看' +
+        return '已发起 ' + files.length + ' 个下载；苹果请到「文件」App →「下载」查看' +
           (files.length > 1 ? '（Safari 一次只放行一个下载，建议用「整包一个文件」）' : '') +
           '；若没有反应，请点右上「分享保存」存到「文件」';
       }

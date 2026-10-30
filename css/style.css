@@ -13,6 +13,9 @@
   --serif: Georgia, "Noto Serif SC", "Songti SC", "SimSun", serif;
 }
 * { box-sizing: border-box; }
+/* hidden 必须真的隐藏：.export-row 等比它更具体的 display 会覆盖浏览器默认的 [hidden]，
+   导致手机网页上「导出」下面出现一个空白卡片（间距被撑开）。 */
+[hidden] { display: none !important; }
 html, body { margin: 0; padding: 0; }
 html { touch-action: manipulation; -webkit-text-size-adjust: 100%; }
 body {

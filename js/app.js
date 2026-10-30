@@ -1514,7 +1514,7 @@
       iosNote.className = 'result-item result-warn';
       const iosTxt = document.createElement('span');
       iosTxt.className = 'result-name';
-      iosTxt.textContent = '苹果设备：点「下载」后确认浏览器下载提示，再到「文件」App 查看；也可点右上「分享保存」→「存储到文件」。ZIP 请解压后导入笔刷。';
+      iosTxt.textContent = '苹果：点「下载」后到「文件」App 查看；也可用「分享保存」存到文件。';
       iosNote.appendChild(iosTxt);
       list.appendChild(iosNote);
     }
@@ -1526,22 +1526,17 @@
       const txt = document.createElement('span');
       txt.className = 'result-name';
       txt.textContent = preparedShare
-        ? '若' + hostile + '未拉起下载，请试「分享保存」并选择系统文件或接收应用。ZIP 请解压后导入笔刷。'
-        : hostile + '可能拦截网页生成的文件，当前浏览器也未提供可用的文件分享。若未拉起下载，请用 Chrome 或安卓版 APK；点击链接不代表文件已保存。';
-      const apk = document.createElement('button');
-      apk.className = 'btn primary';
-      apk.textContent = '安装安卓版 APK';
-      apk.addEventListener('click', function () {
-        const a = document.createElement('a');
-        a.href = 'apk/brushconv.apk';
-        a.download = '笔刷转换器.apk';
-        document.body.appendChild(a);
-        a.click();
-        setTimeout(function () { try { document.body.removeChild(a); } catch (e) { /* ignore */ } }, 4000);
-        toast('正在下载安卓版 APK：装好后用 App 保存，不受浏览器下载限制', 9000);
-      });
+        ? '没反应就用「分享保存」。'
+        : '这个浏览器可能拦下载：用「分享保存」，或装安卓版 App。';
+      /* 不再区分浏览器：统一给「安卓版 App（夸克网盘）」，用户自己点开链接取安装包 */
+      const appLink = document.createElement('a');
+      appLink.className = 'btn primary';
+      appLink.href = 'https://pan.quark.cn/s/a455643c9aed';
+      appLink.target = '_blank';
+      appLink.rel = 'noopener';
+      appLink.textContent = '安卓版 App（夸克网盘）';
       note.appendChild(txt);
-      note.appendChild(apk);
+      note.appendChild(appLink);
       list.appendChild(note);
     }
     files.forEach(function (f) {
@@ -1564,7 +1559,7 @@
       save.addEventListener('click', function (e) {
         if (!link) { e.preventDefault(); toast('下载链接未能生成，请试「分享保存」或分批转换', 7000); return; }
         // Let the anchor's default action run on this real tap.
-        toast('已请求下载：' + f.name + '；请确认浏览器提示，若无反应请试「分享保存」', 7000);
+        toast('已请求下载：' + f.name, 3000);
       });
       row.appendChild(name);
       row.appendChild(save);
@@ -1618,7 +1613,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.81';
+  const APP_VERSION = '2.5.82';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -1760,12 +1755,12 @@
     button.addEventListener('click', async function () {
       if (!lastSavedFiles || !lastSavedFiles.length) { toast('还没有可分享的转换结果'); return; }
       try {
-        if (!preparedShare) { toast('当前浏览器不支持分享这些文件，请点下方下载，或用 Chrome / 安卓版 APK 保存', 8000); return; }
+        if (!preparedShare) { toast('这个浏览器不支持分享，请点「下载ZIP」', 3000); return; }
         await navigator.share({ files: preparedShare.files, title: '笔刷转换结果' });
         toast('已交给系统分享；请在接收应用或「文件」中确认是否保存', 7000);
       } catch (e) {
         if (e && e.name === 'AbortError') toast('已取消分享，转换结果仍在下方');
-        else { pushLog('SHARE ' + (e && e.message || e)); toast('分享未完成：' + (e && e.message || '浏览器限制') + '；请试下载或换 Chrome / 安卓版 APK', 8000); }
+        else { pushLog('SHARE ' + (e && e.message || e)); toast('分享失败，请点「下载ZIP」', 3000); }
       }
     });
   });
