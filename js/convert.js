@@ -650,6 +650,17 @@
     // Keep native BRU RGB and its inversion flag together. Cross-format masks
     // already encode coverage in alpha: do not force shape inversion to repair
     // an unrelated missing texture. Native f29 and f32 are separate controls.
+    // 画世界内置纹理（f6 资源 id + f28 开关）：默认关（App 版本不同，材质 id 可能缺失 →
+    // 开了未知 id 的纹理笔迹几乎不出墨）。打开后 App 按文档空间采样材质，与烘进笔尖的预粒叠加。
+    const texAssetReq = opts.bruTexAsset === undefined || opts.bruTexAsset === null || opts.bruTexAsset === '' ? 'off' : String(opts.bruTexAsset);
+    const texAssetId = (brush.source !== 'bru' && texAssetReq !== 'off' && textureBaked)
+      ? (texAssetReq === 'auto' ? 'pt24' : texAssetReq) : null;
+    // 画世界 UI 的「纹理深度」= 1 - f123（真机原生导出 f123=0.21 时 UI 显示 79%），
+    // 把源预粒深度映射到 UI 70%~90%（源 0 → 70%，源 1 → 90%）再取反写回。
+    // 真机实测：UI 64% → hf 6.08，UI 79% → hf 7.05（同支笔刷无纹理时只有 2.69）。
+    const texUiDepth = texAssetId
+      ? Math.max(0, Math.min(0.9, 0.70 + 0.25 * Math.max(0, Math.min(1, brush.textureDepth === undefined ? 0.35 : brush.textureDepth)))) : null;
+    const outTextureDepth = texAssetId ? (1 - texUiDepth) : brush.textureDepth;
     const pngBytes = png.encode(w, h, brush.source === 'bru' ? rgba : png.toMaskRgba(rgba));
     const sizeScale = opts.sizeScale || 1;
     let sizePx = (brush.sizePx || 100) * sizeScale;
@@ -696,13 +707,15 @@
       scatterPct: brush.scatterPct === undefined ? undefined : Math.min(1000, brush.scatterPct * (brush.source === 'bru' ? 1 : (opts.scatterScale === undefined ? 0.15 : opts.scatterScale))),
       scatterBothAxes: brush.scatterBothAxes,
       scatterCount: brush.scatterCount,
-      hasTexture: brush.source === 'bru' ? brush.hasTexture : false,
+      // App 内置纹理库资源 id（f6）：只在目标不是原生 BRU 且调用方/源笔刷指定了 id 时才写。
+      // 原生 BRU 进来的笔刷原样保留自己已有的 id（raw 元数据路径会保持）。
+      texAssetId: texAssetId || brush.texAssetId || (opts && opts.texAssetId),
+      hasTexture: brush.source === 'bru' ? brush.hasTexture : !!texAssetId,
       textureInverted: brush.textureInverted,
       textureScale: brush.textureScale,
       textureBrightness: brush.textureBrightness,
       textureContrast: brush.textureContrast,
-      textureDepth: brush.textureDepth,
-      taperOn: brush.taperOn,
+      textureDepth: outTextureDepth,
       taperSize: brush.taperSize,
       taperOpacity: brush.taperOpacity,
       wetEdgesOn: brush.wetEdgesOn,
@@ -743,7 +756,7 @@
       const mapping={name:[3],pkgId:[2],sizePx:[8,9,12,50,135,136],spacingPct:[17],opacity:[13,14],minSizeRatio:[9,50],minOpacityRatio:[14],
         pressure:[36,47,9,50,14],pressureSize:[36],pressureOpacity:[47],bruShapeInverted:[32],flowPct:[25,26,51],minFlowRatio:[26,51],angle:[20],angleJitterDeg:[21],bruRotationMode:[19,115],
         roundness:[22],hardness:[23],sizeJitterPct:[10],spacingJitterPct:[18],flowJitterPct:[27],countJitterPct:[60],
-        hasTexture:[28,123],textureInverted:[29],textureDepth:[123],textureScale:[24],textureBrightness:[35],textureContrast:[33],scatterOn:[56,57,58,59],
+        hasTexture:[28,123],texAssetId:[6],textureInverted:[29],textureDepth:[123],textureScale:[24],textureBrightness:[35],textureContrast:[33],scatterOn:[56,57,58,59],
         scatterPct:[58],scatterCount:[59],scatterBothAxes:[57],taperOn:[74,77,78],taperSize:[77],taperOpacity:[78],wetEdgesOn:[100,101,129],
         wetEdgesAmount:[101],wetEdgesDepth:[129],borderOn:[92],borderBlend:[95],borderBrightness:[93],borderStrength:[94],renderCount:[97],
         bruUuid:[120],bruDualRefUuid:[119,120,121,122],dualSubName:[121],bruDualEnabled:[119],dualBlendMode:[122],

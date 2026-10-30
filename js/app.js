@@ -805,6 +805,7 @@
     const grainBake = $('#optGrainBake') ? $('#optGrainBake').value !== 'off' : true;
     const fidelity = $('#optFidelity') ? $('#optFidelity').value !== 'off' : true;
     const textureMode = $('#optTextureMode') ? $('#optTextureMode').value : 'bake';
+    const bruTexAsset = $('#optBruTex') ? $('#optBruTex').value : 'off';
     const scatterScale = $('#optScatterScale') ? Number($('#optScatterScale').value) / 100 : 0.15;
     const autoBatch = $('#optAutoBatch') ? $('#optAutoBatch').value !== '0' : true;
     const dualBake = $('#optDualBake') ? $('#optDualBake').value !== '0' : true;
@@ -812,7 +813,7 @@
     const dualPair = $('#optDualPair') ? $('#optDualPair').value !== '0' : true;
     const bruEmbed = $('#optBruEmbed') ? $('#optBruEmbed').value !== '0' : true;
     const compareReport = $('#optCompareReport') ? $('#optCompareReport').value === '1' : false;
-    return { tipSize, sizeScale, spacingOverride, pressureMode, prefix, groupBySource, mode, target, packOut, goScatter, grainBake, fidelity, textureMode, scatterScale, autoBatch, dualBake, dualCompanion, dualPair, bruEmbed, compareReport };
+    return { tipSize, sizeScale, spacingOverride, pressureMode, prefix, groupBySource, mode, target, packOut, goScatter, grainBake, fidelity, textureMode, bruTexAsset, scatterScale, autoBatch, dualBake, dualCompanion, dualPair, bruEmbed, compareReport };
   }
 
   /* 提示条（toast）：停留时间统一收短——默认 2.2s、最长 3.2s，点一下也能立刻关。
@@ -1002,7 +1003,8 @@
         noTextureBake: opts.grainBake === false,
         patternRefs: commonPatRefs,
         fidelity: opts.fidelity === false ? false : undefined,
-        textureMode: opts.textureMode === 'pattern' ? 'pattern' : undefined
+        textureMode: opts.textureMode === 'pattern' ? 'pattern' : undefined,
+        bruTexAsset: opts.bruTexAsset && opts.bruTexAsset !== 'off' ? opts.bruTexAsset : undefined
       };
     }
 
@@ -1683,7 +1685,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.6.10';
+  const APP_VERSION = '2.6.11';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;

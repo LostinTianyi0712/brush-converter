@@ -87,6 +87,9 @@
     parts.push(u8arr(fBytes(3, nameBytes)));                    // NAME
     parts.push(u8arr(fBytes(4, util.utf8Encode('icons/yzb')))); // ICONPATH (cosmetic)
     parts.push(u8arr(fVarint(5, 1)));                           // ISVISIBLE
+    // f6 = TEXTUREASSET：引用 App 内置纹理库的资源 id（真机导出样本里是 pt24=沙纸）。
+    // 只写 f28 开关不带 id，App 拿空纹理渲染 → 笔迹几乎不出墨；带上 id 才会按文档空间采样颗粒。
+    if (b.texAssetId) parts.push(u8arr(fBytes(6, util.utf8Encode(String(b.texAssetId)))));
     parts.push(u8arr(fBytes(7, util.utf8Encode(b.texId))));     // MASKTEXPATH (image id)
     const size = Math.max(1, Math.min(5000, b.sizePx || 100));
     const maxSize=Math.max(size,b.maxSizePx||500);
@@ -594,6 +597,7 @@
         scatterBothAxes: scatterBothAxes,
         scatterCount: scatterCount,
         hasTexture: textureOn,
+        texAssetId: o[6] instanceof Uint8Array ? util.utf8Decode(o[6]).replace(/\u0000+$/, '') : undefined,
         textureInverted: !!o[29],
         textureScale: texScale,
         textureBrightness: texBrightness,
