@@ -283,17 +283,16 @@
       }
 
       // 4) fallback: browser downloads
-      if (opts.manualDownload && isMobileWeb()) {
-        return '转换结果已准备好，请在下方「结果文件」点下载；若未拉起下载，试「分享保存」';
-      }
       for (i = 0; i < files.length; i++) {
         progress(i / files.length, '正在下载 ' + (i + 1) + '/' + files.length + '：' + files[i].name);
-        downloadFile(files[i].name, files[i].data, mimeFor(files[i].name));
+        var link = prepareDownload(files[i]);
+        if (link) clickAnchor(link.url, link.name);
+        else downloadFile(files[i].name, files[i].data, mimeFor(files[i].name));
         await sleep(180);
       }
       var hostile = downloadHostileName();
       if (hostile) {
-        return '已请求下载；' + hostile + '可能拦截网页生成的文件。若未拉起下载，请试「分享保存」，或用 Chrome / 安卓版 APK 保存';
+        return '已请求下载；请确认' + hostile + '的下载提示。若未拉起下载，请点下方「下载ZIP」重试，或用 Chrome / 安卓版 APK 保存';
       }
       if (isWebKitIOS()) {
         return '已发起 ' + files.length + ' 个下载；苹果设备请到「文件」App →「下载」里查看' +

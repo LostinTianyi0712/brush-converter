@@ -1298,7 +1298,7 @@
     let savedMsg = '';
     try {
       lastSavedFiles = payload;
-      savedMsg = await saveOutputs(payload, { packOut: opts.packOut !== false, manualDownload: true });
+      savedMsg = await saveOutputs(payload, { packOut: opts.packOut !== false });
     } catch (e) {
       toast('保存失败：' + (e && e.message ? e.message : e), 7000);
       state.converting = false;
@@ -1408,7 +1408,7 @@
         outAll = [{ name: bundleName + '_' + stamp + '.zip', data: BC.zip.write(all) }];
       }
       lastSavedFiles = outAll;
-      const savedMsg = await saveOutputs(outAll, { packOut: packOutMode, manualDownload: true });
+      const savedMsg = await saveOutputs(outAll, { packOut: packOutMode });
       if (savedMsg === null) { toast('已取消保存'); return; }
       if (savedMsg && String(savedMsg).indexOf('ERROR') === 0) throw new Error(String(savedMsg).slice(6));
       let msg = '完成：' + sink.length + (packOutMode ? (outAll.length === 1 ? ' 个文件' : ' 个包') : ' 批文件') + '（' + files + ' 个文件，共 ' + done + ' 支笔刷）';
@@ -1612,7 +1612,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.71';
+  const APP_VERSION = '2.5.72';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
