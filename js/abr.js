@@ -543,6 +543,54 @@
           brush.className = cls;
           brush.tipStyle = 'auto';
           if (computed) computedCount++;
+          else if (cls === 'dTips' && inner) {
+            // dTips = PS 侵蚀笔尖（type=0，含高度图）/ 喷枪笔尖（type=1，无高度图）。
+            // 样本：应图马文件夹 154 支。高度图 = gridSize² × float32 LE，0..1 行主序。
+            const dunit = function (k) { return desc.unitValue(desc.getItem(inner, k)); };
+            const draw = function (k) { const v = desc.getItem(inner, k); if (typeof v === 'number') return v; return (v && typeof v.value === 'number' && v.type !== 'unit') ? v.value : undefined; };
+            const dshape = draw('Shp ');
+            const dtype = draw('dtipsType');
+            const erodible = dtype === 0;
+            const dshapeNames = { 0: 'pointPencil', 1: 'flat', 2: 'round', 3: 'square', 4: 'triangle', 5: 'airbrush' };
+            const dt = {
+              kind: erodible ? 'erodible' : 'airbrush',
+              shape: dshape,
+              shapeName: dshapeNames[dshape] || ('Shp' + dshape),
+              hardness: dunit('dtipsHardness') === undefined ? undefined : Math.max(0, Math.min(1, dunit('dtipsHardness') / 100)),
+              lengthRatio: dunit('dtipsLengthRatio'),
+              gridSize: draw('dtipsGridSize'),
+              airbrush: {
+                cutoffAngle: draw('dtipsAirbrushCutoffAngle'),
+                granularity: dunit('dtipsAirbrushGranularity'),
+                streakiness: dunit('dtipsAirbrushStreakiness'),
+                splatSize: dunit('dtipsAirbrushSplatSize'),
+                splatCount: draw('dtipsAirbrushSplatCount')
+              },
+              physics: desc.getItem(inner, 'physics') === true
+            };
+            brush.dTips = dt;
+            const hm = desc.getItem(inner, 'dtipsErodibleTipHeightMap');
+            if (erodible && hm && hm.type === 'data' && hm.bytes && dt.gridSize && hm.bytes.length === dt.gridSize * dt.gridSize * 4) {
+              const gs = dt.gridSize;
+              const rgba = new Uint8Array(gs * gs * 4);
+              for (let hi = 0; hi < gs * gs; hi++) {
+                let h = util.f32(hm.bytes, hi * 4);
+                if (!(h >= 0)) h = 0; // NaN/负值防御
+                if (h > 1) h = 1;
+                rgba[hi * 4] = 255; rgba[hi * 4 + 1] = 255; rgba[hi * 4 + 2] = 255;
+                rgba[hi * 4 + 3] = Math.round(h * 255);
+              }
+              brush.tip = { w: gs, h: gs, rgba: rgba };
+              brush.tipSource = 'dTips-heightmap';
+              warnings.push((brush.name || ('笔刷 ' + (pi + 1))) +
+                '：侵蚀笔尖 dTips（' + dt.shapeName + '）已按高度图还原静态笔尖，磨损动态未模拟');
+            } else {
+              // 喷枪系：无高度图，软圆近似（dtipsHardness 即笔尖软硬）
+              if (dt.hardness !== undefined) brush.hardness = dt.hardness;
+              warnings.push((brush.name || ('笔刷 ' + (pi + 1))) +
+                '：喷枪笔尖 dTips 按软圆近似，粒状飞溅未模拟');
+            }
+          }
           else if (cls === 'dBrush') warnings.push((brush.name || ('笔刷 ' + (pi + 1))) +
             '：毛刷笔尖 dBrush（' + (brush.bristle ? brush.bristle.shapeName : '未知形状') +
             '）已按形状/角度/圆度近似为静态椭圆笔尖，毛丝实时质感未模拟');

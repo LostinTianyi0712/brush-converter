@@ -2056,6 +2056,7 @@ Write-Host 'restart MediBang Paint Pro'
       ['颜色动态', 'colorDynamicsOn', function () { return '开'; }],
       ['平滑', 'smoothingStrength', function (v) { return Math.round(v * 100) + '%'; }],
       ['毛刷笔尖', 'bristle', function (v) { return v.shapeName === 'flatPoint' ? '平点形（扁凿近似）' : (v.shapeName === 'roundDull' ? '圆钝形' : ('形状' + v.shape)); }],
+      ['侵蚀/喷枪笔尖', 'dTips', function (v) { return (v.kind === 'erodible' ? '侵蚀·' : '喷枪·') + (v.shapeName || v.shape); }],
       ['双笔刷', 'dualOn', function () { return '开'; }]
     ];
     const support = {
@@ -2229,6 +2230,7 @@ Write-Host 'restart MediBang Paint Pro'
       ['颜色动态', 'colorDynamicsOn', function () { return '开'; }],
       ['平滑', 'smoothingStrength', function (v) { return Math.round(v * 100) + '%'; }],
       ['毛刷笔尖', 'bristle', function (v) { return v.shapeName === 'flatPoint' ? '平点形（扁凿近似）' : (v.shapeName === 'roundDull' ? '圆钝形' : ('形状' + v.shape)); }],
+      ['侵蚀/喷枪笔尖', 'dTips', function (v) { return (v.kind === 'erodible' ? '侵蚀·' : '喷枪·') + (v.shapeName || v.shape); }],
       ['双笔刷', 'dualOn', function () { return '开'; }]
     ];
     const support = {

@@ -1547,7 +1547,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.66';
+  const APP_VERSION = '2.5.67';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {
@@ -1711,38 +1711,47 @@
     const el = $('#shapeLibText');
     if (!el) return;
     if (state.shapeLib && state.shapeLib.size) {
-      el.textContent = (state.shapeLibBuiltIn ? '内置图库已就绪：' : '已加载 ') + state.shapeLib.size +
-        ' 张' + (state.shapeLibBuiltIn ? '（随 App 自带，不用选择）' : '') + '；缺 shape 的笔刷已按内置资源名补回真图';
+      const label = state.shapeLibLabel || (state.shapeLibBuiltIn ? '内置图库包' : '自选图库');
+      const mb = state.shapeLibBytes ? ' · ' + Math.round(state.shapeLibBytes / 1048576) + 'MB' : '';
+      el.textContent = (state.shapeLibBuiltIn ? '图库包已加载：' : '已加载 ') + state.shapeLib.size + ' 张' + mb +
+        '（' + label + '）；缺 shape 的笔刷已按内置资源名补回真图';
     } else {
-      el.textContent = '未加载：Procreate 内置 shape 图不在笔刷包里，缺图时只能用合成圆头';
+      el.textContent = state.shapeLibBuiltIn === false && state.shapeLibError
+        ? '图库包没读到（' + state.shapeLibError + '）：可以点「选择图库文件夹」手动指定'
+        : '未加载：把「Procreate 内置笔尖图库」的 zip 放到程序旁边，或点「选择图库 ZIP / 图片」';
     }
   }
-  /* ===== 内置笔尖图库（随 App 分发，不用用户选择）=====
-     资源来自 assets/shape-lib.zip：292 张 Procreate IPA 内置 Shape，已按 luminanceToTip 的口径
-     预先烘成 8bit 灰度覆盖率、最长边 512、PNG 编码。core 只需 png.decode 就能同步拿到真图，
-     桌面/安卓/网页都走同一条打包路径（桌面经 preload IPC 读 asar 里的 zip）。 */
+  /* ===== 内置笔尖图库包（单独分发，不塞进安装包）=====
+     资源包来自 assets/shape-lib.zip（精简 512）或另做的「原图」包：292 张 Procreate IPA 内置 Shape。
+     桌面版启动时去程序目录找这个 zip（主进程读文件 → IPC 传字节），找不到就等用户手动选。
+     内存策略见 loadShapeLibrary：只留原始字节，core 用到才解码。 */
   let bundledLoading = null;
   function shapeLibFromZipBytes(bytes) {
     const map = new Map();
+    let index = null;
     const entries = BC.zip.read(new Uint8Array(bytes));
     for (const e of entries) {
       const base = String(e.name || '').split(/[\\/]/).pop().toLowerCase();
-      if (!/\.png$/i.test(base)) continue; // index.json 等跳过
+      if (base === 'index.json') {
+        try { index = JSON.parse(BC.util.utf8Decode(e.data())); } catch (err) { index = null; }
+        continue;
+      }
+      if (!/\.(png|jpe?g)$/i.test(base)) continue;
       map.set(base, e.data());
     }
-    return map;
+    return { map: map, index: index };
   }
   async function bundledShapeLibBytes() {
     const desk = window.BrushDesktop;
     if (desk && typeof desk.readShapeLib === 'function') {
       const r = await desk.readShapeLib();
       if (!r || !r.ok) throw new Error((r && r.error) || '内置图库读取失败');
-      return new Uint8Array(r.bytes);
+      return { bytes: new Uint8Array(r.bytes), name: r.name || '', path: r.path || '' };
     }
     if (typeof fetch === 'function') {
       const res = await fetch('shape-lib.zip', { cache: 'force-cache' });
       if (!res.ok) throw new Error('HTTP ' + res.status);
-      return new Uint8Array(await res.arrayBuffer());
+      return { bytes: new Uint8Array(await res.arrayBuffer()), name: 'shape-lib.zip', path: '' };
     }
     throw new Error('当前环境读不到内置图库');
   }
@@ -1751,19 +1760,30 @@
     bundledLoading = (async function () {
       try {
         if (opts && opts.onStart) opts.onStart();
-        const bytes = await bundledShapeLibBytes();
-        const map = shapeLibFromZipBytes(bytes);
+        const got = await bundledShapeLibBytes();
+        const parsed = shapeLibFromZipBytes(got.bytes);
+        const map = parsed.map;
         if (!map.size) throw new Error('内置图库为空');
+        const idx = parsed.index || {};
+        const variant = idx.variant === 'original' ? '原始分辨率' : (idx.maxEdge ? idx.maxEdge + 'px 精简' : '');
         state.shapeLib = map;
         state.shapeLibBuiltIn = true;
+        state.shapeLibLabel = [got.name || '图库包', variant].filter(Boolean).join(' · ');
+        state.shapeLibBytes = got.bytes.length;
         updateShapeLibText();
         const fixed = await reparseWithShapeLib();
-        pushLog('内置图库已加载 ' + map.size + ' 张 / ' + Math.round(bytes.length / 1048576) + 'MB');
-        if (fixed) toast('内置图库生效：已给现有笔刷补回 ' + fixed + ' 支真图笔尖', 8000);
-        return { ok: true, count: map.size, fixed: fixed };
+        pushLog('图库包已加载 ' + map.size + ' 张 / ' + Math.round(got.bytes.length / 1048576) + 'MB / ' + state.shapeLibLabel);
+        if (fixed) toast('图库已生效：已给现有笔刷补回 ' + fixed + ' 支真图笔尖', 8000);
+        if (got.bytes.length > 120 * 1048576) {
+          toast('已加载原图库包（' + Math.round(got.bytes.length / 1048576) + 'MB）。内存紧张时（手机/低配）请改用「精简512」包', 12000);
+        }
+        return { ok: true, count: map.size, fixed: fixed, label: state.shapeLibLabel };
       } catch (e) {
-        pushLog('内置图库加载失败：' + (e && e.message ? e.message : e));
-        return { ok: false, error: e && e.message ? e.message : String(e) };
+        state.shapeLibError = e && e.message ? e.message : String(e);
+        state.shapeLibBuiltIn = false;
+        updateShapeLibText();
+        pushLog('图库包加载失败：' + state.shapeLibError);
+        return { ok: false, error: state.shapeLibError };
       } finally { bundledLoading = null; }
     })();
     return bundledLoading;
@@ -1828,19 +1848,51 @@
     diag.path = 'failed'; shapeDecodeLog.push(diag);
     return null;
   }
+  /* 只看 JPEG 头里的 SOF 标记判断类型（不整张解码，几微秒）：
+     baseline 交给 core 的 jpeg.js；progressive 它解不了，得先用 canvas 解出来再存成 PNG。 */
+  function jpegScanKind(bytes) {
+    if (!bytes || bytes.length < 4 || bytes[0] !== 0xFF || bytes[1] !== 0xD8) return 'none';
+    const n = Math.min(bytes.length, 65536);
+    for (let i = 0; i < n - 1; i++) {
+      if (bytes[i] !== 0xFF) continue;
+      const m = bytes[i + 1];
+      if (m === 0xC0 || m === 0xC1) return 'baseline';
+      if (m === 0xC2) return 'progressive';
+    }
+    return 'jpeg';
+  }
   async function loadShapeLibrary(fileList) {
     const list = Array.prototype.slice.call(fileList || []);
     if (!list.length) return;
-    toast('正在读取图库…（几百张图需要几秒）', 6000);
+    toast('正在读取图库…（原图包有 200MB+，需要几秒）', 8000);
     const map = new Map();
     let undecoded = 0;
     const undecodedNames = [];
+    let converted = 0;
+    /* 关键：不要整包解成 RGBA 常驻（292 张原图 = 1GB+ 会直接崩）。
+       PNG 与 baseline JPEG 只存原始字节，core 用到时才同步解码；
+       只有 progressive JPEG 必须在这解一次，解完烘成灰度 PNG 存起来（同样不常驻 RGBA）。 */
     async function addOne(name, bytes) {
       const base = String(name || '').split(/[\\/]/).pop().toLowerCase();
       if (!/\.(png|jpe?g)$/i.test(base)) return;
-      const dec = await decodeImageToRgba(base, bytes);
-      if (dec) map.set(base, dec);
-      else { map.set(base, bytes); undecoded++; undecodedNames.push(base); }
+      let entry = bytes;
+      if (/\.jpe?g$/i.test(base) && jpegScanKind(bytes) === 'progressive') {
+        const dec = await decodeImageToRgba(base, bytes);
+        if (dec) {
+          const gray = new Uint8Array(dec.w * dec.h);
+          for (let i = 0; i < gray.length; i++) {
+            const o = i * 4;
+            const l = Math.max(dec.rgba[o], dec.rgba[o + 1], dec.rgba[o + 2]);
+            gray[i] = dec.rgba[o + 3] === 255 ? l : Math.round((l * dec.rgba[o + 3]) / 255);
+          }
+          entry = BC.png.encodeGray(dec.w, dec.h, gray, 6);
+          converted++;
+        } else {
+          undecoded++;
+          undecodedNames.push(base);
+        }
+      }
+      map.set(base, entry);
     }
     for (const f of list) {
       try {
@@ -1853,13 +1905,14 @@
       } catch (e) { pushLog('图库读取失败 ' + f.name + '：' + e.message); }
     }
     if (!map.size) { toast('图库里没有 PNG/JPG：请选择包含内置笔尖图的 ZIP 或文件夹', 8000); return; }
-    if (undecoded) pushLog('图库有 ' + undecoded + ' 张没能预解码（解析时会再试一次）：' + undecodedNames.slice(0, 12).join(', '));
+    if (converted) pushLog('图库里有 ' + converted + ' 张 progressive JPEG 已用 canvas 解出并转存为灰度 PNG');
+    if (undecoded) pushLog('图库有 ' + undecoded + ' 张解不开：' + undecodedNames.slice(0, 12).join(', '));
     state.shapeLib = map;
     state.shapeLibBuiltIn = false; // 用户自己选的图库优先于内置（通常是原始高分辨率图）
+    state.shapeLibLabel = '自选图库';
     updateShapeLibText();
     const fixed = await reparseWithShapeLib();
-    toast('图库已加载 ' + map.size + ' 张' + (undecoded ? '（' + undecoded + ' 张留给浏览器再解码）' : '') +
-      (fixed ? '；已给现有笔刷补回 ' + fixed + ' 支真图笔尖' : '；缺 shape 的笔刷重新导入后会补回真图'), 12000);
+    toast('图库已加载 ' + map.size + ' 张' + (fixed ? '；已给现有笔刷补回 ' + fixed + ' 支真图笔尖' : '；缺 shape 的笔刷重新导入后会补回真图'), 12000);
   }
 
   /* #282：图库是后加载的，用户不该为此重新导入一遍笔刷——
