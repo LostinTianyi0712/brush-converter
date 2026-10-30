@@ -20,229 +20,249 @@
     <div class="logo"><img src="img/icon-192.png" alt=""></div>
     <div>
       <h1>笔刷转换器</h1>
-      <p class="sub">Photoshop <b>.abr</b> · Procreate <b>.brush / .brushset</b> · <b>.bru</b> → 画世界Pro <b>.bru</b></p>
     </div>
   </div>
   <div class="actions">
+    <button id="btnConvert" class="btn primary convert-top" disabled>转换并下载</button>
+    <button id="btnCancel" class="btn ghost" style="display:none">取消</button>
     <button id="btnSelectAll" class="btn ghost" title="全选/取消全选所有笔刷">全选笔刷</button>
     <button id="btnCompare" class="btn ghost" title="查看原参数与目标格式的对比">参数对比</button>
     <button id="btnShare" class="btn ghost" title="分享/保存到文件（iOS 可用）">分享保存</button>
     <button id="btnClear" class="btn ghost" title="清空列表">清空</button>
-    <button id="btnConvert" class="btn primary" disabled>转换并下载 ZIP</button>
-    <button id="btnCancel" class="btn ghost" style="display:none">取消</button>
   </div>
 </header>
 
 <main>
-  <section id="dropzone" class="dropzone">
-    <div class="dz-inner">
-      <div class="dz-icon">＋</div>
-      <p class="dz-title">拖入笔刷文件，或点击选择</p>
-      <p class="dz-sub">支持 .bru / .abr / .brush / .brushset / .gobrush / .sut / .mtd / .kpp / .bundle 等格式，也可直接拖入 <b>ZIP</b> 自动解压识别<br>优动漫 / CSP .sut 为部分读取，加密笔尖只能提取缩略图<br>默认把一个笔刷包里的全部笔刷打成 <b>1 个文件</b>，整套保留<br>ABR 参数化笔刷没有采样笔尖，无法转换；Procreate 没有 Shape 图的笔刷会自动生成圆头笔尖</p>
-      <input id="fileInput" type="file" multiple accept=".abr,.brush,.brushset,.bru,.zip,.myb,.gbr,.gih,.kpp,.bundle,.brushcategory,.brushlibrary,.sut,.mtd,.gobrush,.gobrushes" hidden>
+  <section id="step1" class="step">
+    <div class="step-head">
+      <div class="step-title"><h2>拖入笔刷</h2><p class="step-sub">支持 ABR / Procreate / BRU / 优动漫 SUT·MTD / 天生会画等格式，可直接拖入 ZIP 自动解压</p></div>
     </div>
-  </section>
+    <section id="dropzone" class="dropzone">
+      <div class="dz-inner">
+        <div class="dz-icon">＋</div>
+        <p class="dz-title">拖入笔刷文件，或点击选择</p>
+        <p class="dz-sub">整包笔刷默认打成 <b>1 个文件</b>，整套保留<br>参数化 ABR 没有采样笔尖时自动补画笔尖；Procreate 缺 Shape 图同理</p>
+        <input id="fileInput" type="file" multiple accept=".abr,.brush,.brushset,.bru,.zip,.myb,.gbr,.gih,.kpp,.bundle,.brushcategory,.brushlibrary,.sut,.mtd,.gobrush,.gobrushes" hidden>
+      </div>
+    </section>
 
-  <section id="options" class="options card">
-    <div class="opt">
-      <label>笔尖最大边长</label>
-      <select id="optTipSize">
-        <option value="256">256 px（文件小）</option>
-        <option value="384">384 px</option>
-        <option value="512" selected>512 px（推荐）</option>
-        <option value="1024">1024 px（最清晰）</option>
+    <div class="step-head step-head-tight">
+      <div class="step-title"><h2>调整转换</h2><p class="step-sub">大多数情况保持默认即可</p></div>
+    </div>
+    <section id="options" class="options card">
+      <div class="opt opt-target">
+        <label>目标格式</label>
+        <select id="optTarget">
+          <option value="bru" selected>画世界Pro .bru</option>
+          <option value="abr">Photoshop .abr</option>
+          <option value="udongman">优动漫 CSP .abr（兼容）</option>
+          <option value="udongman_sut">优动漫 CSP 原生 .sut（实验·笔尖为模板占位）</option>
+          <option value="udongman_mtd">优动漫 .mtd 绘画助手包（实验·内含 .sut）</option>
+          <option value="gopaint_abr">天生会画 .abr（兼容）</option>
+          <option value="brushset">Procreate .brushset</option>
+          <option value="brush">Procreate .brush</option>
+          <option value="gbr">GIMP .gbr</option>
+          <option value="gih">GIMP .gih</option>
+          <option value="myb">MyPaint .myb</option>
+          <option value="kbundle">Krita .bundle</option>
+          <option value="sai2">SAI2 散布（bmp+ini）</option>
+          <option value="png">笔尖 PNG（MediBang）</option>
+          <option value="painter">Corel Painter</option>
+          <option value="gopaint">天生会画 .gobrush</option>
+          <option value="gopaint_set">天生会画 .gobrushes</option>
+          <option value="medibang">MediBang 笔刷包</option>
+          <option value="mbini">MediBang 云包</option>
+          <option value="all">全部格式（自动打包）</option>
+        </select>
+      </div>
+      <div class="opt">
+        <label>笔尖最大边长</label>
+        <select id="optTipSize">
+          <option value="256">256 px（文件小）</option>
+          <option value="384">384 px</option>
+          <option value="512" selected>512 px（推荐）</option>
+          <option value="1024">1024 px（最清晰）</option>
           <option value="2048">2048 px（保留更多细节，文件更大）</option>
-      </select>
-    </div>
-    <div class="opt">
-      <label>整体尺寸倍数</label>
-      <input id="optSizeScale" type="number" min="0.1" max="10" step="0.1" value="1">
-    </div>
-    <div class="opt">
-      <label>统一间距（%）</label>
-      <input id="optSpacing" type="number" min="1" max="1000" step="1" placeholder="留空 = 原样">
-    </div>
-    <div class="opt">
-      <label>天生会画 · 默认散布</label>
-      <select id="optGoScatter">
-        <option value="auto">跟随原笔刷散布</option>
-        <option value="0">0</option>
-        <option value="15">15</option>
-        <option value="30">30</option>
-        <option value="45">45</option>
-      </select>
-    </div>
-    <div class="opt">
-      <label>纹理烘焙（近似）</label>
-      <select id="optGrainBake">
-        <option value="on" selected>开启（烘进笔尖）</option>
-        <option value="off">关闭（纯净笔尖）</option>
-      </select>
-    </div>
-    <div class="opt">
-      <label>内置笔尖图库（可选）</label>
-      <button id="btnShapeLibDir" type="button" class="btn ghost">选择图库文件夹</button>
-      <button id="btnShapeLib" type="button" class="btn ghost">选择图库 ZIP / 图片</button>
-      <div id="shapeLibText" class="hint">未加载：Procreate 内置 shape 图不在笔刷包里，缺图时只能用合成圆头</div>
-      <a id="shapeLibDownload" class="hint" href="shapes.html" target="_blank" rel="noopener" hidden>没有图库包？点这里下载（原图 216MB 分 3 卷 / 精简 32MB）</a>
-      <input id="shapeLibInput" type="file" accept=".zip,image/png,image/jpeg" multiple hidden>
-      <input id="shapeLibDirInput" type="file" webkitdirectory directory multiple hidden>
-    </div>
-    <details class="advanced-opts">
-      <summary>高级设置</summary>
-      <div class="opt-row">
-        <div class="opt">
-          <label>还原优先</label>
-          <select id="optFidelity">
-            <option value="on" selected>开启（默认，同格式字节级保留）</option>
-            <option value="off">关闭（强制重建笔刷）</option>
-          </select>
-        </div>
-        <div class="opt">
-          <label>散布换算系数（× 源值）</label>
-          <select id="optScatterScale">
-            <option value="5">5%（更小）</option>
-            <option value="10">10%（很小）</option>
-            <option value="15" selected>15%（推荐）</option>
-            <option value="20">20%</option>
-            <option value="30">30%</option>
-            <option value="50">50%</option>
-            <option value="100">100%（等比例）</option>
-          </select>
-        </div>
-        <div class="opt">
-          <label>画世界双笔刷写法</label>
-          <select id="optBruEmbed">
-            <option value="1" selected>内嵌单支（原生3.0，推荐）</option>
-            <option value="0">主笔+辅助条目（旧写法）</option>
-          </select>
-        </div>
-        <div class="opt">
-          <label>双笔刷原生对（画世界3.0）</label>
-          <select id="optDualPair">
-            <option value="1" selected>是（输出主笔+第二支，原生双重笔刷）</option>
-            <option value="0">否（合成进单一笔尖）</option>
-          </select>
-        </div>
-        <div class="opt">
-          <label>双笔刷附带 ABR（画世界3.0）</label>
-          <select id="optDualCompanion">
-            <option value="1">是（画世界3.0 可直接导入 ABR 保留双笔刷）</option>
-            <option value="0">否</option>
-          </select>
-        </div>
-        <div class="opt">
-          <label>双笔刷合成（近似）</label>
-          <select id="optDualBake">
+        </select>
+      </div>
+      <div class="opt">
+        <label>压感</label>
+        <select id="optPressure">
+          <option value="auto" selected>跟随原笔刷</option>
+          <option value="on">全部开启</option>
+          <option value="off">全部关闭</option>
+        </select>
+      </div>
+      <div class="opt">
+        <label>整体尺寸倍数</label>
+        <input id="optSizeScale" type="number" min="0.1" max="10" step="0.1" value="1">
+      </div>
+      <div class="opt">
+        <label>统一间距（%）</label>
+        <input id="optSpacing" type="number" min="1" max="1000" step="1" placeholder="留空 = 原样">
+      </div>
+      <div class="opt grow">
+        <label>笔刷名前缀（可选）</label>
+        <input id="optPrefix" type="text" placeholder="例如：我的笔刷-">
+      </div>
+
+      <details class="advanced-opts">
+        <summary>高级设置</summary>
+        <div class="opt-row">
+          <div class="opt">
+            <label>输出方式</label>
+            <select id="optMode">
+              <option value="pack" selected>整包一个文件（推荐）</option>
+              <option value="single">每支笔刷单独文件</option>
+            </select>
+          </div>
+          <div class="opt">
+            <label>输出形式</label>
+            <select id="optPack">
+              <option value="zip" selected>输出笔刷文件（多文件时自动打包 ZIP）</option>
+              <option value="files">直接输出文件（选目录）</option>
+            </select>
+          </div>
+          <div class="opt">
+            <label>天生会画 · 默认散布</label>
+            <select id="optGoScatter">
+              <option value="auto">跟随原笔刷散布</option>
+              <option value="0">0</option>
+              <option value="15">15</option>
+              <option value="30">30</option>
+              <option value="45">45</option>
+            </select>
+          </div>
+          <div class="opt">
+            <label>纹理烘焙（近似）</label>
+            <select id="optGrainBake">
+              <option value="on" selected>开启（烘进笔尖）</option>
+              <option value="off">关闭（纯净笔尖）</option>
+            </select>
+          </div>
+          <div class="opt">
+            <label>还原优先</label>
+            <select id="optFidelity">
+              <option value="on" selected>开启（默认，同格式字节级保留）</option>
+              <option value="off">关闭（强制重建笔刷）</option>
+            </select>
+          </div>
+          <div class="opt">
+            <label>散布换算系数（× 源值）</label>
+            <select id="optScatterScale">
+              <option value="5">5%（更小）</option>
+              <option value="10">10%（很小）</option>
+              <option value="15" selected>15%（推荐）</option>
+              <option value="20">20%</option>
+              <option value="30">30%</option>
+              <option value="50">50%</option>
+              <option value="100">100%（等比例）</option>
+            </select>
+          </div>
+          <div class="opt">
+            <label>画世界双笔刷写法</label>
+            <select id="optBruEmbed">
+              <option value="1" selected>内嵌单支（原生3.0，推荐）</option>
+              <option value="0">主笔+辅助条目（旧写法）</option>
+            </select>
+          </div>
+          <div class="opt">
+            <label>双笔刷原生对（画世界3.0）</label>
+            <select id="optDualPair">
+              <option value="1" selected>是（输出主笔+第二支，原生双重笔刷）</option>
+              <option value="0">否（合成进单一笔尖）</option>
+            </select>
+          </div>
+          <div class="opt">
+            <label>双笔刷附带 ABR（画世界3.0）</label>
+            <select id="optDualCompanion">
+              <option value="1">是（画世界3.0 可直接导入 ABR 保留双笔刷）</option>
+              <option value="0">否</option>
+            </select>
+          </div>
+          <div class="opt">
+            <label>双笔刷合成（近似）</label>
+            <select id="optDualBake">
               <option value="1" selected>开启（无原生双笔刷的目标使用近似）</option>
               <option value="0">关闭（无原生支持时仅保留主笔）</option>
-          </select>
+            </select>
+          </div>
+          <div class="opt">
+            <label>每 N 支一个包</label>
+            <select id="optBatchN">
+              <option value="0" selected>不拆分（全部一个包）</option>
+              <option value="20">20 支/包</option>
+              <option value="50">50 支/包</option>
+              <option value="100">100 支/包</option>
+              <option value="200">200 支/包</option>
+            </select>
+          </div>
+          <div class="opt">
+            <label>大输出自动分卷（>200MB）</label>
+            <select id="optAutoBatch">
+              <option value="1" selected>是（自动拆成多个 ZIP）</option>
+              <option value="0">否（单文件）</option>
+            </select>
+          </div>
+          <div class="opt">
+            <label>附带参数对比页</label>
+            <select id="optCompareReport">
+              <option value="0" selected>不生成（默认）</option>
+              <option value="1">生成 参数对比.html</option>
+            </select>
+          </div>
+          <div class="opt">
+            <label>纹理处理</label>
+            <select id="optTextureMode">
+              <option value="bake" selected>烘焙进笔尖（默认）</option>
+              <option value="pattern">图案文件（.pat + ABR 引用，可调纹理）</option>
+            </select>
+          </div>
+          <div class="opt">
+            <label>ZIP 内按来源分文件夹（单独模式）</label>
+            <select id="optGroup">
+              <option value="0" selected>否（扁平，方便导入）</option>
+              <option value="1">是（ZIP 内按来源分文件夹）</option>
+            </select>
+          </div>
+          <div class="opt opt-shapelib">
+            <label>内置笔尖图库（可选，Procreate 缺图时用）</label>
+            <div class="shapelib-btns">
+              <button id="btnShapeLibDir" type="button" class="btn ghost">选择图库文件夹</button>
+              <button id="btnShapeLib" type="button" class="btn ghost">选择图库 ZIP / 图片</button>
+            </div>
+            <div id="shapeLibText" class="hint">未加载：缺图时只能用合成圆头</div>
+            <a id="shapeLibDownload" class="hint" href="shapes.html" target="_blank" rel="noopener" hidden>没有图库包？点这里下载（原图 216MB 分 3 卷 / 精简 32MB）</a>
+            <input id="shapeLibInput" type="file" accept=".zip,image/png,image/jpeg" multiple hidden>
+            <input id="shapeLibDirInput" type="file" webkitdirectory directory multiple hidden>
+          </div>
         </div>
-        <div class="opt">
-          <label>每 N 支一个包</label>
-          <select id="optBatchN">
-            <option value="0" selected>不拆分（全部一个包）</option>
-            <option value="20">20 支/包</option>
-            <option value="50">50 支/包</option>
-            <option value="100">100 支/包</option>
-            <option value="200">200 支/包</option>
-          </select>
-        </div>
-        <div class="opt">
-          <label>大输出自动分卷（>200MB）</label>
-          <select id="optAutoBatch">
-            <option value="1" selected>是（自动拆成多个 ZIP）</option>
-            <option value="0">否（单文件）</option>
-          </select>
-        </div>
-        <div class="opt">
-          <label>附带参数对比页</label>
-          <select id="optCompareReport">
-            <option value="0" selected>不生成（默认）</option>
-            <option value="1">生成 参数对比.html</option>
-          </select>
-        </div>
-        <div class="opt">
-          <label>纹理处理</label>
-          <select id="optTextureMode">
-            <option value="bake" selected>烘焙进笔尖（默认）</option>
-            <option value="pattern">图案文件（.pat + ABR 引用，可调纹理）</option>
-          </select>
-        </div>
-      </div>
-    </details>
-    <div class="opt">
-      <label>压感</label>
-      <select id="optPressure">
-        <option value="auto" selected>跟随原笔刷</option>
-        <option value="on">全部开启</option>
-        <option value="off">全部关闭</option>
-      </select>
-    </div>
-    <div class="opt grow">
-      <label>笔刷名前缀（可选）</label>
-      <input id="optPrefix" type="text" placeholder="例如：我的笔刷-">
-    </div>
-    <div class="opt">
-      <label>输出方式</label>
-      <select id="optMode">
-        <option value="pack" selected>整包一个文件（推荐）</option>
-        <option value="single">每支笔刷单独文件</option>
-      </select>
-    </div>
-    <div class="opt">
-      <label>输出形式</label>
-      <select id="optPack">
-        <option value="zip" selected>打包成 1 个 ZIP 下载</option>
-        <option value="files">直接输出文件（选目录）</option>
-      </select>
-    </div>
-    <div class="opt">
-      <label>目标格式</label>
-      <select id="optTarget">
-        <option value="bru" selected>画世界Pro .bru</option>
-        <option value="abr">Photoshop .abr</option>
-        <option value="udongman">优动漫 CSP .abr（兼容）</option>
-        <option value="udongman_sut">优动漫 CSP 原生 .sut（实验·笔尖为模板占位）</option>
-        <option value="udongman_mtd">优动漫 .mtd 绘画助手包（实验·内含 .sut）</option>
-        <option value="gopaint_abr">天生会画 .abr（兼容）</option>
-        <option value="brushset">Procreate .brushset</option>
-        <option value="brush">Procreate .brush</option>
-        <option value="gbr">GIMP .gbr</option>
-        <option value="gih">GIMP .gih</option>
-        <option value="myb">MyPaint .myb</option>
-        <option value="kbundle">Krita .bundle</option>
-        <option value="sai2">SAI2 散布（bmp+ini）</option>
-        <option value="png">笔尖 PNG（MediBang）</option>
-        <option value="painter">Corel Painter</option>
-        <option value="gopaint">天生会画 .gobrush</option>
-        <option value="gopaint_set">天生会画 .gobrushes</option>
-        <option value="medibang">MediBang 笔刷包</option>
-        <option value="mbini">MediBang 云包</option>
-        <option value="all">全部格式（自动打包）</option>
-      </select>
-    </div>
+      </details>
+    </section>
 
-    <div class="opt">
-      <label>ZIP 内按来源分文件夹（单独模式）</label>
-      <select id="optGroup">
-        <option value="0" selected>否（扁平，方便导入）</option>
-        <option value="1">是（ZIP 内按来源分文件夹）</option>
-      </select>
+    <div class="step-head step-head-tight">
+      <div class="step-title"><h2>笔刷预览</h2><p class="step-sub">点击笔刷名可取消勾选，转换时跳过</p></div>
     </div>
+    <section id="files" class="files"></section>
+    <section id="empty" class="empty">还没有加载文件</section>
   </section>
 
-  <section id="files" class="files"></section>
-  <section id="empty" class="empty">还没有加载文件</section>
+  <section id="step3" class="step">
+    <div class="step-head">
+      <div class="step-title"><h2>导出</h2><p class="step-sub">转换完成后在此保存，或用右上角「分享保存」</p></div>
+    </div>
+    <div id="exportRow" class="export-row card" hidden>
+      <div id="saveDirectoryControls" class="outpath inline" hidden><button id="btnSaveDirectory" class="btn ghost">选择保存目录</button> <span id="saveDirectoryText">选择一次，后续保存复用该目录</span></div>
+    </div>
+    <div id="outPath" class="outpath">输出位置：<span id="outPathText">转换后显示保存目录</span></div>
+    <section id="resultPanel" class="outpath" style="display:none">
+      <div class="result-head">结果文件：点「保存」把文件存下来；手机浏览器不响应时用「新标签打开」或右上「分享保存」。</div>
+      <div id="resultList" class="result-list"></div>
+    </section>
+    <div id="precheck" class="outpath" style="display:none"></div>
+  </section>
 
   <div id="progress" class="progress hidden"><div class="bar"></div><span class="ptext"></span></div>
-  <div id="saveDirectoryControls" class="outpath" hidden><button id="btnSaveDirectory" class="btn ghost">选择保存目录</button> <span id="saveDirectoryText">选择一次，后续保存复用该目录</span></div>
-  <div id="outPath" class="outpath">输出位置：<span id="outPathText">转换后显示保存目录</span></div>
-  <section id="resultPanel" class="outpath" style="display:none">
-    <div class="result-head">结果文件：点「保存」把文件存下来；手机浏览器不响应时用「新标签打开」或右上「分享保存」。</div>
-    <div id="resultList" class="result-list"></div>
-  </section>
-  <div id="precheck" class="outpath" style="display:none"></div>
 </main>
 
 <footer class="footer">
@@ -262,44 +282,47 @@
   </div>
 </div>
 
-<script src="./js/pako.min.js"></script>
-<script src="./js/util.js"></script>
-<script src="./js/zlib.js"></script>
-<script src="./js/png.js"></script>
-<script src="./js/zip.js"></script>
-<script src="./js/plist.js"></script>
-<script src="./js/descriptor.js"></script>
-<script src="./js/bplist.js"></script>
-<script src="./js/procreateDefaults.js"></script>
-<script src="./js/sqlite.js"></script>
-<script src="./js/medibang.js"></script>
-<script src="./js/medibangIni.js"></script>
-<script src="./js/gobrush.js"></script>
-<script src="./js/gobrushWrite.js"></script>
-<script src="./js/infpainter.js"></script>
-<script src="./js/csp.js"></script>
-<script src="./js/sutWrite.js"></script>
-<script src="./js/udongmanTemplate.js"></script>
-<script src="./js/gimp.js"></script>
-<script src="./js/mypaint.js"></script>
-<script src="./js/kritaPreview.js"></script>
-<script src="./js/kritaPresetTemplate.js"></script>
-<script src="./js/krita.js"></script>
-<script src="./js/sai2.js"></script>
-<script src="./js/sai2read.js"></script>
-<script src="./js/jpeg.js"></script>
-<script src="./js/jpegEncode.js"></script>
-<script src="./js/genericbrush.js"></script>
-<script src="./js/painterlib.js"></script>
-<script src="./js/abrUuidPool.js"></script>
-<script src="./js/abrPatternTemplate.js"></script>
-<script src="./js/pat.js"></script>
-<script src="./js/patRead.js"></script>
-<script src="./js/abr.js"></script>
-<script src="./js/procreate.js"></script>
-<script src="./js/bru.js"></script>
-<script src="./js/convert.js"></script>
-<script src="./js/save-legacy.js"></script>
-<script src="./js/app.js"></script>
+<!-- 公告弹窗：独立小脚本，立即执行、不等主程序加载 -->
+<script src="./js/notice.js"></script>
+<!-- 主程序：defer 不阻塞首屏渲染，按顺序在解析完后执行 -->
+<script defer src="./js/pako.min.js"></script>
+<script defer src="./js/util.js"></script>
+<script defer src="./js/zlib.js"></script>
+<script defer src="./js/png.js"></script>
+<script defer src="./js/zip.js"></script>
+<script defer src="./js/plist.js"></script>
+<script defer src="./js/descriptor.js"></script>
+<script defer src="./js/bplist.js"></script>
+<script defer src="./js/procreateDefaults.js"></script>
+<script defer src="./js/sqlite.js"></script>
+<script defer src="./js/medibang.js"></script>
+<script defer src="./js/medibangIni.js"></script>
+<script defer src="./js/gobrush.js"></script>
+<script defer src="./js/gobrushWrite.js"></script>
+<script defer src="./js/infpainter.js"></script>
+<script defer src="./js/csp.js"></script>
+<script defer src="./js/sutWrite.js"></script>
+<script defer src="./js/udongmanTemplate.js"></script>
+<script defer src="./js/gimp.js"></script>
+<script defer src="./js/mypaint.js"></script>
+<script defer src="./js/kritaPreview.js"></script>
+<script defer src="./js/kritaPresetTemplate.js"></script>
+<script defer src="./js/krita.js"></script>
+<script defer src="./js/sai2.js"></script>
+<script defer src="./js/sai2read.js"></script>
+<script defer src="./js/jpeg.js"></script>
+<script defer src="./js/jpegEncode.js"></script>
+<script defer src="./js/genericbrush.js"></script>
+<script defer src="./js/painterlib.js"></script>
+<script defer src="./js/abrUuidPool.js"></script>
+<script defer src="./js/abrPatternTemplate.js"></script>
+<script defer src="./js/pat.js"></script>
+<script defer src="./js/patRead.js"></script>
+<script defer src="./js/abr.js"></script>
+<script defer src="./js/procreate.js"></script>
+<script defer src="./js/bru.js"></script>
+<script defer src="./js/convert.js"></script>
+<script defer src="./js/save-legacy.js"></script>
+<script defer src="./js/app.js"></script>
 </body>
 </html>

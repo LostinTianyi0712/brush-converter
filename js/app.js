@@ -26,6 +26,8 @@
   }
   if (directoryControls && window.BCSaver && window.BCSaver.supportsDirectory && window.BCSaver.supportsDirectory()) {
     directoryControls.hidden = false;
+    var exportRow = document.getElementById('exportRow');
+    if (exportRow) exportRow.hidden = false;
     refreshDirectory();
     directoryButton.addEventListener('click', async function () {
       if (isBusy()) return;
@@ -256,7 +258,7 @@
     const sel = $('#optTarget');
     const fmtLabel = sel && sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex].text : '';
     const packMode = $('#optPack') ? $('#optPack').value !== 'files' : true;
-    const outText = packMode ? '转换并下载 ZIP' : '转换并保存文件';
+    const outText = packMode ? '转换并下载' : '转换并保存文件';
     const busy = isBusy();
     btnConvert.disabled = !total || busy;
     fileInput.disabled = busy;
@@ -1186,10 +1188,10 @@
       await sleep(0);
     }
 
-    setProgress(0.99, opts.packOut === false ? '正在保存文件…' : '正在打包 ZIP…');
+    setProgress(0.99, opts.packOut === false ? '正在保存文件…' : '正在准备输出文件…');
     await sleep(10);
     const onlyAux = outFiles.length > 0 && outFiles.every(function (f) {
-      return /^(安装\/|转换报告\.txt$|参数对比\.html$|纹理图案_|优动漫导入说明\.txt$|.*_优动漫导入说明\.txt$|.*_参数\.txt$)/.test(f.name);
+      return /^(安装\/|转换报告\.txt$|参数对比\.html$|纹理图案_|优动漫导入说明\.txt$|优动漫SUT导入说明\.txt$|优动漫MTD导入说明\.txt$|.*_优动漫导入说明\.txt$|.*_参数\.txt$)/.test(f.name);
     });
     if (!outFiles.length) {
       // 没有任何真实输出：区分「真的失败」与「被合理跳过/未勾选」，并把已收集的
@@ -1220,6 +1222,16 @@
     if (opts.packOut === false) {
       payload = outFiles;
     } else {
+      // 默认（整包）模式：只有一个笔刷文件时直接输出该文件本身（.abr/.brushset/.bru…），
+      // 不再套一层 ZIP 壳，导入软件前不用先解压；随附的导入说明等小文件一起直接输出。
+      // 只有多个笔刷文件（如全部格式/单独文件模式/多输入合并）才打包 ZIP。
+      const isAuxOut = function (f) {
+        return /^(安装\/|转换报告\.txt$|参数对比\.html$|纹理图案_|优动漫导入说明\.txt$|.*_优动漫导入说明\.txt$|优动漫SUT导入说明\.txt$|优动漫MTD导入说明\.txt$|.*_参数\.txt$)/.test(f.name);
+      };
+      const brushOut = outFiles.filter(function (f) { return !isAuxOut(f); });
+      if (brushOut.length === 1 && !onlyAux) {
+        payload = outFiles.slice();
+      } else {
       const ts = new Date();
       const pad = n => String(n).padStart(2, '0');
       const stamp = ts.getFullYear() + pad(ts.getMonth() + 1) + pad(ts.getDate()) + '_' + pad(ts.getHours()) + pad(ts.getMinutes());
@@ -1242,6 +1254,7 @@
       } else {
         payload = [{ name: bundleName + '_' + stamp + '.zip', data: BC.zip.write(outFiles) }];
       }
+      }
     }
     if (sink) {
       // 分批模式：只把这一批的结果交出去，由外层统一保存
@@ -1251,7 +1264,7 @@
       render();
       return;
     }
-    setProgress(0.995, opts.packOut === false ? '正在保存文件…' : '正在打包 ZIP…');
+    setProgress(0.995, opts.packOut === false ? '正在保存文件…' : '正在准备输出文件…');
     let savedMsg = '';
     try {
       lastSavedFiles = payload;
@@ -1353,12 +1366,22 @@
     setProgress(null);
     render();
     try {
-      lastSavedFiles = all;
       const packOutMode = $('#optPack') ? $('#optPack').value !== 'files' : true;
-      const savedMsg = await saveOutputs(all, { packOut: packOutMode });
+      let outAll = all;
+      // 打包模式下多批结果合并：只有 1 个笔刷文件时直接输出该文件本身（与单批一致）；
+      // 多个文件重新打成一个 ZIP，保持「打包」语义。
+      if (packOutMode && all.length > 1) {
+        const ts = new Date();
+        const pad = n => String(n).padStart(2, '0');
+        const stamp = ts.getFullYear() + pad(ts.getMonth() + 1) + pad(ts.getDate()) + '_' + pad(ts.getHours()) + pad(ts.getMinutes());
+        const bundleName = outputBundleLabel($('#optTarget') ? $('#optTarget').value : '');
+        outAll = [{ name: bundleName + '_' + stamp + '.zip', data: BC.zip.write(all) }];
+      }
+      lastSavedFiles = outAll;
+      const savedMsg = await saveOutputs(outAll, { packOut: packOutMode });
       if (savedMsg === null) { toast('已取消保存'); return; }
       if (savedMsg && String(savedMsg).indexOf('ERROR') === 0) throw new Error(String(savedMsg).slice(6));
-      let msg = '完成：' + sink.length + (packOutMode ? ' 个包' : ' 批文件') + '（' + files + ' 个文件，共 ' + done + ' 支笔刷）';
+      let msg = '完成：' + sink.length + (packOutMode ? (outAll.length === 1 ? ' 个文件' : ' 个包') : ' 批文件') + '（' + files + ' 个文件，共 ' + done + ' 支笔刷）';
       if (failedCount) msg += '，' + failedCount + ' 支失败';
       toast(msg + (savedMsg ? '｜' + savedMsg : ''), 9000);
       setOutputLocation(savedMsg);
@@ -1578,6 +1601,8 @@
     });
   }
   function initNotice() {
+    // notice.js 已在页面加载早期处理过弹窗与页脚入口，避免重复
+    if (window.__brushNotice) return;
     let seen = '';
     try { seen = localStorage.getItem(NOTICE_KEY) || ''; } catch (e) { seen = ''; }
     if (!seen) showNoticeModal();

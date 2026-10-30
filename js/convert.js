@@ -209,8 +209,11 @@
         if (r.warnings && r.warnings.length) warnings.push(...r.warnings);
       }
       if (!brushes.length) throw new Error('这个 .mtd 里的 .sut 都无法解析');
-      warnings.unshift('已从优动漫素材包' + (name ? '「' + name + '」' : '') + '内的 ' + sutEntries.length + ' 个 .sut 解析出笔刷');
-      return { brushes: brushes, warnings: warnings };
+      // 多个 .sut 的读取限制警告通常逐个重复，去重后再展示
+      const dedup = [];
+      for (const w of warnings) if (dedup.indexOf(w) < 0) dedup.push(w);
+      dedup.unshift('已从优动漫素材包' + (name ? '「' + name + '」' : '') + '内的 ' + sutEntries.length + ' 个 .sut 解析出笔刷');
+      return { brushes: brushes, warnings: dedup };
     }
     if (catalogXml || hasMaterialLayer) {
       let matName = '';
@@ -1129,11 +1132,12 @@
       '优动漫 PAINT 1.10.5 及以上：在子工具面板菜单选择「载入子工具」，导入本包 .abr。',
       '不要在画布打开 ABR；导入后选择新笔刷，检查尺寸、间距、双笔和纹理，再对照原笔刷试画。',
       '这是 ABR 兼容格式，不是原生 SUT；不同引擎的动态、混色、双笔和纹理效果可能不同。',
-      'SUT 输入目前为部分读取；只有缩略图时不代表已恢复原始加密笔尖。未提供新建原生 SUT 导出。',
+      '需要原生 .sut（参数级写入、笔尖为模板占位）时请改用「优动漫 CSP 原生 .sut（实验）」目标。',
       '官方说明：https://www.udongman.cn/resource/details/doc/25050',
       'CSP：https://help.clip-studio.com/en-us/manual_en/150_tools/Importing_tools.htm'
     ].join('\n');
-    made.warnings = ['优动漫/CSP通过ABR兼容导入；原生SUT写出未实现，笔触需在目标软件核对'];
+    // 前置本目标特有的提醒，但保留 makeAbrPack 自己的警告（纹理烘焙/间距钳位等）
+    made.warnings = ['优动漫/CSP通过ABR兼容导入；动态/混色/双笔/纹理效果需在目标软件核对'].concat(made.warnings || []);
     return made;
   }
 
@@ -1168,20 +1172,42 @@
     const tpl = udongmanTemplate.getBytes();
     const files = [];
     const nameSeq = {};
-    for (const rawBrush of brushList) {
-      const brush = withExportSettings(rawBrush, opts);
-      if (!brush) continue;
-      const tip = makeTipPng(brush, { maxTipSize: 1024 });
-      const base0 = sanitizeName(brush.name || 'brush', 0) || 'brush';
-      nameSeq[base0] = (nameSeq[base0] || 0) + 1;
-      const name = nameSeq[base0] > 1 ? base0 + ' ' + nameSeq[base0] : base0;
-      const bytes = sutWrite.buildSut(tpl, [{
-        thumbnailPng: tip.bytes,
-        params: variantParamsForSut(brush),
-        nodeName: name
-      }]);
+    const skipped = [];
+    const srcList = Array.isArray(brushList) ? brushList : [];
+    const texturedCount = srcList.filter(function (b) { return b && b.hasTexture; }).length;
+    const dualCount = srcList.filter(function (b) { return b && b.dualOn; }).length;
+    for (const rawBrush of srcList) {
+      let name, bytes;
+      try {
+        const brush = withExportSettings(rawBrush, opts);
+        if (!brush) continue;
+        const tip = makeTipPng(brush, { maxTipSize: 1024 });
+        const base0 = sanitizeName(brush.name || 'brush', 0) || 'brush';
+        nameSeq[base0] = (nameSeq[base0] || 0) + 1;
+        name = nameSeq[base0] > 1 ? base0 + ' ' + nameSeq[base0] : base0;
+        bytes = sutWrite.buildSut(tpl, [{
+          thumbnailPng: tip.bytes,
+          params: variantParamsForSut(brush),
+          nodeName: name
+        }]);
+      } catch (e) {
+        // 单支失败不拖垮整包（#283）：跳过并记录，其余笔刷照常导出
+        skipped.push((rawBrush && rawBrush.name || '未命名') + '：' + e.message);
+        continue;
+      }
       files.push({ name: name + '.sut', data: bytes });
     }
+    if (!files.length) {
+      throw new Error(skipped.length
+        ? '没有可导出的笔刷（' + skipped.slice(0, 3).join('；') + (skipped.length > 3 ? ' 等 ' + skipped.length + ' 支' : '') + '）'
+        : '没有可导出的笔刷');
+    }
+    const warnings = [
+      '优动漫原生 .sut（实验）：参数真实写入；笔尖位图为模板占位（CSP 私有编码无法生成笔尖像素），压感动态暂不写入；需要真实笔尖请用「优动漫 CSP .abr（兼容）」目标'
+    ];
+    if (texturedCount) warnings.push('SUT 目标：' + texturedCount + ' 支带纹理笔刷的纹理未写入（CSP 纹理为私有编码，模板不含该资源），请在子工具详情里手动添加材质');
+    if (dualCount) warnings.push('SUT 目标：' + dualCount + ' 支双笔刷未写入双笔结构（模板不含双笔），只保留主笔参数');
+    if (skipped.length) warnings.unshift('已跳过 ' + skipped.length + ' 支无法写出 SUT 的笔刷：' + skipped.slice(0, 5).join('；') + (skipped.length > 5 ? ' 等' : ''));
     return {
       files: files,
       count: files.length,
@@ -1202,9 +1228,7 @@
         '· 压感动态暂未写入（Effector 曲线格式未公开）',
         '官方说明：https://www.udongman.cn/resource/details/doc/25050'
       ].join('\n'),
-      warnings: [
-        '优动漫原生 .sut（实验）：参数真实写入；笔尖位图为模板占位（CSP 私有编码无法生成笔尖像素），压感动态暂不写入；需要真实笔尖请用「优动漫 CSP .abr（兼容）」目标'
-      ]
+      warnings: warnings
     };
   }
 

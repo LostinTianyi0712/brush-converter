@@ -110,7 +110,34 @@
     const baseName = (node && decodeText(node.NodeName)) || (fileName || 'csp').replace(/\.[^.]+$/, '');
 
     const brushes = [];
-    variantTable.rows.forEach(function (v, idx) {
+    /* CSP 的 Variant 表通常是「当前 + 初始」两份仅 VariantID 不同的参数拷贝
+       （Node.NodeVariantID / NodeInitVariantID 各引用一行）。参数完全相同的行
+       只出 1 支，避免自产 SUT/MTD 回读时笔刷翻倍（#285）；参数不同的行视为
+       真·多变体，各出 1 支并保留 #n 命名。 */
+    function variantSignature(v) {
+      const parts = [];
+      for (const col of variantTable.columns) {
+        if (col === 'VariantID') continue;
+        const val = v[col];
+        if (val instanceof Uint8Array) {
+          let h = val.length;
+          const step = Math.max(1, Math.floor(val.length / 32));
+          for (let i = 0; i < val.length; i += step) h = (h * 31 + val[i]) >>> 0;
+          parts.push(col + ':' + h);
+        } else parts.push(col + ':' + String(val));
+      }
+      return parts.join('|');
+    }
+    const uniqueVariants = [];
+    const seenSig = {};
+    for (const v of variantTable.rows) {
+      const s = variantSignature(v);
+      if (seenSig[s]) continue;
+      seenSig[s] = true;
+      uniqueVariants.push(v);
+    }
+    const variantTotal = uniqueVariants.length;
+    uniqueVariants.forEach(function (v, idx) {
       const sizeRaw = typeof v.BrushSize === 'number' ? v.BrushSize : 80;
       const unit = v.BrushSizeUnit || 0;
       let sizePx = sizeRaw;
@@ -127,7 +154,7 @@
       const hasSizeDynamics = !!(v.BrushSizeEffector && v.BrushSizeEffector.length);
       const hasOpacityDynamics = !!(v.BrushOpacityEffector && v.BrushOpacityEffector.length);
       brushes.push({
-        name: variantTable.rows.length > 1 ? baseName + ' #' + (idx + 1) : baseName,
+        name: variantTotal > 1 ? baseName + ' #' + (idx + 1) : baseName,
         tip: tip,
         sizePx: sizePx,
         spacingPct: spacingPct,
@@ -178,8 +205,24 @@
 
     const variants = Array.isArray(json.variants) ? json.variants : [];
     if (!variants.length) throw new Error('解密目录里没有 Variant 参数');
+    // 与 parseSut 一致：「当前+初始」相同参数拷贝只出 1 支（#285）
+    const uniqueVariants = [];
+    const seenSig = {};
+    for (const variant of variants) {
+      const p = (variant && variant.params) || {};
+      const sigParts = [];
+      Object.keys(p).sort().forEach(function (k) {
+        if (k === 'VariantID') return;
+        sigParts.push(k + '=' + JSON.stringify(p[k]));
+      });
+      const s = sigParts.join('|');
+      if (seenSig[s]) continue;
+      seenSig[s] = true;
+      uniqueVariants.push(variant);
+    }
+    const variantTotal = uniqueVariants.length;
     const brushes = [];
-    variants.forEach(function (variant, idx) {
+    uniqueVariants.forEach(function (variant, idx) {
       const p = variant.params || {};
       const rawSize = typeof p.BrushSize === 'number' ? p.BrushSize : 80;
       let sizePx = rawSize;
@@ -216,7 +259,7 @@
       }
       if (referenced.length > 1) warnings.push('CSP 变体含多个图案材质，转换时使用其中第一个作为笔尖');
       brushes.push({
-        name: variants.length > 1 ? brushName + ' #' + (idx + 1) : brushName,
+        name: variantTotal > 1 ? brushName + ' #' + (idx + 1) : brushName,
         tip: tip,
         sizePx: sizePx,
         spacingPct: spacingPct,
