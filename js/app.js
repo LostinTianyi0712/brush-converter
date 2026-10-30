@@ -337,6 +337,7 @@
     const tags = [];
     if (b.pressure) tags.push('<span class="tag">压感</span>');
     if (b.tipSource === 'synth') tags.push('<span class="tag gray">合成圆头</span>');
+    if (b.shapeFromLibrary) tags.push('<span class="tag">图库补回</span>');
     if (b.hasGrain) tags.push('<span class="tag gray">纹理略</span>');
     if (b.dualOn) {
       const di = b.dualBrush || {};
@@ -540,9 +541,13 @@
 
   async function parseRecord(rec, displayName, bytes, opts) {
     try {
+      // 内置笔尖图库只存在于主线程内存里，Worker 拿不到；加载了图库就不走后台解析
+      if (state.shapeLib && opts && opts.shapeResources !== state.shapeLib) {
+        opts = Object.assign({}, opts, { shapeResources: state.shapeLib });
+      }
       const big = bytes && bytes.length > 8 * 1024 * 1024;
       // 超大文件不用 Worker：结构化克隆会再复制一份，容易 OOM；改用主线程分块解析（会卡但更省内存）
-      const useWorker = big && bytes.length <= 100 * 1024 * 1024 && window.Worker && /^https?:/.test(location.protocol);
+      const useWorker = !state.shapeLib && big && bytes.length <= 100 * 1024 * 1024 && window.Worker && /^https?:/.test(location.protocol);
       if (useWorker) {
         try {
           setProgress(0, '后台解析：' + displayName);
@@ -1506,7 +1511,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.62';
+  const APP_VERSION = '2.5.63';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {
@@ -1661,6 +1666,82 @@
 
   document.addEventListener('dragover', e => e.preventDefault());
   document.addEventListener('drop', e => e.preventDefault());
+
+  /* ---------------- 内置笔尖图库（Procreate 内置 shape 资源） ----------------
+     Procreate 内置笔刷的 Shape 图不随 .brushset 导出，包里只有资源名（bundledShapePath）。
+     用户可以从自己的 Procreate 安装/备份里整理出这些图，打包成 ZIP 或直接选文件夹，
+     导入时按文件名补回真图，避免退化成合成圆头。 */
+  function updateShapeLibText() {
+    const el = $('#shapeLibText');
+    if (!el) return;
+    if (state.shapeLib && state.shapeLib.size) {
+      el.textContent = '已加载 ' + state.shapeLib.size + ' 张（缺 shape 的笔刷会按内置资源名补回真图）';
+    } else {
+      el.textContent = '未加载：Procreate 内置 shape 图不在笔刷包里，缺图时只能用合成圆头';
+    }
+  }
+  async function decodeImageToRgba(name, bytes) {
+    // 先用自带解码器（快、不依赖 DOM）；解不了（例如 progressive JPEG）再交给浏览器 canvas
+    try {
+      if (/\.png$/i.test(name)) { const im = BC.png.decode(bytes); return { w: im.width, h: im.height, rgba: im.rgba }; }
+      if (/\.jpe?g$/i.test(name) && BC.jpeg && BC.jpeg.isJpeg(bytes)) {
+        const im = BC.jpeg.decode(bytes); return { w: im.width, h: im.height, rgba: im.rgba };
+      }
+    } catch (e) { /* 落到 canvas */ }
+    try {
+      if (typeof createImageBitmap === 'function') {
+        const bmp = await createImageBitmap(new Blob([bytes]));
+        const cv = document.createElement('canvas');
+        cv.width = bmp.width; cv.height = bmp.height;
+        const ctx = cv.getContext('2d');
+        ctx.drawImage(bmp, 0, 0);
+        const data = ctx.getImageData(0, 0, bmp.width, bmp.height);
+        if (bmp.close) bmp.close();
+        return { w: bmp.width, h: bmp.height, rgba: new Uint8Array(data.data) };
+      }
+    } catch (e) { /* ignore */ }
+    return null;
+  }
+  async function loadShapeLibrary(fileList) {
+    const list = Array.prototype.slice.call(fileList || []);
+    if (!list.length) return;
+    toast('正在读取图库…（几百张图需要几秒）', 6000);
+    const map = new Map();
+    let undecoded = 0;
+    async function addOne(name, bytes) {
+      const base = String(name || '').split(/[\\/]/).pop().toLowerCase();
+      if (!/\.(png|jpe?g)$/i.test(base)) return;
+      const dec = await decodeImageToRgba(base, bytes);
+      if (dec) map.set(base, dec);
+      else { map.set(base, bytes); undecoded++; }
+    }
+    for (const f of list) {
+      try {
+        if (/\.zip$/i.test(f.name)) {
+          const entries = BC.zip.read(new Uint8Array(await f.arrayBuffer()));
+          for (const e of entries) await addOne(e.name, e.data());
+        } else {
+          await addOne(f.name, new Uint8Array(await f.arrayBuffer()));
+        }
+      } catch (e) { pushLog('图库读取失败 ' + f.name + '：' + e.message); }
+    }
+    if (!map.size) { toast('图库里没有 PNG/JPG：请选择包含内置笔尖图的 ZIP 或文件夹', 8000); return; }
+    state.shapeLib = map;
+    updateShapeLibText();
+    toast('图库已加载 ' + map.size + ' 张' + (undecoded ? '（' + undecoded + ' 张留给浏览器再解码）' : '') +
+      '；请重新导入笔刷，缺 shape 的笔刷才会用真图', 10000);
+  }
+  (function initShapeLib() {
+    const input = $('#shapeLibInput');
+    const btn = $('#btnShapeLib');
+    if (btn && input) btn.addEventListener('click', () => input.click());
+    if (input) input.addEventListener('change', async function (e) {
+      if (isBusy()) { input.value = ''; toast('正在转换，稍后再加载图库', 5000); return; }
+      await loadShapeLibrary(e.target.files);
+      input.value = '';
+    });
+    updateShapeLibText();
+  })();
 
   $('#ver').textContent = 'v' + APP_VERSION + ' · 修复 Procreate / Photoshop / 画世界Pro 参数与双笔刷互转 · 纯本地';
   render();

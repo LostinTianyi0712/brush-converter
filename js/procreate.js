@@ -45,7 +45,7 @@
     } catch (e) { return null; }
   }
 
-  function readBrushFolder(entries, prefix) {
+  function readBrushFolder(entries, prefix, shapeResources) {
     // prefix like 'UUID/' ('' for single-file .brush)
     const find = suffix => entries.find(e => e.name === prefix + suffix);
     const arcEntry = find('Brush.archive');
@@ -66,6 +66,7 @@
     let shapeEntry = find('Shape.png');
     const bundledShapePath = typeof params.bundledShapePath === 'string' && params.bundledShapePath !== '$null' ? params.bundledShapePath : '';
     let resolvedShapePath = '';
+    let shapeFromLibrary = false;
     if (!shapeEntry && bundledShapePath && !/(^|[\\/])(?:\.\.|QuickLook|Signature)([\\/]|$)|(^|[\\/])Grain\.png$/i.test(bundledShapePath)) {
       // Resolve only an explicit source reference, never a thumbnail or Grain.
       const resource = find(bundledShapePath) || entries.find(e=>e.name===bundledShapePath);
@@ -77,6 +78,39 @@
           shapeEntry={name:prefix+'Shape.png',data:()=>raw};
           resolvedShapePath=bundledShapePath;
         } catch(e) { /* retain the unresolved reference; no substitute image */ }
+      }
+      // 用户自带的内置笔尖图库（Procreate App 内置资源，导出笔刷包时不会被打包）
+      if (!shapeEntry && shapeResources) {
+        const base = String(bundledShapePath).split(/[\\/]/).pop().toLowerCase();
+        const stem = base.replace(/\.[a-z0-9]+$/i, '');
+        // 同名但扩展名不同也要能匹配（图库里常把 .jpg 转成 .png），逐个尝试直到能解码
+        const keys = [base, stem + '.png', stem + '.jpg', stem + '.jpeg', stem];
+        if (shapeResources.keys) {
+          for (const k of shapeResources.keys()) {
+            if (String(k).toLowerCase().replace(/\.[a-z0-9]+$/i, '') === stem) keys.push(k);
+          }
+        }
+        const seen = new Set();
+        for (const k of keys) {
+          if (seen.has(k)) continue;
+          seen.add(k);
+          const lib = shapeResources.get ? shapeResources.get(k) : shapeResources[k];
+          if (!lib) continue;
+          try {
+            if (lib.rgba && lib.w && lib.h) {
+              // 已经解好的像素（浏览器/桌面用 canvas 解 progressive JPEG 后传进来）
+              shapeEntry = { name: prefix + 'Shape.png', data: () => png.encode(lib.w, lib.h, lib.rgba) };
+            } else {
+              const bytes = lib.data ? lib.data() : lib;
+              const im = jpeg && jpeg.isJpeg(bytes) ? jpeg.decode(bytes) : png.decode(bytes);
+              const raw = jpeg && jpeg.isJpeg(bytes) ? png.encode(im.width, im.height, im.rgba) : bytes;
+              shapeEntry = { name: prefix + 'Shape.png', data: () => raw };
+            }
+            resolvedShapePath = bundledShapePath;
+            shapeFromLibrary = true;
+            break;
+          } catch (e2) { /* 这张解不开就换下一个候选 */ }
+        }
       }
     }
     const grainEntry = find('Grain.png');
@@ -91,7 +125,7 @@
         grainRgba = { w: im.width, h: im.height, rgba: im.rgba };
       } catch (e) { grainRgba = null; }
     }
-    const tipSource = tipFromShape ? 'shape' : (tipFromGrain ? 'grain' : 'none');
+    const tipSource = tipFromShape ? (shapeFromLibrary ? 'library' : 'shape') : (tipFromGrain ? 'grain' : 'none');
     const maxSize = toRatio(params.maxSize, 1);
     const minSize = toRatio(params.minSize, 0.05);
     const pressSize = toRatio(params.dynamicsPressureSize, 0);
@@ -153,7 +187,7 @@
     if (subArcEntry) {
       try {
         const subParams = plist.unarchive(subArcEntry.data()) || {};
-        subBrush = readBrushFolder(entries, subArcEntry.name.slice(0, -'Brush.archive'.length));
+        subBrush = readBrushFolder(entries, subArcEntry.name.slice(0, -'Brush.archive'.length), shapeResources);
         dualOn = true;
         dualSubName = typeof subParams.name === 'string' ? subParams.name : '';
         dualBlendNum = Number(params.dualBlendMode) || 0;
@@ -172,6 +206,7 @@
       tip,
       tipSource,
       bundledShapePath,
+      shapeFromLibrary,
       resolvedShapePath,
       _rawArchive: arcEntry.data(),
       _rawShape: shapeEntry ? shapeEntry.data() : null,
@@ -265,7 +300,8 @@
     return brush;
   }
 
-  function parse(bytes, fileName) {
+  function parse(bytes, fileName, opts) {
+    opts = opts || {};
     if (!zip.isZip(bytes)) throw new Error('不是 Procreate 笔刷文件（ZIP 容器）');
     const entries = zip.read(bytes);
     const brushes = [];
@@ -274,7 +310,7 @@
 
     // single .brush: Brush.archive at root
     if (entries.some(e => e.name === 'Brush.archive')) {
-      const b = readBrushFolder(entries, '');
+      const b = readBrushFolder(entries, '', opts.shapeResources);
       if (b) {
         if (!b.name) b.name = baseName;
         if (!b.tip) warnings.push(b.bundledShapePath ? '缺少内置笔尖原图 '+b.bundledShapePath+'；Procreate原生导出保留引用，跨软件圆头仅为近似' : '该笔刷没有可解码Shape图；跨软件只能生成近似圆头，原笔尖未确认');
@@ -298,7 +334,7 @@
         // still readable, just ignore sub variants
       }
       try {
-        const b = readBrushFolder(entries, prefix);
+        const b = readBrushFolder(entries, prefix, opts.shapeResources);
         if (!b) continue;
         if (!b.name) b.name = /^[0-9A-Fa-f-]{20,}$/.test(folder) ? (baseName + ' ' + autoIndex) : folder;
         if (!b.tip) warnings.push(b.name + ': ' + (b.bundledShapePath ? '缺少内置笔尖原图 '+b.bundledShapePath+'；Procreate原生导出保留引用，跨软件圆头仅为近似' : '没有可解码Shape图；跨软件圆头仅为近似'));

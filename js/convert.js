@@ -313,7 +313,7 @@
     } else if (kind === 'kbundle') {
       result = parseKritaBundle(name, bytes);
     } else if (kind === 'procreate') {
-      result = procreate.parse(bytes, name);
+      result = procreate.parse(bytes, name, opts);
     } else if (kind === 'kpp') {
       result = krita.parseKpp(bytes, name);
     } else if (kind === 'gbr') {
