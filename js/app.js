@@ -1612,7 +1612,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.79';
+  const APP_VERSION = '2.5.80';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2178,7 +2178,7 @@
     const order = rows.slice().sort(function (a, b) {
       return Number(a.getAttribute('data-nav-row') || 0) - Number(b.getAttribute('data-nav-row') || 0);
     });
-    const START = 8, DIST = 180;    // 几乎立刻响应，180px 内收完
+    const START = 44, DIST = 300;   // 降低灵敏度：先划 44px 再开始收，300px 内收完（1:1 跟随）
     let bases = [];
     const resetRow = function (el) {
       el.style.height = '';
