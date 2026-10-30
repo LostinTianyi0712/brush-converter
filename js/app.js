@@ -789,17 +789,23 @@
     return { tipSize, sizeScale, spacingOverride, pressureMode, prefix, groupBySource, mode, target, packOut, goScatter, grainBake, fidelity, textureMode, scatterScale, autoBatch, dualBake, dualCompanion, dualPair, bruEmbed, compareReport };
   }
 
+  /* 提示条（toast）：停留时间统一收短——默认 2.2s、最长 3.2s，点一下也能立刻关。
+     以前有 5~12s 的长提示（下载图库、发现新版本等），手机上会一直挡着内容。 */
+  const TOAST_DEFAULT_MS = 2200;
+  const TOAST_MAX_MS = 3200;
   function toast(msg, ms) {
     let el = document.getElementById('toast');
     if (!el) {
       el = document.createElement('div');
       el.id = 'toast';
       document.body.appendChild(el);
+      el.addEventListener('click', function () { el.classList.remove('show'); });
     }
+    const wait = Math.min(ms || TOAST_DEFAULT_MS, TOAST_MAX_MS);
     el.textContent = msg;
     el.classList.add('show');
     clearTimeout(el._t);
-    el._t = setTimeout(() => el.classList.remove('show'), ms || 3000);
+    el._t = setTimeout(() => el.classList.remove('show'), wait);
   }
 
   // 输出 ZIP 的文件名前缀：按目标格式命名，不能一律叫"画世界笔刷"
@@ -1612,7 +1618,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.80';
+  const APP_VERSION = '2.5.81';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
