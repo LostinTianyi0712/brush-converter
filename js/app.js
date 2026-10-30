@@ -1612,7 +1612,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.78';
+  const APP_VERSION = '2.5.79';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2155,13 +2155,13 @@
     }
   })();
 
-  /* 手机竖屏：顶栏随上划逐渐收起（#307）
+  /* 手机竖屏：顶栏随上划逐渐收起（#307 / #308）
      —— 标题行和「转换并下载」始终钉住不动；
-     —— 下面两行次要按钮**整行**收起：先「分享保存 / 清空」（data-nav-row=2），
-        再「全选笔刷 / 参数对比」（data-nav-row=1）；
-     —— 每行先淡出上飘、再收高度，因此不会出现「按钮被切成半截」；
-     —— 进度与滚动位置连续映射，上划多少收多少、下划逐级展开；桌面宽度不参与。
-     注：安卓/夸克内核滚动时 window.scrollY 不可靠（#305），位置取值与触摸位移都做了兜底。 */
+     —— 上面那层（「全选笔刷 / 参数对比」，data-nav-row=1）**先**消失，
+        然后才是「分享保存 / 清空」（data-nav-row=2）；
+     —— 跟手：进度 = 滚动位置的纯函数，起点只有 8px、180px 收完；触摸位移直接驱动（不等 scroll 事件）；
+     —— 不重叠：每行只在自己的高度里收缩，不互相压盖；
+     —— 收高与淡出同时进行（收高稍晚 15%），极端情况下允许行内裁剪，避免「卡一下再跳」。 */
   (function initMobileTopbarCollapse() {
     const bar = document.querySelector('.topbar');
     if (!bar) return;
@@ -2174,11 +2174,11 @@
       return (window.scrollY || window.pageYOffset || 0) || (se && se.scrollTop) || (document.body && document.body.scrollTop) || 0;
     };
     const clamp01 = function (v) { return v < 0 ? 0 : v > 1 ? 1 : v; };
-    // 收起顺序：行号大的先收（2 = 分享/清空 → 1 = 全选/参数对比）
+    // 收起顺序：行号小的先收（1 = 全选/参数对比 → 2 = 分享/清空）
     const order = rows.slice().sort(function (a, b) {
-      return Number(b.getAttribute('data-nav-row') || 0) - Number(a.getAttribute('data-nav-row') || 0);
+      return Number(a.getAttribute('data-nav-row') || 0) - Number(b.getAttribute('data-nav-row') || 0);
     });
-    const START = 60, DIST = 240;   // 滚过 60px 开始收，再滚 240px 收完
+    const START = 8, DIST = 180;    // 几乎立刻响应，180px 内收完
     let bases = [];
     const resetRow = function (el) {
       el.style.height = '';
@@ -2200,14 +2200,15 @@
       order.forEach(function (el, i) {
         const from = i / n, span = 1 / n;
         const seg = clamp01((p - from) / span);
-        const fade = clamp01(seg / 0.5);         // 前半段：淡出 + 上飘
-        const coll = clamp01((seg - 0.5) / 0.5); // 后半段：收高度（此时已透明，不会露出半截）
+        /* 高度与滚动 1:1 收缩（滚多少收多少，最跟手），不位移所以不会压到下一行；
+           透明度在每段前 40% 就归零，之后收的那截是透明的，基本看不到被裁的半截按钮。 */
+        const fade = clamp01(seg / 0.4);
         const h = bases[i] || 0;
         el.style.opacity = String(1 - fade);
-        el.style.transform = 'translateY(' + (-16 * fade).toFixed(1) + 'px)';
-        el.style.height = (h * (1 - coll)).toFixed(1) + 'px';
-        el.style.marginTop = (8 * (1 - coll)).toFixed(1) + 'px';
-        el.style.pointerEvents = fade > 0.55 ? 'none' : '';
+        el.style.transform = 'none';
+        el.style.height = (h * (1 - seg)).toFixed(1) + 'px';
+        el.style.marginTop = (8 * (1 - seg)).toFixed(1) + 'px';
+        el.style.pointerEvents = fade > 0.5 ? 'none' : '';
       });
     };
     measure();
@@ -2216,31 +2217,33 @@
     if (mq && mq.addEventListener) mq.addEventListener('change', measure);
     else window.addEventListener('resize', measure);
     let ticking = false;
-    let lastScrollAt = 0;
+    let virtY = 0;
     const onScroll = function () {
-      lastScrollAt = Date.now();
       if (ticking) return;
       ticking = true;
       (window.requestAnimationFrame || function (f) { return setTimeout(f, 16); })(function () {
         ticking = false;
-        apply(scrollTop());
+        const y = scrollTop();
+        // 安卓/夸克：滚动时 scrollY 可能一直是 0；这种情况下不要用它把触摸累积量冲掉
+        if (y > 0 || virtY === 0) virtY = y;
+        apply(virtY);
       });
     };
     window.addEventListener('scroll', onScroll, { passive: true, capture: true });
-    /* 兜底：滚动事件 120ms 没动静时，用手指位移累积虚拟滚动量驱动同一套进度 */
-    let touchY = 0, virtY = 0;
+    /* 触摸位移直接驱动进度（不等 scroll 事件），保证「跟手」 */
+    let touchY = 0;
     window.addEventListener('touchstart', function (e) {
       if (!isMobile() || !e.touches || !e.touches.length) return;
       touchY = e.touches[0].clientY;
-      virtY = scrollTop();
+      virtY = Math.max(virtY, scrollTop());
     }, { passive: true });
     window.addEventListener('touchmove', function (e) {
       if (!isMobile() || !e.touches || !e.touches.length) return;
-      if (Date.now() - lastScrollAt < 120) return;  // 真滚动在工作，交给 scroll 事件
       const dy = touchY - e.touches[0].clientY;     // >0 = 手指上移 = 向下翻内容
       touchY = e.touches[0].clientY;
       if (!dy) return;
-      virtY += dy;
+      const st = scrollTop();
+      virtY = Math.max(0, (st > 0 ? st : virtY) + dy);
       apply(virtY);
     }, { passive: true });
     apply(scrollTop());
