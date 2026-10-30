@@ -1,0 +1,21 @@
+{
+  "total": 227349723,
+  "totalSha256": "59805819AEAD3CEC1CC4F5494DE01BA52A06AAB22AA1400B0E971EF538516531",
+  "parts": [
+    {
+      "name": "Procreate内置笔尖图库_原图.zip.part1",
+      "bytes": 75783241,
+      "sha256": "8BBB20DAC87C053AB9AB187D408C99FC427CB968FBEAF5E84FC3710A3D6DC06A"
+    },
+    {
+      "name": "Procreate内置笔尖图库_原图.zip.part2",
+      "bytes": 75783241,
+      "sha256": "4BD54A45FDA140FA57057193B510D5730E35ADF99B0BCB87F72BCF5A1CFE09DF"
+    },
+    {
+      "name": "Procreate内置笔尖图库_原图.zip.part3",
+      "bytes": 75783241,
+      "sha256": "74B552B2C1308FAF12B9B56E5566D456746781E84B6AC57D1C473C9C682DC68C"
+    }
+  ]
+}

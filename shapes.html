@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>笔刷转换器 · 内置笔尖图库下载</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin: 0; font: 15px/1.7 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; color: #1f2328; background: #f6f7f9; }
+  main { max-width: 760px; margin: 32px auto; padding: 0 18px 48px; }
+  h1 { font-size: 22px; margin: 0 0 6px; }
+  p.sub { color: #57606a; margin: 0 0 22px; }
+  .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 18px 20px; margin-bottom: 16px; }
+  .card h2 { font-size: 16px; margin: 0 0 10px; }
+  ul { margin: 6px 0 0; padding-left: 20px; }
+  li { margin: 4px 0; }
+  code, pre { background: #f3f4f6; border-radius: 6px; padding: 2px 6px; font-size: 13px; }
+  pre { padding: 12px; overflow: auto; }
+  a { color: #0969da; }
+  .muted { color: #57606a; font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Procreate 内置笔尖图库</h1>
+  <p class="sub">Procreate 内置笔刷的 Shape 图不会随 .brushset 导出，缺这些图时只能退化成合成圆头。这里提供从 Procreate App 里提取的 <b>292 张内置 Shape</b>，放进笔刷转换器就能补回真笔尖。</p>
+
+  <div class="card">
+    <h2>原图包（原生分辨率，216.8 MB，分 3 卷）</h2>
+    <ul>
+      <li><a href="Procreate%E5%86%85%E7%BD%AE%E7%AC%94%E5%B0%96%E5%9B%BE%E5%BA%93_%E5%8E%9F%E5%9B%BE.zip.part1" download>Procreate内置笔尖图库_原图.zip.part1</a> — 72.3 MB</li>
+      <li><a href="Procreate%E5%86%85%E7%BD%AE%E7%AC%94%E5%B0%96%E5%9B%BE%E5%BA%93_%E5%8E%9F%E5%9B%BE.zip.part2" download>Procreate内置笔尖图库_原图.zip.part2</a> — 72.3 MB</li>
+      <li><a href="Procreate%E5%86%85%E7%BD%AE%E7%AC%94%E5%B0%96%E5%9B%BE%E5%BA%93_%E5%8E%9F%E5%9B%BE.zip.part3" download>Procreate内置笔尖图库_原图.zip.part3</a> — 72.3 MB</li>
+    </ul>
+    <p class="muted">GitHub 单文件上限 100MB，所以切成 3 卷。<b>三个文件都下完</b>，放到同一个文件夹，双击 <code>合并图库包.bat</code>（或运行下面的命令）合并成一个 zip。</p>
+    <pre>copy /b Procreate内置笔尖图库_原图.zip.part1+Procreate内置笔尖图库_原图.zip.part2+Procreate内置笔尖图库_原图.zip.part3 Procreate内置笔尖图库_原图.zip</pre>
+    <p class="muted">合并后大小应为 227349723 字节（216.8 MB），SHA-256：<code>59805819AEAD3CEC1CC4F5494DE01BA52A06AAB22AA1400B0E971EF538516531</code></p>
+  </div>
+
+  <div class="card">
+    <h2>精简包（512px 灰度，31.6 MB）</h2>
+    <ul><li><a href="Procreate%E5%86%85%E7%BD%AE%E7%AC%94%E5%B0%96%E5%9B%BE%E5%BA%93_%E7%B2%BE%E7%AE%80512.zip" download>Procreate内置笔尖图库_精简512.zip</a> — 31.6 MB</li></ul>
+    <p class="muted">手机、低内存设备推荐这个：笔尖最长边 512（转换器默认就是 512px）。</p>
+  </div>
+
+  <div class="card">
+    <h2>怎么用</h2>
+    <ul>
+      <li><b>Windows 桌面版</b>：把图库 zip 和 exe 放在同一目录（或放进 <code>图库\</code> 子目录），启动自动加载。</li>
+      <li><b>网页版 / 安卓</b>：在选项区点「选择图库 ZIP / 图片」，选这个 zip。</li>
+      <li>加载成功后选项区会显示「图库包已加载：292 张 …」，之前打的「合成圆头」标签会变成「图库补回」。</li>
+    </ul>
+  </div>
+
+  <p class="muted">这些内置 Shape 图来自 Procreate App 安装包，仅用于离线补全你自己购买的笔刷的参数；请勿再分发。生成时间：2026-10-30T04:40:08.691Z</p>
+</main>
+</body>
+</html>
