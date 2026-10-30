@@ -1612,7 +1612,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.74';
+  const APP_VERSION = '2.5.75';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2155,9 +2155,9 @@
     }
   })();
 
-  /* 手机竖屏：向下划动时把顶栏的次要按钮（全选笔刷 / 参数对比 / 清空 / 分享保存）收起，
-     只留「转换并下载」，把屏幕还给列表；向上划或回到顶部自动恢复。
-     桌面宽度不参与，避免大屏误收起。 */
+  /* 手机竖屏：顶栏随上划「逐渐收起」——收起进度与滚动位置连续映射（不是触发式开关），
+     上划多少收多少、下划逐级展开；只留「转换并下载」，把屏幕还给列表。
+     进度写入 CSS 变量 --navp，尺寸插值全在 style.css。桌面宽度不参与。 */
   (function initMobileTopbarCollapse() {
     const bar = document.querySelector('.topbar');
     if (!bar) return;
@@ -2167,71 +2167,52 @@
       const se = document.scrollingElement || document.documentElement;
       return (window.scrollY || window.pageYOffset || 0) || (se && se.scrollTop) || (document.body && document.body.scrollTop) || 0;
     };
-    let lastY = scrollTop();
+    const START = 90, DIST = 220;   // 滚过 90px 开始收起，再滚 220px 完全收起
+    let lastP = -1;
+    const setProgress = function (p) {
+      if (p === lastP) return;
+      lastP = p;
+      bar.style.setProperty('--navp', p.toFixed(3));
+      bar.classList.toggle('nav-past', p >= 0.5);   // 收起过半后次要按钮不可点
+    };
+    const applyY = function (y) {
+      if (!isMobile()) { setProgress(0); return; }
+      const p = Math.max(0, Math.min(1, (y - START) / DIST));
+      setProgress(Math.round(p * 200) / 200);       // 量化到 0.5%，减少无谓的样式写入
+    };
     let ticking = false;
-    let suppressUntil = 0;
-    /* 两阶段过渡：收起=次要按钮先淡出下滑(150ms)再切紧凑布局；展开=布局先回来按钮再淡入。
-       快速往返滚动时用 pendingTimer 兜底，避免淡出/布局切换错序卡在中间态。 */
-    const FADE_MS = 150;
-    let pendingTimer = 0;
-    const applyCompact = function (on) {
-      bar.classList.remove('nav-fading');
-      bar.classList.toggle('nav-compact', on);
-      // 收起/展开会改变文档高度，浏览器可能立刻钳位滚动位置并再触发 scroll；
-      // 这段时间内的滚动事件只同步 lastY，不参与方向判断，避免来回抖动。
-      suppressUntil = Date.now() + 260 + (on ? 0 : FADE_MS);
-    };
-    const setCompact = function (on) {
-      if (on === bar.classList.contains('nav-compact')) { clearTimeout(pendingTimer); pendingTimer = 0; bar.classList.remove('nav-fading'); return; }
-      if (!isMobile()) { clearTimeout(pendingTimer); pendingTimer = 0; bar.classList.remove('nav-fading'); bar.classList.remove('nav-compact'); return; }
-      clearTimeout(pendingTimer);
-      if (on) {
-        bar.classList.add('nav-fading');            // 第1步：次要按钮淡出下滑
-        pendingTimer = setTimeout(function () { pendingTimer = 0; applyCompact(true); }, FADE_MS);  // 第2步：切紧凑布局
-      } else {
-        bar.classList.remove('nav-fading');
-        bar.classList.remove('nav-compact');        // 第1步：布局先恢复（按钮回普通位置）
-        void bar.offsetWidth;                       // 强制 reflow，确保淡入过渡生效
-        bar.classList.add('nav-fading');            // 第2步：从透明淡入
-        suppressUntil = Date.now() + 260 + FADE_MS;
-        pendingTimer = setTimeout(function () { pendingTimer = 0; bar.classList.remove('nav-fading'); }, FADE_MS);
-      }
-    };
+    let lastScrollAt = 0;
     const onScroll = function () {
+      lastScrollAt = Date.now();
       if (ticking) return;
       ticking = true;
       (window.requestAnimationFrame || function (f) { return setTimeout(f, 16); })(function () {
         ticking = false;
-        const y = scrollTop();
-        if (!isMobile()) { setCompact(false); lastY = y; return; }
-        if (Date.now() < suppressUntil) { lastY = y; return; }
-        const dy = y - lastY;
-        if (y <= 90) setCompact(false);        // 回到顶部一定恢复
-        else if (dy > 10) setCompact(true);    // 向下划：收起
-        else if (dy < -10) setCompact(false);  // 向上划：恢复
-        lastY = y;
+        applyY(scrollTop());
       });
     };
     window.addEventListener('scroll', onScroll, { passive: true, capture: true });
     /* 夸克/UC 内核的滚动不一定会更新 window.scrollY（实测夸克里 scroll 事件几乎拿不到位置），
-       所以再加一条「触摸位移」兜底：手指上移 >28px 收起，下移 >28px 恢复。 */
-    let touchStartY = 0, touchActive = false, touchHandled = false;
+       兜底：滚动事件 120ms 没动静时，用手指位移累积虚拟滚动量，同样连续映射到收起进度。 */
+    let touchY = 0, virtY = 0;
     window.addEventListener('touchstart', function (e) {
       if (!isMobile() || !e.touches || !e.touches.length) return;
-      touchStartY = e.touches[0].clientY;
-      touchActive = true; touchHandled = false;
+      touchY = e.touches[0].clientY;
+      virtY = scrollTop();
     }, { passive: true });
     window.addEventListener('touchmove', function (e) {
-      if (!touchActive || touchHandled || !isMobile() || !e.touches || !e.touches.length) return;
-      const dy = touchStartY - e.touches[0].clientY; // >0 = 手指上移 = 向下翻内容
-      if (dy > 28) { setCompact(true); touchHandled = true; }
-      else if (dy < -28) { setCompact(false); touchHandled = true; }
+      if (!isMobile() || !e.touches || !e.touches.length) return;
+      if (Date.now() - lastScrollAt < 120) return;  // 真滚动在工作，交给 scroll 事件
+      const dy = touchY - e.touches[0].clientY;     // >0 = 手指上移 = 向下翻内容
+      touchY = e.touches[0].clientY;
+      if (!dy) return;
+      virtY += dy;
+      applyY(virtY);
     }, { passive: true });
-    window.addEventListener('touchend', function () { touchActive = false; }, { passive: true });
-    window.addEventListener('touchcancel', function () { touchActive = false; }, { passive: true });
+    applyY(scrollTop());
     // 转屏 / 拉宽窗口回来时复原，避免停在收起状态
-    if (mq && mq.addEventListener) mq.addEventListener('change', function () { setCompact(false); });
-    else window.addEventListener('resize', function () { setCompact(false); });
+    if (mq && mq.addEventListener) mq.addEventListener('change', function () { setProgress(0); });
+    else window.addEventListener('resize', function () { setProgress(0); });
   })();
 
   $('#ver').textContent = 'v' + APP_VERSION + ' · 修复 Procreate / Photoshop / 画世界Pro 参数与双笔刷互转 · 纯本地';
