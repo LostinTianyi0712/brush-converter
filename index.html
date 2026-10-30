@@ -42,7 +42,8 @@
         <div class="dz-icon">＋</div>
         <p class="dz-title">拖入笔刷文件，或点击选择</p>
         <p class="dz-sub">整包笔刷默认打成 <b>1 个文件</b>，整套保留<br>参数化 ABR 没有采样笔尖时自动补画笔尖；Procreate 缺 Shape 图同理</p>
-        <input id="fileInput" type="file" multiple accept=".abr,.brush,.brushset,.bru,.zip,.myb,.gbr,.gih,.kpp,.bundle,.brushcategory,.brushlibrary,.sut,.mtd,.gobrush,.gobrushes" hidden>
+        <!-- Do not restrict accept: iOS document pickers can gray out custom brush types. The parser validates selected files. -->
+        <input id="fileInput" type="file" multiple hidden>
       </div>
     </section>
 
@@ -233,6 +234,7 @@
             </div>
             <div id="shapeLibText" class="hint">未加载：缺图时只能用合成圆头</div>
             <button id="btnShapeLibDownload" type="button" class="btn ghost" hidden>下载图库包并自动导入（精简512 · 32MB）</button>
+            <button id="btnShapeLibDownloadFull" type="button" class="btn ghost" hidden title="原图高清 216MB，GitHub 限速分 3 卷，浏览器自动下载合并；建议电脑端使用">下载原图图库包（高清216MB · 3卷自动合并）</button>
             <input id="shapeLibInput" type="file" accept=".zip,image/png,image/jpeg" multiple hidden>
             <input id="shapeLibDirInput" type="file" webkitdirectory directory multiple hidden>
           </div>
