@@ -637,7 +637,12 @@
       if (texture) {
         rgba = new Uint8Array(rgba);
         bakeTextureIntoRGBA(rgba, w, h, {
-          _patternPixels: { w: texture.w, h: texture.h, mode: 1, data: texture.gray }
+          _patternPixels: { w: texture.w, h: texture.h, mode: 1, data: texture.gray },
+          /* 以前这里只传像素， textureScale / grainDepthMinimum / textureRotation 全部丢失，
+             导致「纹理缩放」在 BRU 路径上根本不生效（对着色世界就是这个路径）。 */
+          textureScale: brush.textureScale,
+          grainDepthMinimum: brush.grainDepthMinimum,
+          textureRotation: brush.textureRotation
         }, brush.textureDepth === undefined ? 0.35 : brush.textureDepth);
         textureBaked = true;
       }
@@ -1874,17 +1879,30 @@ Write-Host 'restart MediBang Paint Pro'
        未指定时保持旧行为（0.15 底部 + 不缩放），避免改变已有笔刷的观感。 */
     const scale = Math.max(0.02, Math.min(20, brush && brush.textureScale ? brush.textureScale : 1));
     const useScale = Math.abs(scale - 1) > 0.001;
+    /* Procreate 的「纹理旋转」以前也没参与烘焙（静态笔尖里纹理方向永远是正的）。
+       值 ≤1 当“圈数”，>1 当角度；旋转采样坐标即可。 */
+    const rotRaw = brush && brush.textureRotation ? Number(brush.textureRotation) : 0;
+    const rotRad = rotRaw ? (Math.abs(rotRaw) <= 1 ? rotRaw * Math.PI * 2 : rotRaw * Math.PI / 180) : 0;
+    const useRot = Math.abs(rotRad) > 1e-4;
     const minDepth = brush && brush.grainDepthMinimum !== undefined && brush.grainDepthMinimum > 0
       ? Math.max(0, Math.min(1, brush.grainDepthMinimum)) : 0.15;
     const invScale = useScale ? 1 / scale : 1;
+    const cosR = useRot ? Math.cos(rotRad) : 1, sinR = useRot ? Math.sin(rotRad) : 0;
+    const cx = (w - 1) / 2, cy = (h - 1) / 2;
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const i = y * w + x;
         const a = rgba[i * 4 + 3];
         if (!a) continue;
-        let tx = Math.floor(x * tex.w / Math.max(1, w) * invScale);
-        let ty = Math.floor(y * tex.h / Math.max(1, h) * invScale);
-        if (useScale) {
+        let sx = x, sy = y;
+        if (useRot) {
+          const dx = x - cx, dy = y - cy;
+          sx = dx * cosR - dy * sinR + cx;
+          sy = dx * sinR + dy * cosR + cy;
+        }
+        let tx = Math.floor(sx * tex.w / Math.max(1, w) * invScale);
+        let ty = Math.floor(sy * tex.h / Math.max(1, h) * invScale);
+        if (useScale || useRot) {
           tx = ((tx % tex.w) + tex.w) % tex.w;
           ty = ((ty % tex.h) + tex.h) % tex.h;
         } else {
