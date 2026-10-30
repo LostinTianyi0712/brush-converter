@@ -428,12 +428,13 @@
         const grid = document.createElement('div');
         grid.className = 'grid';
         const LIMIT = 60;
-        appendBrushItems(grid, rec, fi, 0, LIMIT);
+        // #273：展开状态记在记录上，任何 render（改目标格式、勾选等）都不会把它折叠回 60 支
+        let shown = Math.max(LIMIT, Math.min(rec.brushes.length, rec._shown || LIMIT));
+        appendBrushItems(grid, rec, fi, 0, shown);
         card.appendChild(grid);
-        if (rec.brushes.length > LIMIT) {
+        if (rec.brushes.length > shown) {
           const more = document.createElement('button');
           more.className = 'btn ghost show-more';
-          let shown = LIMIT;
           const upd = function () {
             more.textContent = '显示更多（已显示 ' + shown + ' / ' + rec.brushes.length + ' 支）';
             if (shown >= rec.brushes.length) more.style.display = 'none';
@@ -443,6 +444,7 @@
             const next = Math.min(rec.brushes.length, shown + 80);
             appendBrushItems(grid, rec, fi, shown, next - shown);
             shown = next;
+            rec._shown = next;
             upd();
           };
           card.appendChild(more);
@@ -548,7 +550,11 @@
           setProgress(null);
           adoptParsed(rec, bytes, parsed, displayName);
           return;
-        } catch (e) { /* 回退到主线程 */ }
+        } catch (e) {
+          // #266：以前这里静默回退，用户盯着「后台解析」几分钟后界面又冻结却不知道发生了什么。
+          pushLog('WORKER 回退：' + (e && e.message ? e.message : e));
+          toast('后台解析未能完成，已改为主线程重新解析（大文件会短暂卡顿）：' + friendlyError(e && e.message ? e.message : e), 9000);
+        }
         setProgress(null);
       }
       if (big && BC.convert.parseFileAsync) {
@@ -575,7 +581,8 @@
       res = BC.convert.expandArchive(name, bytes, depth);
     } catch (e) {
       const rec = makeRecord(name, bytes);
-      rec.error = e.message;
+      // #267：全站错误都走 friendlyError，唯独 ZIP 把裸英文丢给用户
+      rec.error = friendlyError(e && e.message ? e.message : e) || '压缩包解析失败';
       rec.kindLabel = '压缩包';
       render();
       return 0;
@@ -1486,7 +1493,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.60';
+  const APP_VERSION = '2.5.61';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {

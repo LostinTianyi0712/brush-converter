@@ -763,7 +763,7 @@
       _descItem('Angl', 'UntF', _descUntF('#Ang', o.angle || 0)),
       _descItem('Rndn', 'UntF', _descUntF('#Prc', o.roundness === undefined ? 100 : o.roundness)),
       _descItem('Nm  ', 'TEXT', _descText(o.name || '第二支笔刷')),
-      _descItem('Spcn', 'UntF', _descUntF('#Prc', o.spacing === undefined ? 25 : o.spacing)),
+      _descItem('Spcn', 'UntF', _descUntF('#Prc', o.spacing === undefined ? 25 : Math.max(1, Math.min(1000, o.spacing)))),
       _descItem('Intr', 'bool', _descBool(true)),
       _descItem('flipX', 'bool', _descBool(!!o.flipX)),
       _descItem('flipY', 'bool', _descBool(!!o.flipY)),
@@ -1209,7 +1209,9 @@
         _descItem('Angl', 'UntF', _descUntF('#Ang', it.angle || 0)),
         _descItem('Rndn', 'UntF', _descUntF('#Prc', it.roundness === undefined ? 100 : it.roundness)),
         _descItem('Nm  ', 'TEXT', _descText(it.name || '')),
-        _descItem('Spcn', 'UntF', _descUntF('#Prc', it.spacingPct === undefined ? 25 : it.spacingPct)),
+        // PS 对 Spcn=0 的处理等于「间距关闭」：描边只在路径锚点盖章、实画断续。
+        // PS UI 有效区间 1–1000%，这里钳位（第90轮无 shape 笔刷实测发现）。
+        _descItem('Spcn', 'UntF', _descUntF('#Prc', it.spacingPct === undefined ? 25 : Math.max(1, Math.min(1000, it.spacingPct)))),
         _descItem('Intr', 'bool', _descBool(true)),
         _descItem('flipX', 'bool', _descBool(!!it.brushFlipX)),
         _descItem('flipY', 'bool', _descBool(!!it.brushFlipY)),

@@ -968,6 +968,10 @@
       const textureMode = opts.textureMode === 'pattern';
       const usePsTexture = !!brush.hasTexture && (textureMode || willUseRaw);
       const patternRef = (usePsTexture && ((opts.patternRefs && opts.patternRefs.get(textureKey(brush))) || opts.patternRef)) || null;
+      /* 引用了已烘入反转的 PAT 时 InvT 必须是 false；而 raw 源的原值本来就是 true，
+         不把它列进 rawPatchPaths 的话 desc.patchDescriptor 根本不会改这个字段（#260）。 */
+      const effectiveTextureInverted = patternRef && patternRef.inversionBaked ? false : !!brush.textureInverted;
+      if (keepRaw && brush._rawPreset && effectiveTextureInverted !== !!brush.textureInverted) paths.add('InvT');
       // 只有拿到真实纹理像素才烘焙：纹理开关 + 缺原图时伪造程序化噪声会直接改变笔刷图案
       // （与第66轮 BRU「空纹理保持关闭、不用噪声兜底」的策略一致）。
       // 烘焙前复制 rgba：bakeTextureIntoRGBA 就地修改，否则会污染 brush.tip.rgba，
@@ -1058,7 +1062,10 @@
         textureDepth: brush.textureDepth,
         textureScale: brush.textureScale,
         textureEnabled: !!brush.hasTexture,
-        textureInverted: !willUseRaw && patternRef && patternRef.inversionBaked ? false : !!brush.textureInverted,
+        // PatternRef 里的 .pat 已经烘入了“是否需要反转”（inversionBaked），所以只要引用了它，
+        // InvT 就必须是 false；否则 PS 会把已反转的图案再反转一次，纹理回到未反转原貌。
+        // 以前多了 !willUseRaw 前置，只修了非 raw 重建路径，漏了 raw 源「改了参数→走重建」的兄弟路径（#260）。
+        textureInverted: effectiveTextureInverted,
         // 源就是 ABR 时，保留原始描述符/样本字节（部分导出也能保住 PS 原版特性）
         rawPreset: keepRaw ? brush._rawPreset : undefined,
         rawPatchPaths: Array.from(paths), mainTipChanged:tipChanged,
