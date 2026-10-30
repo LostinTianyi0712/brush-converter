@@ -266,6 +266,12 @@
       <button id="btnShareResult" class="btn ghost" hidden>分享保存</button>
       <div id="resultList" class="result-list"></div>
     </section>
+    <!-- #264 转换提示以前只活在几秒的 toast 里，过后就找不回了：这里常驻一份，可看全部 -->
+    <section id="warnPanel" class="outpath" style="display:none">
+      <div class="result-head" id="warnHead">转换提示</div>
+      <div id="warnList" class="result-list"></div>
+      <button id="btnWarnClose" class="btn ghost" type="button">知道了</button>
+    </section>
     <div id="precheck" class="outpath" style="display:none"></div>
   </section>
 

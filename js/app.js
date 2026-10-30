@@ -11,8 +11,11 @@
   const btnClear = $('#btnClear');
   const progressEl = $('#progress');
 
-  const state = { files: [], converting: false, activeJob: false, saving: false, cancelRequested: false };
+  const state = { files: [], converting: false, activeJob: false, saving: false, cancelRequested: false,
+    // #262 导入中也能「清空」：用 token 让正在跑的导入循环立即停手，不再把卡片塞回来
+    importToken: 0, importing: 0, lastWarnings: [] };
   function isBusy() { return state.converting || state.activeJob || state.saving; }
+  function isImporting() { return state.importing > 0; }
 
   const directoryControls = $('#saveDirectoryControls');
   const directoryButton = $('#btnSaveDirectory');
@@ -260,10 +263,11 @@
     const packMode = $('#optPack') ? $('#optPack').value !== 'files' : true;
     const outText = packMode ? '转换并下载' : '转换并保存文件';
     const busy = isBusy();
-    btnConvert.disabled = !total || busy;
+    // #262 导入没完成前不能开转，否则解析中的卡片跟输出对不上
+    btnConvert.disabled = !total || busy || isImporting();
     fileInput.disabled = busy;
     btnClear.disabled = busy;
-    ['#btnLog', '#btnShare', '#btnShareResult', '#btnSelectAll', '#btnSaveDirectory'].forEach(function (id) { const el=$(id); if(el)el.disabled=busy; });
+    ['#btnLog', '#btnShare', '#btnShareResult', '#btnSelectAll', '#btnSaveDirectory', '#btnCompare'].forEach(function (id) { const el=$(id); if(el)el.disabled=busy; });
     document.querySelectorAll('#options input, #options select').forEach(function (el) { el.disabled=busy; });
     filesEl.classList.toggle('locked', busy);
     // 转换/保存期间卡片内的勾选框也要禁用：pointer-events 只挡鼠标，Tab+空格仍能改状态，
@@ -401,8 +405,11 @@
         ${rec.brushes && rec.brushes.length ? '<button class="btn tiny ghost selall" title="全选本文件笔刷">全选</button><button class="btn tiny ghost selnone" title="取消本文件笔刷">清空</button>' : ''}
         <button class="btn tiny ghost remove" title="移除">✕</button>`;
       head.querySelector('.remove').onclick = () => {
+        // #262 导入中删卡：同时停掉正在跑的导入，否则下一张卡会把它顶回来
+        if (isImporting()) { state.importToken++; toast('已停止本次导入'); }
         state.files.splice(fi, 1);
         render();
+        updateConvertButton();
       };
       if (head.querySelector('.selall')) head.querySelector('.selall').onclick = () => {
         rec.brushes.forEach(b => { b.enabled = true; });
@@ -684,7 +691,16 @@
 
   async function addFiles(fileList) {
     const arr = Array.from(fileList || []);
+    if (!arr.length) return;
+    // #262 导入中再拖/再选：不静默失败，也不允许两批交错塞卡片
+    if (isImporting() || isBusy()) { toast(isBusy() ? '正在转换，完成后再添加文件' : '正在导入上一个文件，稍等'); return; }
+    const token = ++state.importToken;
+    state.importing++;
+    updateConvertButton();
+    try {
     for (const f of arr) {
+      // #262 用户点了「清空」/单卡✕：token 变了就停手，不再往新列表里 push
+      if (token !== state.importToken) break;
       let rec = null;
       try {
         const bytes = await readFileBytes(f).catch(function (e) { return null; });
@@ -760,6 +776,11 @@
         setProgress(null);
         toast('导入失败：' + (e && e.message ? e.message : e), 6000);
       }
+    }
+    } finally {
+      state.importing = Math.max(0, state.importing - 1);
+      setProgress(null);
+      updateConvertButton();
     }
   }
 
@@ -1295,12 +1316,17 @@
     if (sink) {
       // 分批模式：只把这一批的结果交出去，由外层统一保存
       sink.push({ payload: payload, warnings: warnings.slice(), doneCount: doneCount, failed: failed.slice(), fileCount: outFiles.length });
+      state.lastWarnings = warnings.slice();
+      renderWarnings();
       state.converting = !!force;   // 分批时保持转换中，防止重复点击
       setProgress(null);
       render();
       return;
     }
     setProgress(0.995, opts.packOut === false ? '正在保存文件…' : '正在准备输出文件…');
+    // #264 提示不再只活在 toast 里：转完就落盘到面板，保存失败也能看到
+    state.lastWarnings = warnings.slice();
+    renderWarnings();
     let savedMsg = '';
     try {
       lastSavedFiles = payload;
@@ -1480,6 +1506,45 @@
     if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
     return (n / 1048576).toFixed(1) + ' MB';
   }
+  /* #264 转换提示常驻面板：警告/失败原因不再一闪而过 */
+  function renderWarnings() {
+    const panel = $('#warnPanel');
+    const list = $('#warnList');
+    const head = $('#warnHead');
+    if (!panel || !list) return;
+    const items = (state.lastWarnings || []).filter(function (w) { return w && String(w).trim(); });
+    if (!items.length) {
+      panel.style.display = 'none';
+      list.innerHTML = '';
+      return;
+    }
+    panel.style.display = '';
+    head.textContent = '转换提示（' + items.length + ' 条，可能影响目标软件里的显示效果）';
+    list.innerHTML = '';
+    items.slice(0, 30).forEach(function (w) {
+      const row = document.createElement('div');
+      row.className = 'result-item result-warn';
+      const name = document.createElement('span');
+      name.className = 'result-name';
+      name.textContent = String(w);
+      row.appendChild(name);
+      list.appendChild(row);
+    });
+    if (items.length > 30) {
+      const more = document.createElement('div');
+      more.className = 'result-item';
+      const span = document.createElement('span');
+      span.className = 'result-name';
+      span.textContent = '另有 ' + (items.length - 30) + ' 条提示（完整列表见输出里的「转换报告.txt」）';
+      more.appendChild(span);
+      list.appendChild(more);
+    }
+  }
+  (function initWarnPanel() {
+    const btn = $('#btnWarnClose');
+    if (btn) btn.addEventListener('click', function () { const p = $('#warnPanel'); if (p) p.style.display = 'none'; });
+  })();
+
   function renderResultPanel() {
     const panel = $('#resultPanel');
     const list = $('#resultList');
@@ -1613,7 +1678,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.6.0';
+  const APP_VERSION = '2.6.1';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -1675,15 +1740,48 @@
     fileInput.value = '';
   });
   ['dragenter', 'dragover'].forEach(ev => {
-    dz.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); dz.classList.add('over'); });
+    dz.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); if (!isBusy()) dz.classList.add('over'); });
   });
   ['dragleave', 'drop'].forEach(ev => {
     dz.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); dz.classList.remove('over'); });
   });
-  dz.addEventListener('drop', e => {
-    if (isBusy()) return;
-    const dt = e.dataTransfer;
-    if (dt && dt.files && dt.files.length) addFiles(dt.files);
+  /* #263 拖入文件夹以前完全没反应：用 webkitGetAsEntry 递归展开目录里的文件 */
+  async function collectDroppedFiles(dt) {
+    if (!dt) return [];
+    const plain = Array.from(dt.files || []);
+    const items = dt.items ? Array.from(dt.items) : [];
+    const roots = [];
+    for (const it of items) {
+      if (it.kind !== 'file' || typeof it.webkitGetAsEntry !== 'function') continue;
+      const entry = it.webkitGetAsEntry && it.webkitGetAsEntry();
+      if (entry) roots.push(entry);
+    }
+    if (!roots.length) return plain;
+    const out = [];
+    async function walk(entry) {
+      if (!entry) return;
+      if (entry.isFile) {
+        const f = await new Promise(function (res) { try { entry.file(res, function () { res(null); }); } catch (e) { res(null); } });
+        if (f) out.push(f);
+        return;
+      }
+      if (entry.isDirectory) {
+        const reader = entry.createReader();
+        for (;;) {
+          const batch = await new Promise(function (res) { try { reader.readEntries(res, function () { res([]); }); } catch (e) { res([]); } });
+          if (!batch || !batch.length) break;
+          for (const e of batch) await walk(e);
+        }
+      }
+    }
+    for (const r of roots) await walk(r);
+    return out.length ? out : plain;
+  }
+  dz.addEventListener('drop', async e => {
+    if (isBusy()) { toast('正在转换，完成后再添加文件'); return; }
+    const files = await collectDroppedFiles(e.dataTransfer);
+    if (!files.length) { toast('没读到文件：文件夹里的笔刷请打包成 ZIP 再拖入'); return; }
+    addFiles(files);
   });
   // 本地日志（不联网）：记录错误/警告，便于反馈
   window.__brushLogs = window.__brushLogs || [];
@@ -1725,10 +1823,29 @@
         const html = BC.convert.buildCompareHtml(brushes.slice(0, 20), target, { options: getOpts() });
         frame.srcdoc = html;
         modal.style.display = 'flex';
+        try { (close || modal).focus(); } catch (e) { /* ignore */ }
       } catch (e) { toast('生成对比失败：' + e.message); }
     });
-    if (close) close.addEventListener('click', function () { modal.style.display = 'none'; });
-    modal.addEventListener('click', function (ev) { if (ev.target === modal) modal.style.display = 'none'; });
+    if (close) close.addEventListener('click', closeCompare);
+    modal.addEventListener('click', function (ev) { if (ev.target === modal) closeCompare(); });
+    // #265 以前只能点按钮/背板关，ESC 无效，也没有焦点圈禁
+    function closeCompare() {
+      modal.style.display = 'none';
+      try { btn.focus(); } catch (e) { /* ignore */ }
+    }
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key !== 'Escape' || modal.style.display !== 'flex') return;
+      ev.preventDefault();
+      closeCompare();
+    });
+    modal.addEventListener('keydown', function (ev) {
+      if (ev.key !== 'Tab') return;
+      const focusables = modal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+      if (!focusables.length) return;
+      const first = focusables[0], last = focusables[focusables.length - 1];
+      if (ev.shiftKey && document.activeElement === first) { ev.preventDefault(); last.focus(); }
+      else if (!ev.shiftKey && document.activeElement === last) { ev.preventDefault(); first.focus(); }
+    });
   })();
   var btnCancel = $('#btnCancel');
   if (btnCancel) btnCancel.addEventListener('click', function () { state.cancelRequested = true; btnCancel.disabled = true; });
@@ -1768,12 +1885,21 @@
   const btnDemo = $('#btnDemo');
   if (btnDemo) btnDemo.addEventListener('click', function (e) { e.stopPropagation(); window.BCDemo.loadSample(); });
   btnClear.addEventListener('click', () => {
+    // #262 导入中清空：token+1 让正在跑的循环立即停手，清空后不会再冒卡片
+    state.importToken++;
     state.files = [];
     render();
+    updateConvertButton();
   });
 
+  /* #263 拖到虚线框外也不该静默：提示放到框里 */
   document.addEventListener('dragover', e => e.preventDefault());
-  document.addEventListener('drop', e => e.preventDefault());
+  document.addEventListener('drop', e => {
+    e.preventDefault();
+    if (dz.contains(e.target)) return;
+    if (isBusy()) { toast('正在转换，完成后再添加文件'); return; }
+    toast('把笔刷文件拖到上面的虚线框里');
+  });
 
   /* ---------------- 内置笔尖图库（Procreate 内置 shape 资源） ----------------
      Procreate 内置笔刷的 Shape 图不随 .brushset 导出，包里只有资源名（bundledShapePath）。

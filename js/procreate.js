@@ -23,25 +23,27 @@
     return v;
   }
 
-  function luminanceToTip(im) {
+  function luminanceToTip(im, inverted) {
     // Procreate shape: white = opaque, black = transparent (luminance as coverage)
+    // shapeInverted（笔刷工作室 → 形状 → 反转）翻转明暗，透明底仍保持透明
     const w = im.width, h = im.height;
     const rgba = new Uint8Array(w * h * 4);
     const src = im.rgba;
     for (let i = 0; i < w * h; i++) {
       const o = i * 4;
-      const l = Math.max(src[o], src[o + 1], src[o + 2]);
+      let l = Math.max(src[o], src[o + 1], src[o + 2]);
+      if (inverted) l = 255 - l;
       const a = src[o + 3] === 255 ? l : Math.round((l * src[o + 3]) / 255);
       rgba[o] = 255; rgba[o + 1] = 255; rgba[o + 2] = 255; rgba[o + 3] = a;
     }
     return { w, h, rgba };
   }
 
-  function decodeShape(entry) {
+  function decodeShape(entry, inverted) {
     if (!entry) return null;
     try {
       const im = png.decode(entry.data());
-      return luminanceToTip(im);
+      return luminanceToTip(im, !!inverted);
     } catch (e) { return null; }
   }
 
@@ -114,7 +116,8 @@
       }
     }
     const grainEntry = find('Grain.png');
-    const tipFromShape = decodeShape(shapeEntry);
+    const shapeInverted = params.shapeInverted === true;
+    const tipFromShape = decodeShape(shapeEntry, shapeInverted);
     // Grain is an independent texture, never a substitute for a bundled Shape.
     const tipFromGrain = null;
     const tip = tipFromShape || tipFromGrain;
@@ -192,7 +195,7 @@
         dualSubName = typeof subParams.name === 'string' ? subParams.name : '';
         dualBlendNum = Number(params.dualBlendMode) || 0;
         if (subBrush) dualTip = subBrush.tip;
-        if (!dualTip && subShapeEntry) dualTip = decodeShape(subShapeEntry);
+        if (!dualTip && subShapeEntry) dualTip = decodeShape(subShapeEntry, subParams.shapeInverted === true);
         if (!dualTip) dualTip = roundTip(96);
         brushSubRaw = { archive: subArcEntry.data(), shape: subShapeEntry ? subShapeEntry.data() : null };
       } catch (e) { /* ignore */ }
@@ -275,6 +278,8 @@
       grainBlendMode: params.grainBlendMode,
       textureRotation: nv('textureRotation'),
       textureInverted: !!params.textureInverted,
+      // 源笔刷的「反转」已烘焙进 tip 像素（见 luminanceToTip），跨格式输出直接用它
+      shapeInverted: shapeInverted || undefined,
       dynamicsLoad: nv('dynamicsLoad'),
       dynamicsGlazedFlow: nv('dynamicsGlazedFlow'),
       dynamicsMix: nv('dynamicsMix'),
@@ -510,6 +515,8 @@
       textureBrightness: Math.max(0, Math.min(1, (brush.textureBrightness === undefined ? 51 : brush.textureBrightness) / 100)),
       textureContrast: Math.max(0, Math.min(1, (brush.textureContrast === undefined ? 100 : brush.textureContrast) / 100)),
       textureRotation: brush.textureRotation || 0,
+      // 新建 archive 的 Shape.png 写的是已烘焙像素（含源「反转」），不能再让 Procreate 反相一次
+      shapeInverted: false,
       shapeOrientation: 1,
       previewSize: 0.08,
       dynamicsPressureSize: (brush.pressureSize === undefined ? brush.pressure : brush.pressureSize) ? 1 : 0,
@@ -571,7 +578,7 @@
     dynamicsLoad:'dynamicsLoad',dynamicsGlazedFlow:'dynamicsGlazedFlow',dynamicsMix:'dynamicsMix',
     dynamicsMixSoftening:'dynamicsMixSoftening',blendMode:'blendMode',
     roundnessDynamics:'dynamicsPressureShapeRoundness'};
-  function patchArchive(brush,opts) {
+  function patchArchive(brush, opts, extraChanges) {
     const before=brush._rawNormalized||{},params=archiveParams(brush,opts),changes={};
     const mapping={sizePx:['paintSize'],spacingPct:['plotSpacing'],name:['name'],opacity:['maxOpacity','paintOpacity'],
       minSizeRatio:['minSize'],minOpacityRatio:['minOpacity'],angle:['shapeAngle'],roundness:['shapeRoundness'],
@@ -593,6 +600,7 @@
     Object.keys(nativeFields).forEach(key=>{mapping[key]=[nativeFields[key]];});
     Object.keys(mapping).forEach(function(key){if(brush[key]!==before[key])mapping[key].forEach(k=>{changes[k]=params[k];});});
     if(changes.paintSize!==undefined){const old=plist.unarchive(brush._rawArchive);if(old.maxSize<changes.paintSize)changes.maxSize=changes.paintSize;}
+    if(extraChanges)Object.assign(changes,extraChanges);
     return bplist.patchKeyedArchive(brush._rawArchive,changes);
   }
 
@@ -651,8 +659,9 @@
     // 还原优先：源就是 Procreate 且没有改过参数时，原样复用 archive/Shape/Grain
     if (opts.fidelity !== false && brush._rawArchive && !opts.forceRebuild) {
       const entries = (brush._rawEntries||[]).filter(e=>!['Brush.archive','Shape.png','Grain.png','QuickLook/Thumbnail.png'].includes(e.name)&&!e.name.startsWith('Sub01/'));
-      entries.push({name:'Brush.archive',data:patchArchive(brush,opts)});
       const sameTip=brush._rawTipState===util.brushFingerprint({tip:brush.tip});
+      // 重生成 Shape.png 时像素已是最终覆盖度（反转已烘焙），archive 里的「反转」必须关掉，否则二次反相
+      entries.push({name:'Brush.archive',data:patchArchive(brush,opts,brush.shapeInverted&&!(sameTip&&brush._rawShape)?{shapeInverted:false}:null)});
       if(sameTip && brush._rawShape)entries.push({name:'Shape.png',data:new Uint8Array(brush._rawShape)});
       else if(!sameTip && brush.tip)entries.push({name:'Shape.png',data:shapePng(tipRGBA(brush,opts),opts.maxTipSize||512).png});
       const sameGrain=brush._rawGrainState===util.brushFingerprint({tip:brush._grainRgba});

@@ -321,7 +321,8 @@ main {
   opacity: 0;
   pointer-events: none;
   transition: 0.25s;
-  z-index: 40;
+  /* 弹窗（modal-backdrop z-index 9999）之上：以前 toast 会被参数对比弹窗盖住（#265） */
+  z-index: 10000;
   max-width: 80vw;
   line-height: 1.6;
 }
