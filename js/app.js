@@ -1612,7 +1612,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.73';
+  const APP_VERSION = '2.5.74';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2170,12 +2170,32 @@
     let lastY = scrollTop();
     let ticking = false;
     let suppressUntil = 0;
-    const setCompact = function (on) {
-      if (on === bar.classList.contains('nav-compact')) return;
+    /* 两阶段过渡：收起=次要按钮先淡出下滑(150ms)再切紧凑布局；展开=布局先回来按钮再淡入。
+       快速往返滚动时用 pendingTimer 兜底，避免淡出/布局切换错序卡在中间态。 */
+    const FADE_MS = 150;
+    let pendingTimer = 0;
+    const applyCompact = function (on) {
+      bar.classList.remove('nav-fading');
       bar.classList.toggle('nav-compact', on);
       // 收起/展开会改变文档高度，浏览器可能立刻钳位滚动位置并再触发 scroll；
       // 这段时间内的滚动事件只同步 lastY，不参与方向判断，避免来回抖动。
-      suppressUntil = Date.now() + 260;
+      suppressUntil = Date.now() + 260 + (on ? 0 : FADE_MS);
+    };
+    const setCompact = function (on) {
+      if (on === bar.classList.contains('nav-compact')) { clearTimeout(pendingTimer); pendingTimer = 0; bar.classList.remove('nav-fading'); return; }
+      if (!isMobile()) { clearTimeout(pendingTimer); pendingTimer = 0; bar.classList.remove('nav-fading'); bar.classList.remove('nav-compact'); return; }
+      clearTimeout(pendingTimer);
+      if (on) {
+        bar.classList.add('nav-fading');            // 第1步：次要按钮淡出下滑
+        pendingTimer = setTimeout(function () { pendingTimer = 0; applyCompact(true); }, FADE_MS);  // 第2步：切紧凑布局
+      } else {
+        bar.classList.remove('nav-fading');
+        bar.classList.remove('nav-compact');        // 第1步：布局先恢复（按钮回普通位置）
+        void bar.offsetWidth;                       // 强制 reflow，确保淡入过渡生效
+        bar.classList.add('nav-fading');            // 第2步：从透明淡入
+        suppressUntil = Date.now() + 260 + FADE_MS;
+        pendingTimer = setTimeout(function () { pendingTimer = 0; bar.classList.remove('nav-fading'); }, FADE_MS);
+      }
     };
     const onScroll = function () {
       if (ticking) return;
