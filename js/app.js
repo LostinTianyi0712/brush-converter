@@ -423,18 +423,30 @@
         wr.className = 'warn';
         wr.innerHTML = '<b>提示：</b>' + rec.warnings.slice(0, 6).map(esc).join('；') +
           (rec.warnings.length > 6 ? ' …' : '');
-        // #282：把「加载图库」直接放到提示里——用户看到「缺少内置笔尖原图」时就在这一行，
-        // 不用再去选项区找（选项区在页面上方，很容易被滚过去）。
+        // #282：把「加载图库」直接放到提示里——用户看到「缺少内置笔尖原图」时就在这一行。
+        // v2.5.66：优先用随 App 自带的图库（一次点击就好），拿不到才让用户选文件夹。
         const missingShape = !state.shapeLib && rec.brushes && rec.brushes.some(function (b) { return b && !b.tip && b.bundledShapePath; });
         if (missingShape) {
           const libBtn = document.createElement('button');
           libBtn.type = 'button';
           libBtn.className = 'btn ghost';
           libBtn.style.marginTop = '8px';
-          libBtn.textContent = '加载内置笔尖图库（补回真图）';
-          libBtn.onclick = function (ev) {
+          libBtn.textContent = '用内置图库补回真笔尖';
+          libBtn.onclick = async function (ev) {
             ev.preventDefault();
             ev.stopPropagation();
+            libBtn.disabled = true;
+            libBtn.textContent = '正在加载内置图库…';
+            const r = await loadBundledShapeLib({
+              onStart: function () { toast('正在加载内置笔尖图库（约 32MB，仅首次）…', 12000); }
+            });
+            libBtn.disabled = false;
+            if (r && r.ok) {
+              libBtn.textContent = '内置图库已加载（' + r.count + ' 张）';
+              return;
+            }
+            libBtn.textContent = '加载内置笔尖图库（补回真图）';
+            toast('内置图库不可用，请手动选择文件夹：' + ((r && r.error) || ''), 9000);
             const dirInput = $('#shapeLibDirInput');
             if (dirInput) dirInput.click();
             else { const zi = $('#shapeLibInput'); if (zi) zi.click(); }
@@ -1535,7 +1547,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.65';
+  const APP_VERSION = '2.5.66';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {
@@ -1699,12 +1711,64 @@
     const el = $('#shapeLibText');
     if (!el) return;
     if (state.shapeLib && state.shapeLib.size) {
-      el.textContent = '已加载 ' + state.shapeLib.size + ' 张（缺 shape 的笔刷会按内置资源名补回真图；现有笔刷已自动重新解析）';
+      el.textContent = (state.shapeLibBuiltIn ? '内置图库已就绪：' : '已加载 ') + state.shapeLib.size +
+        ' 张' + (state.shapeLibBuiltIn ? '（随 App 自带，不用选择）' : '') + '；缺 shape 的笔刷已按内置资源名补回真图';
     } else {
       el.textContent = '未加载：Procreate 内置 shape 图不在笔刷包里，缺图时只能用合成圆头';
     }
   }
-  /* 图库解码诊断（进「运行日志」，用户反馈「选了图库还是圆头」时能看出卡在哪一步） */
+  /* ===== 内置笔尖图库（随 App 分发，不用用户选择）=====
+     资源来自 assets/shape-lib.zip：292 张 Procreate IPA 内置 Shape，已按 luminanceToTip 的口径
+     预先烘成 8bit 灰度覆盖率、最长边 512、PNG 编码。core 只需 png.decode 就能同步拿到真图，
+     桌面/安卓/网页都走同一条打包路径（桌面经 preload IPC 读 asar 里的 zip）。 */
+  let bundledLoading = null;
+  function shapeLibFromZipBytes(bytes) {
+    const map = new Map();
+    const entries = BC.zip.read(new Uint8Array(bytes));
+    for (const e of entries) {
+      const base = String(e.name || '').split(/[\\/]/).pop().toLowerCase();
+      if (!/\.png$/i.test(base)) continue; // index.json 等跳过
+      map.set(base, e.data());
+    }
+    return map;
+  }
+  async function bundledShapeLibBytes() {
+    const desk = window.BrushDesktop;
+    if (desk && typeof desk.readShapeLib === 'function') {
+      const r = await desk.readShapeLib();
+      if (!r || !r.ok) throw new Error((r && r.error) || '内置图库读取失败');
+      return new Uint8Array(r.bytes);
+    }
+    if (typeof fetch === 'function') {
+      const res = await fetch('shape-lib.zip', { cache: 'force-cache' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return new Uint8Array(await res.arrayBuffer());
+    }
+    throw new Error('当前环境读不到内置图库');
+  }
+  async function loadBundledShapeLib(opts) {
+    if (bundledLoading) return bundledLoading;
+    bundledLoading = (async function () {
+      try {
+        if (opts && opts.onStart) opts.onStart();
+        const bytes = await bundledShapeLibBytes();
+        const map = shapeLibFromZipBytes(bytes);
+        if (!map.size) throw new Error('内置图库为空');
+        state.shapeLib = map;
+        state.shapeLibBuiltIn = true;
+        updateShapeLibText();
+        const fixed = await reparseWithShapeLib();
+        pushLog('内置图库已加载 ' + map.size + ' 张 / ' + Math.round(bytes.length / 1048576) + 'MB');
+        if (fixed) toast('内置图库生效：已给现有笔刷补回 ' + fixed + ' 支真图笔尖', 8000);
+        return { ok: true, count: map.size, fixed: fixed };
+      } catch (e) {
+        pushLog('内置图库加载失败：' + (e && e.message ? e.message : e));
+        return { ok: false, error: e && e.message ? e.message : String(e) };
+      } finally { bundledLoading = null; }
+    })();
+    return bundledLoading;
+  }
+  window.__loadBundledShapeLib = loadBundledShapeLib;
   const shapeDecodeLog = [];
   window.__shapeDecodeLog = shapeDecodeLog;
   async function decodeImageToRgba(name, bytes) {
@@ -1791,6 +1855,7 @@
     if (!map.size) { toast('图库里没有 PNG/JPG：请选择包含内置笔尖图的 ZIP 或文件夹', 8000); return; }
     if (undecoded) pushLog('图库有 ' + undecoded + ' 张没能预解码（解析时会再试一次）：' + undecodedNames.slice(0, 12).join(', '));
     state.shapeLib = map;
+    state.shapeLibBuiltIn = false; // 用户自己选的图库优先于内置（通常是原始高分辨率图）
     updateShapeLibText();
     const fixed = await reparseWithShapeLib();
     toast('图库已加载 ' + map.size + ' 张' + (undecoded ? '（' + undecoded + ' 张留给浏览器再解码）' : '') +
@@ -1848,6 +1913,12 @@
     if (input) input.addEventListener('change', takeFiles);
     if (dirInput) dirInput.addEventListener('change', takeFiles);
     updateShapeLibText();
+    // 桌面 / 安卓：内置图库就在本地，启动就加载，用户什么都不用点（网页版要先下 32MB，改成用到才下）
+    if (!state.shapeLib && (window.BrushDesktop || window.BrushNative)) {
+      loadBundledShapeLib().then(function (r) {
+        if (r && r.ok) pushLog('启动时已加载内置图库 ' + r.count + ' 张');
+      });
+    }
   })();
 
   $('#ver').textContent = 'v' + APP_VERSION + ' · 修复 Procreate / Photoshop / 画世界Pro 参数与双笔刷互转 · 纯本地';
