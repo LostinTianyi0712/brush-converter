@@ -64,9 +64,22 @@
     setTimeout(function () { try { document.body.removeChild(a); } catch (e) { /* ignore */ } }, 8000);
   }
 
+  /* iOS / iPadOS 上的 WebKit（Safari、以及所有 iOS 浏览器内核）不认 data: URI 下载：
+     a[download] + data: 会被当成「打开」而不是下载；blob: + a[download] 从 iOS 13 起可用。
+     所以苹果设备上必须走 blob，不能走 data。iPadOS 13+ 的 UA 是 Macintosh，需要靠触点判断。 */
+  function isWebKitIOS() {
+    try {
+      var ua = navigator.userAgent || '';
+      if (/iP(hone|ad|od)/i.test(ua)) return true;
+      if (/Macintosh/i.test(ua) && navigator.maxTouchPoints > 1) return true;
+    } catch (e) { /* ignore */ }
+    return false;
+  }
+
   function downloadFile(name, bytes, mime) {
     var mimeType = mime || mimeFor(name);
-    if (bytes.length <= 8 * 1024 * 1024) {
+    var ios = isWebKitIOS();
+    if (!ios && bytes.length <= 8 * 1024 * 1024) {
       try {
         clickAnchor('data:' + mimeType + ';base64,' + base64FromBytes(bytes), name);
         return 'data';
@@ -138,6 +151,8 @@
     },
     /* UI 用：这个浏览器是否「不认网页生成的文件」；返回浏览器名或 '' */
     downloadHostileName: function () { return downloadHostileName(); },
+    /* UI 用：是否 iOS/iPadOS 的 WebKit（下载走 blob + 分享保存） */
+    isIOSWebKit: function () { return isWebKitIOS(); },
     chooseDirectory: async function () {
       if (window.BrushDesktop) return window.BrushDesktop.chooseFolder();
       if (typeof window.showDirectoryPicker !== 'function') return null;
@@ -243,6 +258,11 @@
       var hostile = downloadHostileName();
       if (hostile) {
         return '当前浏览器（' + hostile + '）会拦网页生成的文件，下载多半存不下来；请点下方「安装安卓版 APK」（原生保存到手机），或复制本页地址用 Chrome 打开';
+      }
+      if (isWebKitIOS()) {
+        return '已发起 ' + files.length + ' 个下载；苹果设备请到「文件」App →「下载」里查看' +
+          (files.length > 1 ? '（Safari 一次只放行一个下载，建议用「整包一个文件」）' : '') +
+          '；若没有反应，请点右上「分享保存」存到「文件」';
       }
       return '已发起 ' + files.length + ' 个下载；手机浏览器若没反应，请点下方「结果文件」里的保存按钮重试';
     }

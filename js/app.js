@@ -1392,6 +1392,19 @@
     }
     panel.style.display = '';
     list.innerHTML = '';
+    /* 苹果设备（iOS/iPadOS 的 WebKit）：下载走 blob，文件进「文件」App →「下载」；
+       没反应就用右上「分享保存」。给一句话说明，避免用户以为没保存成功。 */
+    const iosWebKit = window.BCSaver && typeof window.BCSaver.isIOSWebKit === 'function'
+      ? window.BCSaver.isIOSWebKit() : false;
+    if (iosWebKit) {
+      const iosNote = document.createElement('div');
+      iosNote.className = 'result-item result-warn';
+      const iosTxt = document.createElement('span');
+      iosTxt.className = 'result-name';
+      iosTxt.textContent = '苹果设备：点「保存」后文件会进「文件」App →「下载」；若没反应，请点右上「分享保存」存到「文件」或「我的 iPhone」。';
+      iosNote.appendChild(iosTxt);
+      list.appendChild(iosNote);
+    }
     /* 夸克/UC 这类浏览器只肯下载真实 http(s) 文件，网页生成的文件会被静默拦掉
        （实测 blob:/data:/新标签打开 全部无效）。给出可用的替代路径。 */
     const hostile = window.BCSaver && typeof window.BCSaver.downloadHostileName === 'function'
@@ -1493,7 +1506,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.61';
+  const APP_VERSION = '2.5.62';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {
