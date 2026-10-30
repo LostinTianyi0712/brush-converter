@@ -1612,7 +1612,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.77';
+  const APP_VERSION = '2.5.78';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2155,44 +2155,66 @@
     }
   })();
 
-  /* 手机竖屏：顶栏随上划逐渐收起（标题栏不动）——标题行和「转换并下载」钉在原位，
-     头部高度随滚动进度收缩，把下面的次要按钮行逐渐裁掉。
-     进度 --navp 与滚动位置连续映射：上划多少收多少、下划逐级展开；桌面宽度不参与。 */
+  /* 手机竖屏：顶栏随上划逐渐收起（#307）
+     —— 标题行和「转换并下载」始终钉住不动；
+     —— 下面两行次要按钮**整行**收起：先「分享保存 / 清空」（data-nav-row=2），
+        再「全选笔刷 / 参数对比」（data-nav-row=1）；
+     —— 每行先淡出上飘、再收高度，因此不会出现「按钮被切成半截」；
+     —— 进度与滚动位置连续映射，上划多少收多少、下划逐级展开；桌面宽度不参与。
+     注：安卓/夸克内核滚动时 window.scrollY 不可靠（#305），位置取值与触摸位移都做了兜底。 */
   (function initMobileTopbarCollapse() {
     const bar = document.querySelector('.topbar');
     if (!bar) return;
+    const rows = Array.prototype.slice.call(bar.querySelectorAll('.nav-row'));
+    if (!rows.length) return;
     const mq = window.matchMedia ? window.matchMedia('(max-width: 640px)') : null;
     const isMobile = function () { return mq ? mq.matches : window.innerWidth <= 640; };
     const scrollTop = function () {
       const se = document.scrollingElement || document.documentElement;
       return (window.scrollY || window.pageYOffset || 0) || (se && se.scrollTop) || (document.body && document.body.scrollTop) || 0;
     };
-    const START = 90, DIST = 220;   // 滚过 90px 开始收，再滚 220px 收完
-    let lastP = -1;
-    const setProgress = function (p) {
-      if (p === lastP) return;
-      lastP = p;
-      bar.style.setProperty('--navp', p.toFixed(3));
+    const clamp01 = function (v) { return v < 0 ? 0 : v > 1 ? 1 : v; };
+    // 收起顺序：行号大的先收（2 = 分享/清空 → 1 = 全选/参数对比）
+    const order = rows.slice().sort(function (a, b) {
+      return Number(b.getAttribute('data-nav-row') || 0) - Number(a.getAttribute('data-nav-row') || 0);
+    });
+    const START = 60, DIST = 240;   // 滚过 60px 开始收，再滚 240px 收完
+    let bases = [];
+    const resetRow = function (el) {
+      el.style.height = '';
+      el.style.opacity = '';
+      el.style.transform = '';
+      el.style.marginTop = '';
+      el.style.pointerEvents = '';
     };
-    const applyY = function (y) {
-      if (!isMobile()) { setProgress(0); return; }
-      const p = Math.max(0, Math.min(1, (y - START) / DIST));
-      setProgress(Math.round(p * 200) / 200);       // 量化到 0.5%，减少无谓的样式写入
-    };
-    /* 量测（必须在 p=0 时进行）：整栏高度、收起量（保住标题行 + 转换按钮条）。
-       结果以纯数字写入变量，px 单位在 CSS calc 里乘。 */
     const measure = function () {
-      const actions = bar.querySelector('.actions');
-      const convert = document.querySelector('#btnConvert');
-      if (!actions || !convert) return;
-      const fullH = bar.offsetHeight;
-      const finalH = actions.offsetTop + convert.offsetHeight + 6;  // 收到底：标题行 + 转换按钮 + 底部 6px
-      bar.style.setProperty('--barh', String(Math.round(fullH)));
-      bar.style.setProperty('--barslide', String(Math.max(0, Math.round(fullH - finalH))));
-      bar.classList.add('nav-ready');               // 量测完成才启用裁剪，避免初始闪烁
+      order.forEach(resetRow);
+      if (!isMobile()) { bases = []; return; }
+      bases = order.map(function (el) { return el.offsetHeight; });
+      apply(scrollTop());
+    };
+    const apply = function (y) {
+      if (!isMobile()) { order.forEach(resetRow); return; }
+      const p = clamp01((y - START) / DIST);
+      const n = order.length;
+      order.forEach(function (el, i) {
+        const from = i / n, span = 1 / n;
+        const seg = clamp01((p - from) / span);
+        const fade = clamp01(seg / 0.5);         // 前半段：淡出 + 上飘
+        const coll = clamp01((seg - 0.5) / 0.5); // 后半段：收高度（此时已透明，不会露出半截）
+        const h = bases[i] || 0;
+        el.style.opacity = String(1 - fade);
+        el.style.transform = 'translateY(' + (-16 * fade).toFixed(1) + 'px)';
+        el.style.height = (h * (1 - coll)).toFixed(1) + 'px';
+        el.style.marginTop = (8 * (1 - coll)).toFixed(1) + 'px';
+        el.style.pointerEvents = fade > 0.55 ? 'none' : '';
+      });
     };
     measure();
-    if (window.addEventListener) window.addEventListener('load', measure);  // 字体/布局就绪后校准
+    window.addEventListener('load', measure);            // 字体/布局就绪后校准
+    window.addEventListener('orientationchange', measure);
+    if (mq && mq.addEventListener) mq.addEventListener('change', measure);
+    else window.addEventListener('resize', measure);
     let ticking = false;
     let lastScrollAt = 0;
     const onScroll = function () {
@@ -2201,12 +2223,11 @@
       ticking = true;
       (window.requestAnimationFrame || function (f) { return setTimeout(f, 16); })(function () {
         ticking = false;
-        applyY(scrollTop());
+        apply(scrollTop());
       });
     };
     window.addEventListener('scroll', onScroll, { passive: true, capture: true });
-    /* 夸克/UC 内核的滚动不一定会更新 window.scrollY（实测夸克里 scroll 事件几乎拿不到位置），
-       兜底：滚动事件 120ms 没动静时，用手指位移累积虚拟滚动量，同样连续映射到滑出进度。 */
+    /* 兜底：滚动事件 120ms 没动静时，用手指位移累积虚拟滚动量驱动同一套进度 */
     let touchY = 0, virtY = 0;
     window.addEventListener('touchstart', function (e) {
       if (!isMobile() || !e.touches || !e.touches.length) return;
@@ -2220,16 +2241,9 @@
       touchY = e.touches[0].clientY;
       if (!dy) return;
       virtY += dy;
-      applyY(virtY);
+      apply(virtY);
     }, { passive: true });
-    applyY(scrollTop());
-    // 转屏 / 拉宽窗口回来时复原并重新量测
-    const onReflow = function () {
-      setProgress(0);
-      (window.requestAnimationFrame || function (f) { return setTimeout(f, 16); })(measure);
-    };
-    if (mq && mq.addEventListener) mq.addEventListener('change', onReflow);
-    else window.addEventListener('resize', onReflow);
+    apply(scrollTop());
   })();
 
   $('#ver').textContent = 'v' + APP_VERSION + ' · 修复 Procreate / Photoshop / 画世界Pro 参数与双笔刷互转 · 纯本地';

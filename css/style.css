@@ -48,6 +48,8 @@ body {
 .brand h1 { font-size: 17px; margin: 0; }
 .actions { display: flex; }
 .actions > * + * { margin-left: 10px; }
+/* 桌面端：次要按钮的分组容器不参与布局（仍是原来的一行按钮） */
+.nav-row { display: contents; }
 /* 顶栏常驻转换按钮：列表再长也一眼可见 */
 .btn.convert-top { font-weight: 700; padding: 8px 22px; }
 
@@ -335,27 +337,35 @@ main {
 .footer > * + * { margin-left: 12px; }
 
 @media (max-width: 640px) {
-  /* 顶栏随上划逐渐收起（标题栏不动）：标题行和「转换并下载」钉在原位一直可见，
-     只是头部高度随进度收缩、把下面的次要按钮行逐渐裁掉；进度 --navp (0→1) 由 JS 按滚动位置连续设置。
-     --barh=整栏高度 --barslide=收起量（均为 JS 实测纯数字，px 交给 calc）。 */
+  /* 顶栏随上划逐渐收起（#307）：
+     - 标题行（logo + 名称）与「转换并下载」始终钉住，不裁、不缩；
+     - 下面两行次要按钮**整行**收起：先「分享保存 / 清空」，再「全选笔刷 / 参数对比」；
+     - 每行先淡出上飘、再收高度，所以永远不会出现「半截按钮」。
+     进度由 JS 逐帧写到每个 .nav-row 的内联样式（opacity / translateY / height）。 */
   .topbar { flex-direction: column; align-items: stretch; gap: 10px; padding: 10px 12px; }
-  .topbar.nav-ready { overflow: hidden; height: calc(var(--barh, 220) * 1px - var(--navp, 0) * var(--barslide, 0) * 1px); }
-  /* 次要按钮在被裁掉的同时略微上飘，过渡更自然 */
-  .actions > .btn:not(#btnConvert):not(#btnCancel) { transform: translateY(calc(var(--navp, 0) * -14px)); }
   .brand { display: flex; align-items: center; }
   .brand .logo { width: 30px; height: 30px; border-radius: 8px; }
   .brand h1 { font-size: 16px; }
   .actions {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
     width: 100%;
     margin: 0;
   }
   .actions > * + * { margin-left: 0; }
   .actions .btn { width: 100%; padding: 9px 6px; font-size: 13px; white-space: normal; }
-  /* 转换按钮在手机上占满一整行、排最前（滑出后裁剪线正好停在它下面） */
-  .actions #btnConvert { grid-column: 1 / -1; padding: 11px 6px; font-size: 14px; }
+  /* 转换按钮占满一整行、排在标题下面 */
+  .actions #btnConvert { padding: 11px 6px; font-size: 14px; }
+  .nav-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 8px;
+    overflow: hidden;
+    will-change: height, opacity, transform;
+  }
+  .nav-row > .btn { width: 100%; }
   main { padding: 6px 10px 28px; }
   .step { margin-top: 20px; }
   .step-title h2 { font-size: 18px; }
