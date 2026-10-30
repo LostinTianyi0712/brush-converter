@@ -1612,7 +1612,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.72';
+  const APP_VERSION = '2.5.73';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2162,7 +2162,12 @@
     const bar = document.querySelector('.topbar');
     if (!bar) return;
     const mq = window.matchMedia ? window.matchMedia('(max-width: 640px)') : null;
-    let lastY = window.scrollY || window.pageYOffset || 0;
+    const isMobile = function () { return mq ? mq.matches : window.innerWidth <= 640; };
+    const scrollTop = function () {
+      const se = document.scrollingElement || document.documentElement;
+      return (window.scrollY || window.pageYOffset || 0) || (se && se.scrollTop) || (document.body && document.body.scrollTop) || 0;
+    };
+    let lastY = scrollTop();
     let ticking = false;
     let suppressUntil = 0;
     const setCompact = function (on) {
@@ -2177,9 +2182,8 @@
       ticking = true;
       (window.requestAnimationFrame || function (f) { return setTimeout(f, 16); })(function () {
         ticking = false;
-        const y = window.scrollY || window.pageYOffset || 0;
-        const mobile = mq ? mq.matches : window.innerWidth <= 640;
-        if (!mobile) { setCompact(false); lastY = y; return; }
+        const y = scrollTop();
+        if (!isMobile()) { setCompact(false); lastY = y; return; }
         if (Date.now() < suppressUntil) { lastY = y; return; }
         const dy = y - lastY;
         if (y <= 90) setCompact(false);        // 回到顶部一定恢复
@@ -2188,7 +2192,23 @@
         lastY = y;
       });
     };
-    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('scroll', onScroll, { passive: true, capture: true });
+    /* 夸克/UC 内核的滚动不一定会更新 window.scrollY（实测夸克里 scroll 事件几乎拿不到位置），
+       所以再加一条「触摸位移」兜底：手指上移 >28px 收起，下移 >28px 恢复。 */
+    let touchStartY = 0, touchActive = false, touchHandled = false;
+    window.addEventListener('touchstart', function (e) {
+      if (!isMobile() || !e.touches || !e.touches.length) return;
+      touchStartY = e.touches[0].clientY;
+      touchActive = true; touchHandled = false;
+    }, { passive: true });
+    window.addEventListener('touchmove', function (e) {
+      if (!touchActive || touchHandled || !isMobile() || !e.touches || !e.touches.length) return;
+      const dy = touchStartY - e.touches[0].clientY; // >0 = 手指上移 = 向下翻内容
+      if (dy > 28) { setCompact(true); touchHandled = true; }
+      else if (dy < -28) { setCompact(false); touchHandled = true; }
+    }, { passive: true });
+    window.addEventListener('touchend', function () { touchActive = false; }, { passive: true });
+    window.addEventListener('touchcancel', function () { touchActive = false; }, { passive: true });
     // 转屏 / 拉宽窗口回来时复原，避免停在收起状态
     if (mq && mq.addEventListener) mq.addEventListener('change', function () { setCompact(false); });
     else window.addEventListener('resize', function () { setCompact(false); });
