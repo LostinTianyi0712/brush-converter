@@ -1613,7 +1613,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.82';
+  const APP_VERSION = '2.6.0';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
