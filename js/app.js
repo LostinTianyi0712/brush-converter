@@ -542,8 +542,9 @@
   async function parseRecord(rec, displayName, bytes, opts) {
     try {
       // 内置笔尖图库只存在于主线程内存里，Worker 拿不到；加载了图库就不走后台解析
-      if (state.shapeLib && opts && opts.shapeResources !== state.shapeLib) {
-        opts = Object.assign({}, opts, { shapeResources: state.shapeLib });
+      // 注意：导入 .brushset 单文件时 opts 是 null，这里必须自己造对象，否则图库永远传不进去
+      if (state.shapeLib && (!opts || opts.shapeResources !== state.shapeLib)) {
+        opts = Object.assign({}, opts || {}, { shapeResources: state.shapeLib });
       }
       const big = bytes && bytes.length > 8 * 1024 * 1024;
       // 超大文件不用 Worker：结构化克隆会再复制一份，容易 OOM；改用主线程分块解析（会卡但更省内存）
@@ -1511,7 +1512,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.63';
+  const APP_VERSION = '2.5.64';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {
@@ -1680,26 +1681,64 @@
       el.textContent = '未加载：Procreate 内置 shape 图不在笔刷包里，缺图时只能用合成圆头';
     }
   }
+  /* 图库解码诊断（进「运行日志」，用户反馈「选了图库还是圆头」时能看出卡在哪一步） */
+  const shapeDecodeLog = [];
+  window.__shapeDecodeLog = shapeDecodeLog;
   async function decodeImageToRgba(name, bytes) {
     // 先用自带解码器（快、不依赖 DOM）；解不了（例如 progressive JPEG）再交给浏览器 canvas
+    const diag = { name: name, bytes: bytes ? bytes.length : 0 };
     try {
-      if (/\.png$/i.test(name)) { const im = BC.png.decode(bytes); return { w: im.width, h: im.height, rgba: im.rgba }; }
-      if (/\.jpe?g$/i.test(name) && BC.jpeg && BC.jpeg.isJpeg(bytes)) {
-        const im = BC.jpeg.decode(bytes); return { w: im.width, h: im.height, rgba: im.rgba };
+      if (/\.png$/i.test(name)) {
+        const im = BC.png.decode(bytes);
+        diag.path = 'png'; shapeDecodeLog.push(diag);
+        return { w: im.width, h: im.height, rgba: im.rgba };
       }
-    } catch (e) { /* 落到 canvas */ }
+      if (/\.jpe?g$/i.test(name) && BC.jpeg && BC.jpeg.isJpeg(bytes)) {
+        const im = BC.jpeg.decode(bytes);
+        diag.path = 'jpeg'; shapeDecodeLog.push(diag);
+        return { w: im.width, h: im.height, rgba: im.rgba };
+      }
+    } catch (e) { diag.builtinError = String(e && e.message ? e.message : e); }
     try {
       if (typeof createImageBitmap === 'function') {
         const bmp = await createImageBitmap(new Blob([bytes]));
-        const cv = document.createElement('canvas');
-        cv.width = bmp.width; cv.height = bmp.height;
-        const ctx = cv.getContext('2d');
-        ctx.drawImage(bmp, 0, 0);
-        const data = ctx.getImageData(0, 0, bmp.width, bmp.height);
-        if (bmp.close) bmp.close();
-        return { w: bmp.width, h: bmp.height, rgba: new Uint8Array(data.data) };
+        try {
+          // 实测坑：个别 progressive JPEG 在这里会返回 0x0（不抛错），当成成功就会把空图存进图库
+          if (!bmp || !bmp.width || !bmp.height) throw new Error('createImageBitmap 返回 ' + (bmp ? bmp.width + 'x' + bmp.height : 'null'));
+          const cv = document.createElement('canvas');
+          cv.width = bmp.width; cv.height = bmp.height;
+          const ctx = cv.getContext('2d');
+          ctx.drawImage(bmp, 0, 0);
+          const data = ctx.getImageData(0, 0, bmp.width, bmp.height);
+          diag.path = 'canvas'; diag.w = bmp.width; diag.h = bmp.height;
+          shapeDecodeLog.push(diag);
+          return { w: bmp.width, h: bmp.height, rgba: new Uint8Array(data.data) };
+        } finally { if (bmp && bmp.close) bmp.close(); }
       }
-    } catch (e) { /* ignore */ }
+      diag.canvasError = 'no createImageBitmap';
+    } catch (e) { diag.canvasError = String(e && e.message ? e.message : e); }
+    // 再用 <img> + objectURL 兜底（比 createImageBitmap 更老更稳，progressive JPEG 全靠它）
+    try {
+      if (typeof Image === 'function' && typeof URL !== 'undefined' && URL.createObjectURL) {
+        const url = URL.createObjectURL(new Blob([bytes]));
+        try {
+          const img = new Image();
+          await new Promise(function (res, rej) { img.onload = res; img.onerror = function () { rej(new Error('img onerror')); }; img.src = url; });
+          const w = img.naturalWidth, h = img.naturalHeight;
+          if (!w || !h) throw new Error('img ' + w + 'x' + h);
+          const cv = document.createElement('canvas');
+          cv.width = w; cv.height = h;
+          const ctx = cv.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+          const data = ctx.getImageData(0, 0, w, h);
+          diag.path = 'img'; diag.w = w; diag.h = h;
+          shapeDecodeLog.push(diag);
+          return { w: w, h: h, rgba: new Uint8Array(data.data) };
+        } finally { URL.revokeObjectURL(url); }
+      }
+      diag.imgError = diag.imgError || 'no Image';
+    } catch (e) { diag.imgError = String(e && e.message ? e.message : e); }
+    diag.path = 'failed'; shapeDecodeLog.push(diag);
     return null;
   }
   async function loadShapeLibrary(fileList) {
@@ -1708,12 +1747,13 @@
     toast('正在读取图库…（几百张图需要几秒）', 6000);
     const map = new Map();
     let undecoded = 0;
+    const undecodedNames = [];
     async function addOne(name, bytes) {
       const base = String(name || '').split(/[\\/]/).pop().toLowerCase();
       if (!/\.(png|jpe?g)$/i.test(base)) return;
       const dec = await decodeImageToRgba(base, bytes);
       if (dec) map.set(base, dec);
-      else { map.set(base, bytes); undecoded++; }
+      else { map.set(base, bytes); undecoded++; undecodedNames.push(base); }
     }
     for (const f of list) {
       try {
@@ -1726,6 +1766,7 @@
       } catch (e) { pushLog('图库读取失败 ' + f.name + '：' + e.message); }
     }
     if (!map.size) { toast('图库里没有 PNG/JPG：请选择包含内置笔尖图的 ZIP 或文件夹', 8000); return; }
+    if (undecoded) pushLog('图库有 ' + undecoded + ' 张没能预解码（解析时会再试一次）：' + undecodedNames.slice(0, 12).join(', '));
     state.shapeLib = map;
     updateShapeLibText();
     toast('图库已加载 ' + map.size + ' 张' + (undecoded ? '（' + undecoded + ' 张留给浏览器再解码）' : '') +

@@ -97,7 +97,7 @@
           const lib = shapeResources.get ? shapeResources.get(k) : shapeResources[k];
           if (!lib) continue;
           try {
-            if (lib.rgba && lib.w && lib.h) {
+            if (lib.rgba && lib.w && lib.h && lib.rgba.length >= lib.w * lib.h * 4) {
               // 已经解好的像素（浏览器/桌面用 canvas 解 progressive JPEG 后传进来）
               shapeEntry = { name: prefix + 'Shape.png', data: () => png.encode(lib.w, lib.h, lib.rgba) };
             } else {
