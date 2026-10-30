@@ -445,14 +445,18 @@
           libBtn.style.marginTop = '8px';
           if (isApp) {
             const native = !!window.BrushNative;
-            libBtn.textContent = native ? '下载内置图库（32MB，联网）' : '用内置图库补回真笔尖';
+            const desktop = !!window.BrushDesktop;
+            libBtn.textContent = native ? '下载内置图库（32MB，联网）' : (desktop ? '加载内置图库（程序目录或联网下载）' : '用内置图库补回真笔尖');
             libBtn.onclick = async function (ev) {
               ev.preventDefault();
               ev.stopPropagation();
               libBtn.disabled = true;
               libBtn.textContent = '正在加载内置图库…';
               const r = await loadBundledShapeLib({
-                onStart: function () { toast(native ? '正在下载内置笔尖图库（约 32MB，仅首次，需联网）…' : '正在加载内置笔尖图库（约 32MB，仅首次）…', 12000); }
+                onStart: function () {
+                  toast(native ? '正在下载内置笔尖图库（约 32MB，仅首次，需联网）…'
+                    : (desktop ? '先找程序目录的图库包，没有就联网下载（约 32MB）…' : '正在加载内置笔尖图库（约 32MB，仅首次）…'), 12000);
+                }
               });
               libBtn.disabled = false;
               if (r && r.ok) {
@@ -1679,7 +1683,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.6.3';
+  const APP_VERSION = '2.6.4';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -1918,7 +1922,7 @@
         '（' + label + '）；缺 shape 的笔刷已按内置资源名补回真图';
     } else {
       // 安卓壳 / 网页版都能直接下（安卓壳走站点绝对地址），把入口写在提示里，别让用户找按钮
-      const canDownload = window.BrushNative || /^https?:/.test(location.protocol);
+      const canDownload = window.BrushNative || window.BrushDesktop || /^https?:/.test(location.protocol);
       if (state.shapeLibBuiltIn === false && state.shapeLibError) {
         el.textContent = canDownload
           ? '图库包没读到（' + state.shapeLibError + '）：点下面「下载图库包（精简512 · 32MB）」或「原图高清 216MB」，也可以手动选图库文件夹'
@@ -1955,6 +1959,10 @@
     const native = window.BrushNative;
     if (native && typeof native.shapeLibLength === 'function' && typeof native.shapeLibChunk === 'function') {
       const total = Number(native.shapeLibLength());
+      if (total <= 0) {
+        // 小包版（不带图库）不能默默去拉 32MB：直接告知，让用户自己选下载或手动选图库
+        throw new Error('这个安装包没带内置图库（可在下面下载，或手动选图库文件夹）');
+      }
       if (total > 0) {
         const bytes = new Uint8Array(total);
         const CHUNK = 3 * 1024 * 1024;
@@ -1970,14 +1978,15 @@
     }
     const desk = window.BrushDesktop;
     if (desk && typeof desk.readShapeLib === 'function') {
-      const r = await desk.readShapeLib();
-      if (!r || !r.ok) throw new Error((r && r.error) || '内置图库读取失败');
-      return { bytes: new Uint8Array(r.bytes), name: r.name || '', path: r.path || '' };
+      try {
+        const r = await desk.readShapeLib();
+        if (r && r.ok) return { bytes: new Uint8Array(r.bytes), name: r.name || '', path: r.path || '' };
+      } catch (e) { /* 程序目录没有图库包：下面走联网下载 */ }
     }
     if (typeof fetch === 'function') {
-      // 网页版：同源 shape-lib.zip；安卓 App：asset 里没有（APK 不带 32MB 图库），失败后改从站点拉
+      // 网页版：同源 shape-lib.zip；安卓/桌面（file:// 壳）：本地取不到时改从站点拉
       const urls = ['shape-lib.zip'];
-      if (window.BrushNative) urls.push(SITE_BASE + 'shape-lib.zip');
+      if (window.BrushNative || window.BrushDesktop) urls.push(SITE_BASE + 'shape-lib.zip');
       let lastErr = null;
       for (const u of urls) {
         try {
@@ -2216,13 +2225,13 @@
       totalMB: 216,
     },
   };
-  /* 安卓 App 的页面跑在 file:///android_asset/ 下，相对路径取不到线上图库包（APK 只有 0.6MB，没把 32MB 图库打进去），
-     所以原生壳里直接用站点绝对地址；网页版仍用同源相对路径（可离线缓存）。 */
+  /* 原生壳（安卓 file:///android_asset、Electron file://）相对路径都取不到站点资源，
+     统一用站点绝对地址；网页版仍用同源相对路径（可离线缓存）。 */
   const SITE_BASE = 'https://lostintianyi0712.github.io/brush-converter/';
   function shapeLibUrl(name) {
     const enc = encodeURI(name);
     if (/^(https?:)?\/\//.test(name)) return name;
-    return window.BrushNative ? SITE_BASE + enc : enc;
+    return (window.BrushNative || window.BrushDesktop) ? SITE_BASE + enc : enc;
   }
   let shapeLibDlBusy = false;
   async function downloadShapeLibPack(btn, pack) {
@@ -2277,6 +2286,19 @@
         blob = new Blob(chunks);
       }
       btn.textContent = '正在导入图库…';
+      // 桌面版：顺手把包存到程序目录，下次启动自动加载（不用再下）
+      if (window.BrushDesktop && typeof window.BrushDesktop.saveShapeLib === 'function') {
+        try {
+          const arr = new Uint8Array(await blob.arrayBuffer());
+          const saved = await window.BrushDesktop.saveShapeLib(arr, pack.key === 'full' ? 'Procreate内置笔尖图库_原图.zip' : 'Procreate内置笔尖图库_精简512.zip');
+          if (saved && saved.ok) {
+            pushLog('图库包已存到程序目录：' + saved.path);
+            toast('图库包已下载并保存到程序目录，下次启动自动加载：' + (saved.path || ''), 6000);
+          } else if (saved) {
+            pushLog('图库包保存失败：' + (saved.error || ''));
+          }
+        } catch (e) { pushLog('图库包保存异常：' + ((e && e.message) || e)); }
+      }
       const file = new File([blob], pack.zipName, { type: 'application/zip' });
       // 精简→原图升级时已有笔刷不缺 tip，需要强制重建才能换上高清笔尖
       const isUpgrade = !!(state.shapeLib && state.shapeLibPackKey !== pack.key);
@@ -2311,9 +2333,8 @@
     if (input) input.addEventListener('change', takeFiles);
     if (dirInput) dirInput.addEventListener('change', takeFiles);
     updateShapeLibText();
-    // 网页版 / 安卓 App（file:// 壳）：选项区常驻两档下载按钮（安卓壳靠 shapeLibUrl() 走站点绝对地址）
-    // 桌面版图库随程序自带，不需要这两个按钮
-    if (/^https?:/.test(location.protocol) || window.BrushNative) {
+    // 网页版 / 安卓 App / 桌面：选项区常驻两档下载按钮（原生壳靠 shapeLibUrl() 走站点绝对地址；桌面下完会自动存回程序目录）
+    if (/^https?:/.test(location.protocol) || window.BrushNative || window.BrushDesktop) {
       const dlBtn = $('#btnShapeLibDownload');
       if (dlBtn) {
         dlBtn.hidden = false;
