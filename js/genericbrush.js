@@ -18,7 +18,7 @@
   }
 
   function numFromString(s) {
-    const m = /-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?/.exec(String(s || ''));
+    const m = /-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?/.exec(String(s === undefined || s === null ? '' : s));
     return m ? parseFloat(m[0]) : NaN;
   }
 
@@ -28,7 +28,7 @@
       tip: null,
       sizePx: clamp(sizePx || 40, 1, 4000),
       spacingPct: clamp(spacingPct || 25, 1, 1000),
-      opacity: clamp(opacity === undefined ? 1 : opacity, 0.02, 1),
+      opacity: clamp(opacity === undefined ? 1 : opacity, 0, 1),
       hardness: clamp(hardness === undefined ? 0.8 : hardness, 0, 1),
       angle: 0,
       roundness: 100,
@@ -185,7 +185,9 @@
       isFinite(spacing) ? spacing : 25,
       isFinite(opacity) ? (opacity > 1.5 ? opacity / 100 : opacity) : 1,
       isFinite(hardness) ? (hardness > 1.5 ? hardness / 100 : hardness) : 0.8, 'ipcfg');
-    if (isFinite(roundness)) b.roundness = clamp(roundness > 1.5 ? roundness / 100 : roundness, 0.05, 1) * 100;
+    if (isFinite(roundness)) b.roundness = map.format === 'brushconv.ipcfg'
+      ? clamp(roundness, 0, 100)
+      : clamp(roundness > 1.5 ? roundness / 100 : roundness, 0.05, 1) * 100;
     if (isFinite(angle)) b.angle = angle;
     warnings.push('已识别字段：' + Object.keys(map).slice(0, 12).join(', '));
     return { brushes: [b], warnings: warnings };

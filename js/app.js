@@ -1570,7 +1570,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.68';
+  const APP_VERSION = '2.5.69';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {
@@ -1886,10 +1886,10 @@
     }
     return 'jpeg';
   }
-  async function loadShapeLibrary(fileList) {
+  async function loadShapeLibrary(fileList, libLabel) {
     const list = Array.prototype.slice.call(fileList || []);
     if (!list.length) return;
-    toast('正在读取图库…（原图包有 200MB+，需要几秒）', 8000);
+    toast('正在读取图库…', 8000);
     const map = new Map();
     let undecoded = 0;
     const undecodedNames = [];
@@ -1934,7 +1934,7 @@
     if (undecoded) pushLog('图库有 ' + undecoded + ' 张解不开：' + undecodedNames.slice(0, 12).join(', '));
     state.shapeLib = map;
     state.shapeLibBuiltIn = false; // 用户自己选的图库优先于内置（通常是原始高分辨率图）
-    state.shapeLibLabel = '自选图库';
+    state.shapeLibLabel = libLabel || '自选图库';
     updateShapeLibText();
     const fixed = await reparseWithShapeLib();
     toast('图库已加载 ' + map.size + ' 张' + (fixed ? '；已给现有笔刷补回 ' + fixed + ' 支真图笔尖' : '；缺 shape 的笔刷重新导入后会补回真图'), 12000);
@@ -1991,9 +1991,54 @@
     if (input) input.addEventListener('change', takeFiles);
     if (dirInput) dirInput.addEventListener('change', takeFiles);
     updateShapeLibText();
-    // 网页版：给「没有图库包」的人一个下载入口（本机上桌面/安卓用不到，隐藏）
-    const dl = $('#shapeLibDownload');
-    if (dl && /^https?:/.test(location.protocol)) dl.hidden = false;
+    // 网页版：下载按钮 —— 同源直接拉「精简512」图库包（32MB 单文件），下完自动导入，不再另开下载页
+    // （本机桌面/安卓用不到：图库包就在程序目录，启动自动加载，按钮保持隐藏）
+    const dlBtn = $('#btnShapeLibDownload');
+    if (dlBtn && /^https?:/.test(location.protocol)) {
+      dlBtn.hidden = false;
+      dlBtn.addEventListener('click', async function () {
+        if (dlBtn.dataset.busy || dlBtn.disabled) return;
+        if (state.shapeLib) { toast('图库已加载，无需重复下载', 4000); return; }
+        if (isBusy()) { toast('正在转换，稍后再下载图库包', 5000); return; }
+        dlBtn.dataset.busy = '1';
+        const label = dlBtn.textContent;
+        try {
+          const url = encodeURI('Procreate内置笔尖图库_精简512.zip');
+          const resp = await fetch(url);
+          if (!resp.ok) throw new Error('HTTP ' + resp.status);
+          const total = Number(resp.headers.get('content-length')) || 0;
+          let blob;
+          if (resp.body && resp.body.getReader && total) {
+            // 流式读，按 MB 显示进度（32MB 也要几秒，别让用户干等）
+            const reader = resp.body.getReader();
+            const chunks = [];
+            let got = 0;
+            for (;;) {
+              const r = await reader.read();
+              if (r.done) break;
+              chunks.push(r.value);
+              got += r.value.length;
+              dlBtn.textContent = '下载中 ' + Math.round(got / 1048576) + '/' + Math.round(total / 1048576) + 'MB…';
+            }
+            blob = new Blob(chunks);
+          } else {
+            blob = await resp.blob();
+          }
+          dlBtn.textContent = '正在导入图库…';
+          const file = new File([blob], 'Procreate内置笔尖图库_精简512.zip', { type: 'application/zip' });
+          await loadShapeLibrary([file], '图库包 · 精简512（自动下载）');
+          dlBtn.disabled = true;
+          dlBtn.textContent = '图库包已下载并导入';
+        } catch (e) {
+          const msg = '图库包下载失败：' + (e && e.message ? e.message : e);
+          toast(msg, 9000);
+          pushLog(msg);
+          dlBtn.textContent = label;
+        } finally {
+          delete dlBtn.dataset.busy;
+        }
+      });
+    }
     // 桌面 / 安卓：图库包就在程序目录，启动就加载，用户什么都不用点（网页版要先下 32MB，改成用到才下）
     if (!state.shapeLib && (window.BrushDesktop || window.BrushNative)) {
       loadBundledShapeLib().then(function (r) {

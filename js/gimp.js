@@ -16,20 +16,20 @@
   function be32(n) { return new Uint8Array([(n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff]); }
 
   function readHeader(bytes, pos) {
-    if (pos + BASE > bytes.length) return null;
+    if (pos + 20 > bytes.length) return null;
     const headerSize = u32(bytes, pos);
-    if (headerSize < BASE || headerSize > BASE + 256) return null;
     const version = u32(bytes, pos + 4);
     if (version < 1 || version > 3) return null;
+    const minimum = version === 1 ? 20 : BASE;
+    if (headerSize < minimum || headerSize > bytes.length - pos) return null;
     const width = u32(bytes, pos + 8);
     const height = u32(bytes, pos + 12);
     const bpp = u32(bytes, pos + 16);
-    const magic = u32(bytes, pos + 20);
-    if (magic !== MAGIC) return null;
+    if (version >= 2 && u32(bytes, pos + 20) !== MAGIC) return null;
     if (!width || !height || width > MAX_DIM || height > MAX_DIM) return null;
     if (bpp !== 1 && bpp !== 2 && bpp !== 4) return null;
     let spacing = 10;
-    let nameStart = pos + 24;
+    let nameStart = pos + 20;
     if (version >= 2) {
       spacing = u32(bytes, pos + 24);
       nameStart = pos + 28;
@@ -150,7 +150,7 @@
     }
     const w = tip.w, h = tip.h;
     if (tip.data.length !== w * h) throw new Error('笔尖数据尺寸不符');
-    const name = cstr((brush.name || 'brush').slice(0, 120));
+    const name = cstr(Array.from(brush.name || 'brush').slice(0, 120).join(''));
     const spacing = Math.max(1, Math.min(1000, Math.round(brush.spacingPct || 10)));
     const headerSize = BASE + name.length;
     const head = util.concat([
@@ -188,7 +188,7 @@
   }
 
   function buildGbrGray(name, w, h, spacing, gray) {
-    const nameBytes = cstr((name || 'brush').slice(0, 120));
+    const nameBytes = cstr(Array.from(name || 'brush').slice(0, 120).join(''));
     const headerSize = BASE + nameBytes.length;
     const head = util.concat([
       be32(headerSize),
