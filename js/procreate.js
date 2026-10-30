@@ -47,6 +47,37 @@
     } catch (e) { return null; }
   }
 
+  /* 从内置图库里按文件名找一张图（Shape 或 Grain 共用）：支持 .png/.jpg 同 stem、
+     预先解码的 rgba（浏览器 canvas 解 progressive JPEG 后传入）与原始字节两种。 */
+  function lookupLibraryImage(bundledPath, shapeResources) {
+    if (!bundledPath || !shapeResources) return null;
+    const base = String(bundledPath).split(/[\\/]/).pop().toLowerCase();
+    const stem = base.replace(/\.[a-z0-9]+$/i, '');
+    const keys = [base, stem + '.png', stem + '.jpg', stem + '.jpeg', stem];
+    if (shapeResources.keys) {
+      for (const k of shapeResources.keys()) {
+        if (String(k).toLowerCase().replace(/\.[a-z0-9]+$/i, '') === stem) keys.push(k);
+      }
+    }
+    const seen = new Set();
+    for (const k of keys) {
+      if (seen.has(k)) continue;
+      seen.add(k);
+      const lib = shapeResources.get ? shapeResources.get(k) : shapeResources[k];
+      if (!lib) continue;
+      try {
+        if (lib.rgba && lib.w && lib.h && lib.rgba.length >= lib.w * lib.h * 4) {
+          return { w: lib.w, h: lib.h, rgba: lib.rgba };
+        }
+        const bytes = lib.data ? lib.data() : lib;
+        if (!bytes || !bytes.length) continue;
+        const im = jpeg && jpeg.isJpeg(bytes) ? jpeg.decode(bytes) : png.decode(bytes);
+        return { w: im.width, h: im.height, rgba: im.rgba };
+      } catch (e) { /* 这张解不开就换下一个候选 */ }
+    }
+    return null;
+  }
+
   function readBrushFolder(entries, prefix, shapeResources) {
     // prefix like 'UUID/' ('' for single-file .brush)
     const find = suffix => entries.find(e => e.name === prefix + suffix);
@@ -121,12 +152,21 @@
     // Grain is an independent texture, never a substitute for a bundled Shape.
     const tipFromGrain = null;
     const tip = tipFromShape || tipFromGrain;
+    /* Procreate 自带纹理（bundledGrainPath）：导出 brushset 时不会打包，只留文件名
+       （如 Brush-Artery-Willow-Grain.jpg / European-Paper.jpg）。以前只解析 Shape 的
+       内置图引用，漏了 Grain，导致这类笔刷转出来全是实心笔画（用户截图「左实心、右有颗粒」）。 */
+    const bundledGrainPath = typeof params.bundledGrainPath === 'string' && params.bundledGrainPath !== '$null' ? params.bundledGrainPath : '';
+    let grainFromLibrary = false;
     let grainRgba = null;
     if (grainEntry) {
       try {
         const im = png.decode(grainEntry.data());
         grainRgba = { w: im.width, h: im.height, rgba: im.rgba };
       } catch (e) { grainRgba = null; }
+    }
+    if (!grainRgba && bundledGrainPath && shapeResources) {
+      const fromLib = lookupLibraryImage(bundledGrainPath, shapeResources);
+      if (fromLib) { grainRgba = fromLib; grainFromLibrary = true; }
     }
     const tipSource = tipFromShape ? (shapeFromLibrary ? 'library' : 'shape') : (tipFromGrain ? 'grain' : 'none');
     const maxSize = toRatio(params.maxSize, 1);
@@ -209,6 +249,8 @@
       tip,
       tipSource,
       bundledShapePath,
+      bundledGrainPath,
+      grainFromLibrary,
       shapeFromLibrary,
       resolvedShapePath,
       _rawArchive: arcEntry.data(),
@@ -242,9 +284,9 @@
       pressure: pressSize > 0.05 || pressOpacity > 0.05,
       pressureSize: pressSize > 0.05,
       pressureOpacity: pressOpacity > 0.05,
-      hasGrain: !!grainEntry,
+      hasGrain: !!(grainEntry || grainFromLibrary),
       hardness: tip ? undefined : 0.8,
-      hasTexture: !!grainEntry && grainDepthV > 0,
+      hasTexture: !!(grainEntry || grainFromLibrary) && grainDepthV > 0,
       angle: angleDeg,
       roundness: roundnessPct,
       taperOn: taperOn,

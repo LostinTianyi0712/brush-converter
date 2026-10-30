@@ -954,6 +954,7 @@
       if (!tipImg) tipImg = synthTip(brush, 256, opts);
       const synthesizeDual = brush.dualOn && brush.dualTip && (!keepRaw || !brush._rawDualObjc || dualTipChanged);
       const maxTip = Math.max(64, Math.min(2048, opts.maxTipSize || 512));
+      const dualCap = {};   // 副笔尖缩放后的实际尺寸（写 dualW/dualH 用）
       let w = tipImg.w, h = tipImg.h, rgba = tipImg.rgba;
       const maxSide = Math.max(w, h);
       if (maxSide > maxTip) {
@@ -1030,10 +1031,22 @@
             }
             t2 = { w: t2.w, h: t2.h, rgba: rgba };
           }
-          return t2 && t2.rgba ? abr.maskFromRGBA(t2.rgba) : null;
+          if (!t2 || !t2.rgba) return null;
+          /* 副笔尖也必须遵守「笔尖最大边长」：以前直接写原图（Procreate 常见 2048²），
+             一个采样就是 4MB，画世界 Pro 导入会在 BrushSectionParser 抛 NPE（实测）。 */
+          let w2 = t2.w, h2 = t2.h, rgba2 = t2.rgba;
+          const maxSide2 = Math.max(w2, h2);
+          if (maxSide2 > maxTip) {
+            const sc2 = maxTip / maxSide2;
+            const nw2 = Math.max(1, Math.round(w2 * sc2)), nh2 = Math.max(1, Math.round(h2 * sc2));
+            rgba2 = png.resize(rgba2, w2, h2, nw2, nh2);
+            w2 = nw2; h2 = nh2;
+          }
+          dualCap.w = w2; dualCap.h = h2;
+          return abr.maskFromRGBA(rgba2);
         })() : undefined,
-        dualW: synthesizeDual ? brush.dualTip.w : undefined,
-        dualH: synthesizeDual ? brush.dualTip.h : undefined,
+        dualW: synthesizeDual ? (dualCap.w || (brush.dualTip && brush.dualTip.w)) : undefined,
+        dualH: synthesizeDual ? (dualCap.h || (brush.dualTip && brush.dualTip.h)) : undefined,
         dualDiameter: brush.dualBrush && brush.dualBrush.diameter ? brush.dualBrush.diameter : undefined,
         dualBlend: (function () {
           const m = brush.dualBlendMode;
