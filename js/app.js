@@ -1612,7 +1612,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.76';
+  const APP_VERSION = '2.5.77';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2155,9 +2155,9 @@
     }
   })();
 
-  /* 手机竖屏：顶栏随上划「逐渐滑出」（不塌缩）——内容整体原尺寸上移，头部高度同步裁剪，
-     滚动位置与滑出进度 --navp 连续映射；滑到底只剩「转换并下载」。
-     上划多少滑多少、下划逐级滑回；桌面宽度不参与。 */
+  /* 手机竖屏：顶栏随上划逐渐收起（标题栏不动）——标题行和「转换并下载」钉在原位，
+     头部高度随滚动进度收缩，把下面的次要按钮行逐渐裁掉。
+     进度 --navp 与滚动位置连续映射：上划多少收多少、下划逐级展开；桌面宽度不参与。 */
   (function initMobileTopbarCollapse() {
     const bar = document.querySelector('.topbar');
     if (!bar) return;
@@ -2167,7 +2167,7 @@
       const se = document.scrollingElement || document.documentElement;
       return (window.scrollY || window.pageYOffset || 0) || (se && se.scrollTop) || (document.body && document.body.scrollTop) || 0;
     };
-    const START = 90, DIST = 220;   // 滚过 90px 开始滑出，再滚 220px 完全滑出
+    const START = 90, DIST = 220;   // 滚过 90px 开始收，再滚 220px 收完
     let lastP = -1;
     const setProgress = function (p) {
       if (p === lastP) return;
@@ -2179,17 +2179,16 @@
       const p = Math.max(0, Math.min(1, (y - START) / DIST));
       setProgress(Math.round(p * 200) / 200);       // 量化到 0.5%，减少无谓的样式写入
     };
-    /* 量测（必须在 p=0 时进行）：整栏高度、滑出量（保留「转换并下载」条）、内容上移距离。
+    /* 量测（必须在 p=0 时进行）：整栏高度、收起量（保住标题行 + 转换按钮条）。
        结果以纯数字写入变量，px 单位在 CSS calc 里乘。 */
     const measure = function () {
       const actions = bar.querySelector('.actions');
       const convert = document.querySelector('#btnConvert');
       if (!actions || !convert) return;
       const fullH = bar.offsetHeight;
-      const finalH = convert.offsetHeight + 12;     // 滑到底：上下各留 6px 的转换按钮条
+      const finalH = actions.offsetTop + convert.offsetHeight + 6;  // 收到底：标题行 + 转换按钮 + 底部 6px
       bar.style.setProperty('--barh', String(Math.round(fullH)));
       bar.style.setProperty('--barslide', String(Math.max(0, Math.round(fullH - finalH))));
-      bar.style.setProperty('--navshift', String(Math.max(0, Math.round(actions.offsetTop - 6))));
       bar.classList.add('nav-ready');               // 量测完成才启用裁剪，避免初始闪烁
     };
     measure();

@@ -335,12 +335,13 @@ main {
 .footer > * + * { margin-left: 12px; }
 
 @media (max-width: 640px) {
-  /* 顶栏随上划逐渐滑出（不塌缩）：内部内容整体原尺寸上移 + 头部高度裁剪，
-     按钮/标题大小全程不变；进度 --navp (0=全展开, 1=滑到只剩「转换并下载」) 由 JS 按滚动位置连续设置。
-     --barh=整栏高度 --barslide=收起量 --navshift=内容上移距离（均为 JS 实测的纯数字，px 交给 calc）。 */
+  /* 顶栏随上划逐渐收起（标题栏不动）：标题行和「转换并下载」钉在原位一直可见，
+     只是头部高度随进度收缩、把下面的次要按钮行逐渐裁掉；进度 --navp (0→1) 由 JS 按滚动位置连续设置。
+     --barh=整栏高度 --barslide=收起量（均为 JS 实测纯数字，px 交给 calc）。 */
   .topbar { flex-direction: column; align-items: stretch; gap: 10px; padding: 10px 12px; }
   .topbar.nav-ready { overflow: hidden; height: calc(var(--barh, 220) * 1px - var(--navp, 0) * var(--barslide, 0) * 1px); }
-  .topbar > * { transform: translateY(calc(var(--navp, 0) * var(--navshift, 0) * -1px)); will-change: transform; }
+  /* 次要按钮在被裁掉的同时略微上飘，过渡更自然 */
+  .actions > .btn:not(#btnConvert):not(#btnCancel) { transform: translateY(calc(var(--navp, 0) * -14px)); }
   .brand { display: flex; align-items: center; }
   .brand .logo { width: 30px; height: 30px; border-radius: 8px; }
   .brand h1 { font-size: 16px; }
