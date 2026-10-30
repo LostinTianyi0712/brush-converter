@@ -444,14 +444,15 @@
           libBtn.className = 'btn ghost';
           libBtn.style.marginTop = '8px';
           if (isApp) {
-            libBtn.textContent = '用内置图库补回真笔尖';
+            const native = !!window.BrushNative;
+            libBtn.textContent = native ? '下载内置图库（32MB，联网）' : '用内置图库补回真笔尖';
             libBtn.onclick = async function (ev) {
               ev.preventDefault();
               ev.stopPropagation();
               libBtn.disabled = true;
               libBtn.textContent = '正在加载内置图库…';
               const r = await loadBundledShapeLib({
-                onStart: function () { toast('正在加载内置笔尖图库（约 32MB，仅首次）…', 12000); }
+                onStart: function () { toast(native ? '正在下载内置笔尖图库（约 32MB，仅首次，需联网）…' : '正在加载内置笔尖图库（约 32MB，仅首次）…', 12000); }
               });
               libBtn.disabled = false;
               if (r && r.ok) {
@@ -1678,7 +1679,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.6.1';
+  const APP_VERSION = '2.6.2';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -1947,9 +1948,18 @@
       return { bytes: new Uint8Array(r.bytes), name: r.name || '', path: r.path || '' };
     }
     if (typeof fetch === 'function') {
-      const res = await fetch('shape-lib.zip', { cache: 'force-cache' });
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      return { bytes: new Uint8Array(await res.arrayBuffer()), name: 'shape-lib.zip', path: '' };
+      // 网页版：同源 shape-lib.zip；安卓 App：asset 里没有（APK 不带 32MB 图库），失败后改从站点拉
+      const urls = ['shape-lib.zip'];
+      if (window.BrushNative) urls.push(SITE_BASE + 'shape-lib.zip');
+      let lastErr = null;
+      for (const u of urls) {
+        try {
+          const res = await fetch(u, { cache: 'force-cache' });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          return { bytes: new Uint8Array(await res.arrayBuffer()), name: 'shape-lib.zip', path: u };
+        } catch (e) { lastErr = e; }
+      }
+      throw (lastErr || new Error('图库包下载失败'));
     }
     throw new Error('当前环境读不到内置图库');
   }
@@ -2174,6 +2184,14 @@
       totalMB: 216,
     },
   };
+  /* 安卓 App 的页面跑在 file:///android_asset/ 下，相对路径取不到线上图库包（APK 只有 0.6MB，没把 32MB 图库打进去），
+     所以原生壳里直接用站点绝对地址；网页版仍用同源相对路径（可离线缓存）。 */
+  const SITE_BASE = 'https://lostintianyi0712.github.io/brush-converter/';
+  function shapeLibUrl(name) {
+    const enc = encodeURI(name);
+    if (/^(https?:)?\/\//.test(name)) return name;
+    return window.BrushNative ? SITE_BASE + enc : enc;
+  }
   let shapeLibDlBusy = false;
   async function downloadShapeLibPack(btn, pack) {
     pack = pack || SHAPE_LIB_PACKS.lite;
@@ -2188,7 +2206,7 @@
       const totalBytes = pack.totalMB * 1048576;
       let blob;
       if (pack.parts.length === 1) {
-        const resp = await fetch(encodeURI(pack.parts[0]));
+        const resp = await fetch(shapeLibUrl(pack.parts[0]));
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         const total = Number(resp.headers.get('content-length')) || totalBytes;
         if (resp.body && resp.body.getReader) {
@@ -2212,7 +2230,7 @@
         const chunks = [];
         let got = 0;
         for (const part of pack.parts) {
-          const resp = await fetch(encodeURI(part));
+          const resp = await fetch(shapeLibUrl(part));
           if (!resp.ok) throw new Error(part + ' HTTP ' + resp.status);
           if (!(resp.body && resp.body.getReader)) throw new Error('浏览器不支持流式下载，请改用手动选择图库文件');
           const reader = resp.body.getReader();
