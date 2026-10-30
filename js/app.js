@@ -1547,7 +1547,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.67';
+  const APP_VERSION = '2.5.68';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {
@@ -1966,10 +1966,13 @@
     if (input) input.addEventListener('change', takeFiles);
     if (dirInput) dirInput.addEventListener('change', takeFiles);
     updateShapeLibText();
-    // 桌面 / 安卓：内置图库就在本地，启动就加载，用户什么都不用点（网页版要先下 32MB，改成用到才下）
+    // 网页版：给「没有图库包」的人一个下载入口（本机上桌面/安卓用不到，隐藏）
+    const dl = $('#shapeLibDownload');
+    if (dl && /^https?:/.test(location.protocol)) dl.hidden = false;
+    // 桌面 / 安卓：图库包就在程序目录，启动就加载，用户什么都不用点（网页版要先下 32MB，改成用到才下）
     if (!state.shapeLib && (window.BrushDesktop || window.BrushNative)) {
       loadBundledShapeLib().then(function (r) {
-        if (r && r.ok) pushLog('启动时已加载内置图库 ' + r.count + ' 张');
+        if (r && r.ok) pushLog('启动时已加载图库包 ' + r.count + ' 张');
       });
     }
   })();
