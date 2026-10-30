@@ -22,6 +22,16 @@
     return String(str).replace(/[\u0080-\uffff]/g, function (c) { return '&#x' + c.codePointAt(0).toString(16).toUpperCase() + ';'; });
   }
 
+  /* 写出端把整个 XML 压成 ASCII（PNG tEXt 是 Latin-1 口径），非 ASCII 全是数字实体。
+     读取端必须解码回来，否则中文名经过「导出→导入」会变成 &#x4E07;... 垃圾（#280）。 */
+  function decodeXmlEntities(str) {
+    return String(str)
+      .replace(/&#x([0-9a-fA-F]+);/g, function (_, h) { try { return String.fromCodePoint(parseInt(h, 16)); } catch (e) { return _; } })
+      .replace(/&#([0-9]+);/g, function (_, d) { try { return String.fromCodePoint(parseInt(d, 10)); } catch (e) { return _; } })
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+  }
+
 
   function isKpp(bytes) {
     if (!png.isPng(bytes)) return false;
@@ -249,7 +259,7 @@
       brushes: [{
         _rawXml: rawXml,
         _rawKppName: (fileName || 'brush.kpp'),
-        name: (nameAttr ? nameAttr[1] : (fileName || '').replace(/\.[^.]+$/, '')) || 'krita brush',
+        name: (nameAttr ? decodeXmlEntities(nameAttr[1]) : (fileName || '').replace(/\.[^.]+$/, '')) || 'krita brush',
         tip: tip,
         sizePx: sizePx,
         spacingPct: spacingPct,

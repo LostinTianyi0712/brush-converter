@@ -81,9 +81,11 @@
     </div>
     <div class="opt">
       <label>内置笔尖图库（可选）</label>
-      <button id="btnShapeLib" type="button" class="btn ghost">选择图库（ZIP 或图片文件夹）</button>
+      <button id="btnShapeLibDir" type="button" class="btn ghost">选择图库文件夹</button>
+      <button id="btnShapeLib" type="button" class="btn ghost">选择图库 ZIP / 图片</button>
       <div id="shapeLibText" class="hint">未加载：Procreate 内置 shape 图不在笔刷包里，缺图时只能用合成圆头</div>
       <input id="shapeLibInput" type="file" accept=".zip,image/png,image/jpeg" multiple hidden>
+      <input id="shapeLibDirInput" type="file" webkitdirectory directory multiple hidden>
     </div>
     <details class="advanced-opts">
       <summary>高级设置</summary>

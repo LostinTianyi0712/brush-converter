@@ -423,6 +423,25 @@
         wr.className = 'warn';
         wr.innerHTML = '<b>提示：</b>' + rec.warnings.slice(0, 6).map(esc).join('；') +
           (rec.warnings.length > 6 ? ' …' : '');
+        // #282：把「加载图库」直接放到提示里——用户看到「缺少内置笔尖原图」时就在这一行，
+        // 不用再去选项区找（选项区在页面上方，很容易被滚过去）。
+        const missingShape = !state.shapeLib && rec.brushes && rec.brushes.some(function (b) { return b && !b.tip && b.bundledShapePath; });
+        if (missingShape) {
+          const libBtn = document.createElement('button');
+          libBtn.type = 'button';
+          libBtn.className = 'btn ghost';
+          libBtn.style.marginTop = '8px';
+          libBtn.textContent = '加载内置笔尖图库（补回真图）';
+          libBtn.onclick = function (ev) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            const dirInput = $('#shapeLibDirInput');
+            if (dirInput) dirInput.click();
+            else { const zi = $('#shapeLibInput'); if (zi) zi.click(); }
+          };
+          wr.appendChild(document.createElement('br'));
+          wr.appendChild(libBtn);
+        }
         card.appendChild(wr);
       }
       if (rec.brushes && rec.brushes.length) {
@@ -481,8 +500,12 @@
       return copy;
     });
     rec.origBrushes = parsed.brushes.length;
-    // 原始字节只在解析时需要：释放它，几百支的批量解析能省下大量内存
-    rec.bytes = null;
+    rec.parseName = displayName || rec.name;
+    // 原始字节只在解析时需要：释放它，几百支的批量解析能省下大量内存。
+    // 例外：Procreate 包里有「引用了内置 shape 但包里没这张图」的笔刷时留一份，
+    // 这样用户之后才加载内置笔尖图库时能立刻原地补回（#282），不必重新导入。
+    const waitingShape = parsed.kind === 'procreate' && parsed.brushes.some(function (b) { return !b.tip && b.bundledShapePath; });
+    rec.bytes = waitingShape && bytes ? bytes : null;
   }
 
   /* 大文件用 Worker 解析（不卡界面）；失败自动回退到主线程分块解析 */
@@ -1512,7 +1535,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.64';
+  const APP_VERSION = '2.5.65';
   let lastSavedFiles = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {
@@ -1676,7 +1699,7 @@
     const el = $('#shapeLibText');
     if (!el) return;
     if (state.shapeLib && state.shapeLib.size) {
-      el.textContent = '已加载 ' + state.shapeLib.size + ' 张（缺 shape 的笔刷会按内置资源名补回真图）';
+      el.textContent = '已加载 ' + state.shapeLib.size + ' 张（缺 shape 的笔刷会按内置资源名补回真图；现有笔刷已自动重新解析）';
     } else {
       el.textContent = '未加载：Procreate 内置 shape 图不在笔刷包里，缺图时只能用合成圆头';
     }
@@ -1769,18 +1792,61 @@
     if (undecoded) pushLog('图库有 ' + undecoded + ' 张没能预解码（解析时会再试一次）：' + undecodedNames.slice(0, 12).join(', '));
     state.shapeLib = map;
     updateShapeLibText();
+    const fixed = await reparseWithShapeLib();
     toast('图库已加载 ' + map.size + ' 张' + (undecoded ? '（' + undecoded + ' 张留给浏览器再解码）' : '') +
-      '；请重新导入笔刷，缺 shape 的笔刷才会用真图', 10000);
+      (fixed ? '；已给现有笔刷补回 ' + fixed + ' 支真图笔尖' : '；缺 shape 的笔刷重新导入后会补回真图'), 12000);
+  }
+
+  /* #282：图库是后加载的，用户不该为此重新导入一遍笔刷——
+     把「当时留着原始字节的 Procreate 记录」原地重新解析一次，卡片立刻从合成圆头变成图库补回。 */
+  let relibRunning = false;
+  async function reparseWithShapeLib() {
+    if (relibRunning || !state.shapeLib) return 0;
+    const targets = state.files.filter(function (rec) {
+      return rec.bytes && rec.brushes && rec.brushes.some(function (b) { return !b.tip && b.bundledShapePath; });
+    });
+    if (!targets.length) return 0;
+    relibRunning = true;
+    let fixed = 0;
+    try {
+      for (let i = 0; i < targets.length; i++) {
+        const rec = targets[i];
+        const before = rec.brushes.filter(function (b) { return !b.tip; }).length;
+        setProgress(0.05 + 0.9 * (i / targets.length), '用图库补回笔尖：' + rec.name);
+        await sleep(0);
+        rec.warnings = (rec.warnings || []).filter(function (w) { return String(w).indexOf('内置笔尖原图') < 0; });
+        rec.brushes = null;
+        try {
+          await parseRecord(rec, rec.parseName || rec.name, rec.bytes);
+        } catch (e) {
+          pushLog('图库重解析失败 ' + rec.name + '：' + (e && e.message ? e.message : e));
+        }
+        const after = (rec.brushes || []).filter(function (b) { return !b.tip; }).length;
+        fixed += Math.max(0, before - after);
+        render();
+      }
+    } finally {
+      relibRunning = false;
+      setProgress(null);
+    }
+    updateShapeLibText();
+    return fixed;
   }
   (function initShapeLib() {
     const input = $('#shapeLibInput');
     const btn = $('#btnShapeLib');
+    const dirInput = $('#shapeLibDirInput');
+    const dirBtn = $('#btnShapeLibDir');
     if (btn && input) btn.addEventListener('click', () => input.click());
-    if (input) input.addEventListener('change', async function (e) {
-      if (isBusy()) { input.value = ''; toast('正在转换，稍后再加载图库', 5000); return; }
-      await loadShapeLibrary(e.target.files);
-      input.value = '';
-    });
+    // #282：<input type=file> 选不了文件夹，必须另开 webkitdirectory 的入口（Windows 文件对话框里没有「选文件夹」）
+    if (dirBtn && dirInput) dirBtn.addEventListener('click', () => dirInput.click());
+    async function takeFiles(el) {
+      if (isBusy()) { el.value = ''; toast('正在转换，稍后再加载图库', 5000); return; }
+      await loadShapeLibrary(el.target.files);
+      el.value = '';
+    }
+    if (input) input.addEventListener('change', takeFiles);
+    if (dirInput) dirInput.addEventListener('change', takeFiles);
     updateShapeLibText();
   })();
 

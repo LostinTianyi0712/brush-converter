@@ -425,6 +425,30 @@
       if (!diameter && tip) diameter = Math.max(tip.w, tip.h);
       const pressureSize = !!(useTipDynamics && controlSize === 2);
       const pressureOpacity = controlOpacity === 2;
+      // dBrush = PS 毛刷笔尖（bristle tip）。实测样本（个人用.abr，4 支）：
+      // Shp=1 圆钝形（全圆头）、Shp=5 平点形（扁凿头，Angl=-91/-60 带角度）。
+      // 其余字段：Dnst 密度 / Lngt 长度 / clumping 集束 / thickness 毛粗细 /
+      // stiffness 硬度（0..1，与 PS 毛刷「硬度」同义）/ physics 毛丝物理。
+      // PS 毛刷由多条毛丝实时渲染，静态位图无法复刻，只能做几何近似。
+      let bristle = null, bristleRoundness;
+      if (inner && inner.classId === 'dBrush') {
+        const unit = function (k) { return desc.unitValue(desc.getItem(inner, k)); };
+        const raw = function (k) { const v = desc.getItem(inner, k); if (typeof v === 'number') return v; return (v && typeof v.value === 'number' && v.type !== 'unit') ? v.value : undefined; };
+        const shape = raw('Shp ');
+        bristle = {
+          shape: shape,
+          shapeName: shape === 1 ? 'roundDull' : (shape === 5 ? 'flatPoint' : 'Shp' + shape),
+          density: unit('Dnst'),
+          length: unit('Lngt'),
+          clumping: unit('clumping'),
+          thickness: unit('thickness'),
+          stiffness: unit('stiffness'),
+          physics: desc.getItem(inner, 'physics') === true
+        };
+        // 平头系（实测 Shp=5）按扁凿近似为 35% 圆度椭圆（几何近似值）；
+        // 圆头系（Shp=1）保持全圆。未知形状值保守按全圆处理并在警告里带上。
+        if (shape === 5) bristleRoundness = 35;
+      }
       return {
         name: typeof name === 'string' ? name : '',
         uuid: tip && tip.uuid ? tip.uuid : undefined,
@@ -434,8 +458,9 @@
         flowPct: toolRatio('flow'),
         opacity: toolRatio('Opct'),
         angle: angle || 0,
-        roundness: roundness === undefined ? 100 : roundness,
-        hardness: hardnessRaw === undefined ? undefined : Math.max(0, Math.min(1, hardnessRaw / 100)),
+        roundness: roundness === undefined ? (bristleRoundness !== undefined ? bristleRoundness : 100) : roundness,
+        hardness: hardnessRaw === undefined ? (bristle && bristle.stiffness !== undefined ? Math.max(0, Math.min(1, bristle.stiffness)) : undefined) : Math.max(0, Math.min(1, hardnessRaw / 100)),
+        bristle: bristle,
         minSizeRatio: controlSize ? Math.max(0, (minDiam === undefined ? 10 : minDiam) / 100) : 1,
         pressureSize,
         pressureOpacity,
@@ -518,6 +543,9 @@
           brush.className = cls;
           brush.tipStyle = 'auto';
           if (computed) computedCount++;
+          else if (cls === 'dBrush') warnings.push((brush.name || ('笔刷 ' + (pi + 1))) +
+            '：毛刷笔尖 dBrush（' + (brush.bristle ? brush.bristle.shapeName : '未知形状') +
+            '）已按形状/角度/圆度近似为静态椭圆笔尖，毛丝实时质感未模拟');
           else warnings.push((brush.name || ('笔刷 ' + (pi + 1))) +
             '：' + (uuid ? '采样UUID未匹配' : ('不支持的笔尖类型 ' + cls)) +
             '，跨格式仅按圆形/椭圆参数近似，未套用其它笔刷图像');

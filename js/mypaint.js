@@ -105,7 +105,8 @@
     // 本工具导出的文件用 parent_brush_name='brushconv/<名字>' 存显示名；真实 MyPaint 文件里
     // parent_brush_name 是内置父笔刷名（如 ink），应以文件名为主，避免整批被冠成同一个名字。
     const parentRaw = doc.parent_brush_name ? String(doc.parent_brush_name) : '';
-    const parentName = parentRaw.split('/').pop();
+    // 只剥本工具的前缀 'brushconv/'；不能 split('/').pop()，否则名字本身含 '/'（如「勾线/草稿」）会被截成后半截（#281）
+    const parentName = parentRaw.replace(/^brushconv\//, '');
     const name = (/^brushconv\//.test(parentRaw) ? parentName : (fileName || parentName || 'mypaint'))
       .replace(/\.[^.]+$/, '');
     if (smudge > 0.2) warnings.push('该 MyPaint 笔刷含涂抹/混色(smudge=' + smudge.toFixed(2) + ')，转换为普通笔刷时只保留基础形状');
