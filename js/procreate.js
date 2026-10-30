@@ -116,8 +116,10 @@
     const taperStartLen = nv('taperStartLength'), taperEndLen = nv('taperEndLength');
     const wetAmount = nv('wetEdgesAmount');
     const smudgeSizeV = nv('smudgeSize'), smudgeOpacityV = nv('smudgeOpacity');
-    const smudgeOnV = smudgeSizeV > 0.5 && smudgeOpacityV > 0.5;
-    const smudgeAmount = smudgeOnV ? Math.max(0.05, Math.min(1, nv('dynamicsSmudgeAccumulation', 0.5))) : 0;
+    // Paint/Smudge/Erase are separate tools. Their remembered size/opacity
+    // does not select the Smudge tool or make this a pure smudging brush.
+    const smudgeOnV = false;
+    const smudgeAmount = 0;
     const wetAccum = nv('dynamicsWetAccumulation');
     const grainDepthV = nv('grainDepth', 0);
     const grainDepthJitter = nv('grainDepthJitter');
@@ -217,6 +219,7 @@
       smudgeOn: smudgeOnV,
       smudgeSize: smudgeSizeV,
       smudgeOpacity: smudgeOpacityV,
+      procreateSmudgeAccumulation: nv('dynamicsSmudgeAccumulation', 0.5),
       smudgeAmount: smudgeAmount,
       textureDepth: Math.max(0, Math.min(1, grainDepthV)),
       grainDepthMinimum: grainDepthMin,
@@ -491,8 +494,9 @@
       taperStartLength: brush.taperOn ? Math.max(0, Math.min(1, brush.taperStartLength === undefined ? 0.2 : brush.taperStartLength)) : 0,
       taperEndLength: brush.taperOn ? Math.max(0, Math.min(1, brush.taperEndLength === undefined ? 0.3 : brush.taperEndLength)) : 0,
       wetEdgesAmount: brush.wetEdgesOn ? Math.max(0, Math.min(1, brush.wetEdgesAmount === undefined ? 0.4 : brush.wetEdgesAmount)) : 0,
-      smudgeSize: brush.smudgeOn ? Math.max(0, Math.min(1, brush.smudgeAmount === undefined ? 0.3 : brush.smudgeAmount)) : 0,
-      smudgeOpacity: brush.smudgeOn ? Math.max(0, Math.min(1, brush.smudgeAmount === undefined ? 0.3 : brush.smudgeAmount)) : 0,
+      smudgeSize: brush.smudgeSize === undefined ? (brush.smudgeOn ? Math.max(0, Math.min(1, brush.smudgeAmount === undefined ? 0.3 : brush.smudgeAmount)) : 0) : brush.smudgeSize,
+      smudgeOpacity: brush.smudgeOpacity === undefined ? (brush.smudgeOn ? Math.max(0, Math.min(1, brush.smudgeAmount === undefined ? 0.3 : brush.smudgeAmount)) : 0) : brush.smudgeOpacity,
+      dynamicsSmudgeAccumulation: brush.procreateSmudgeAccumulation === undefined ? (brush.smudgeAmount === undefined ? 0.5 : brush.smudgeAmount) : brush.procreateSmudgeAccumulation,
       dynamicsJitterHue: Math.max(0, Math.min(1, brush.colorJitterHue || 0)),
       dynamicsJitterSaturation: Math.max(0, Math.min(1, brush.colorJitterSat || 0)),
       dynamicsJitterLightness: Math.max(0, Math.min(1, brush.colorJitterVal || 0)),
