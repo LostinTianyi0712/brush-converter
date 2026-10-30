@@ -263,7 +263,7 @@
     btnConvert.disabled = !total || busy;
     fileInput.disabled = busy;
     btnClear.disabled = busy;
-    ['#btnLog', '#btnShare', '#btnSelectAll', '#btnSaveDirectory'].forEach(function (id) { const el=$(id); if(el)el.disabled=busy; });
+    ['#btnLog', '#btnShare', '#btnShareResult', '#btnSelectAll', '#btnSaveDirectory'].forEach(function (id) { const el=$(id); if(el)el.disabled=busy; });
     document.querySelectorAll('#options input, #options select').forEach(function (el) { el.disabled=busy; });
     filesEl.classList.toggle('locked', busy);
     // 转换/保存期间卡片内的勾选框也要禁用：pointer-events 只挡鼠标，Tab+空格仍能改状态，
@@ -1257,7 +1257,9 @@
         return /^(安装\/|转换报告\.txt$|参数对比\.html$|纹理图案_|优动漫导入说明\.txt$|.*_优动漫导入说明\.txt$|优动漫SUT导入说明\.txt$|优动漫MTD导入说明\.txt$|.*_参数\.txt$)/.test(f.name);
       };
       const brushOut = outFiles.filter(function (f) { return !isAuxOut(f); });
-      if (brushOut.length === 1 && !onlyAux) {
+      const mobileWeb = !window.BrushNative && !window.BrushDesktop && window.BCSaver &&
+        window.BCSaver.isMobileBrowser && window.BCSaver.isMobileBrowser();
+      if (brushOut.length === 1 && !onlyAux && !mobileWeb) {
         payload = outFiles.slice();
       } else {
       const ts = new Date();
@@ -1296,7 +1298,7 @@
     let savedMsg = '';
     try {
       lastSavedFiles = payload;
-      savedMsg = await saveOutputs(payload, { packOut: opts.packOut !== false });
+      savedMsg = await saveOutputs(payload, { packOut: opts.packOut !== false, manualDownload: true });
     } catch (e) {
       toast('保存失败：' + (e && e.message ? e.message : e), 7000);
       state.converting = false;
@@ -1406,7 +1408,7 @@
         outAll = [{ name: bundleName + '_' + stamp + '.zip', data: BC.zip.write(all) }];
       }
       lastSavedFiles = outAll;
-      const savedMsg = await saveOutputs(outAll, { packOut: packOutMode });
+      const savedMsg = await saveOutputs(outAll, { packOut: packOutMode, manualDownload: true });
       if (savedMsg === null) { toast('已取消保存'); return; }
       if (savedMsg && String(savedMsg).indexOf('ERROR') === 0) throw new Error(String(savedMsg).slice(6));
       let msg = '完成：' + sink.length + (packOutMode ? (outAll.length === 1 ? ' 个文件' : ' 个包') : ' 批文件') + '（' + files + ' 个文件，共 ' + done + ' 支笔刷）';
@@ -1436,6 +1438,7 @@
       if (btnCancel) btnCancel.style.display = 'none';
       setProgress(null);
       render();
+      renderResultPanel();
     }
   }
 
@@ -1463,8 +1466,8 @@
       updateConvertButton();
     }
   }
-  /* 结果文件面板：手机浏览器（夸克/UC 等）会拦掉自动触发的下载，
-     这里给出「真实点按手势」的保存入口，让用户还能把文件拿到手。 */
+  /* Prepare visible links before the next tap; conversion itself may outlive
+     the user activation needed by mobile download/share UI. */
   function formatSize(n) {
     if (!n && n !== 0) return '';
     if (n < 1024) return n + ' B';
@@ -1477,15 +1480,27 @@
     if (!panel || !list) return;
     const files = lastSavedFiles || [];
     const webOnly = !window.BrushNative && !window.BrushDesktop;
+    const saver = window.BCSaver;
     if (!files.length || !webOnly) {
+      if (saver && saver.releaseDownloads) saver.releaseDownloads();
+      preparedShare = null;
+      preparedShareSource = null;
       panel.style.display = 'none';
       list.innerHTML = '';
       return;
     }
     panel.style.display = '';
     list.innerHTML = '';
-    /* 苹果设备（iOS/iPadOS 的 WebKit）：下载走 blob，文件进「文件」App →「下载」；
-       没反应就用右上「分享保存」。给一句话说明，避免用户以为没保存成功。 */
+    if (preparedShareSource !== files) {
+      preparedShareSource = files;
+      preparedShare = null;
+      if (saver && saver.prepareShare) {
+        try { preparedShare = saver.prepareShare(files); }
+        catch (e) { pushLog('SHARE 准备失败：' + (e.message || e)); }
+      }
+    }
+    if (btnShare) btnShare.textContent = preparedShare && preparedShare.zipped ? '分享ZIP保存' : '分享保存';
+    if (btnShareResult) btnShareResult.textContent = preparedShare && preparedShare.zipped ? '分享ZIP保存' : '分享保存';
     const iosWebKit = window.BCSaver && typeof window.BCSaver.isIOSWebKit === 'function'
       ? window.BCSaver.isIOSWebKit() : false;
     if (iosWebKit) {
@@ -1493,12 +1508,10 @@
       iosNote.className = 'result-item result-warn';
       const iosTxt = document.createElement('span');
       iosTxt.className = 'result-name';
-      iosTxt.textContent = '苹果设备：点「保存」后文件会进「文件」App →「下载」；若没反应，请点右上「分享保存」存到「文件」或「我的 iPhone」。';
+      iosTxt.textContent = '苹果设备：点「下载」后确认浏览器下载提示，再到「文件」App 查看；也可点右上「分享保存」→「存储到文件」。ZIP 请解压后导入笔刷。';
       iosNote.appendChild(iosTxt);
       list.appendChild(iosNote);
     }
-    /* 夸克/UC 这类浏览器只肯下载真实 http(s) 文件，网页生成的文件会被静默拦掉
-       （实测 blob:/data:/新标签打开 全部无效）。给出可用的替代路径。 */
     const hostile = window.BCSaver && typeof window.BCSaver.downloadHostileName === 'function'
       ? window.BCSaver.downloadHostileName() : '';
     if (hostile) {
@@ -1506,7 +1519,9 @@
       note.className = 'result-item result-warn';
       const txt = document.createElement('span');
       txt.className = 'result-name';
-      txt.textContent = '当前浏览器（' + hostile + '）不允许保存网页生成的文件。请装安卓版 APK（直接存到手机 Downloads），或复制本页地址用 Chrome 打开。';
+      txt.textContent = preparedShare
+        ? '若' + hostile + '未拉起下载，请试「分享保存」并选择系统文件或接收应用。ZIP 请解压后导入笔刷。'
+        : hostile + '可能拦截网页生成的文件，当前浏览器也未提供可用的文件分享。若未拉起下载，请用 Chrome 或安卓版 APK；点击链接不代表文件已保存。';
       const apk = document.createElement('button');
       apk.className = 'btn primary';
       apk.textContent = '安装安卓版 APK';
@@ -1529,25 +1544,24 @@
       const name = document.createElement('span');
       name.className = 'result-name';
       name.textContent = f.name + '（' + formatSize(f.data ? f.data.length : 0) + '）';
-      const save = document.createElement('button');
+      const save = document.createElement('a');
       save.className = 'btn ghost';
-      save.textContent = '保存';
-      save.addEventListener('click', function () {
-        if (!window.BCSaver || typeof window.BCSaver.downloadOne !== 'function') { toast('当前环境不支持保存', 6000); return; }
-        window.BCSaver.downloadOne(f);
-        toast('已发起下载：' + f.name + '（若无反应，试「新标签打开」或右上「分享保存」）', 7000);
-      });
-      const open = document.createElement('button');
-      open.className = 'btn ghost';
-      open.textContent = '新标签打开';
-      open.addEventListener('click', function () {
-        if (!window.BCSaver || typeof window.BCSaver.openOne !== 'function' || !window.BCSaver.openOne(f)) {
-          toast('这个文件无法在新标签打开（太大或浏览器限制），请用右上「分享保存」', 7000);
-        }
+      save.textContent = /\.zip$/i.test(f.name) ? '下载ZIP' : '下载';
+      let link = null;
+      try { if (saver && saver.prepareDownload) link = saver.prepareDownload(f); }
+      catch (e) { pushLog('DOWNLOAD 准备失败：' + (e.message || e)); }
+      if (link) {
+        save.href = link.url;
+        save.download = link.name;
+        save.rel = 'noopener';
+      } else save.setAttribute('aria-disabled', 'true');
+      save.addEventListener('click', function (e) {
+        if (!link) { e.preventDefault(); toast('下载链接未能生成，请试「分享保存」或分批转换', 7000); return; }
+        // Let the anchor's default action run on this real tap.
+        toast('已请求下载：' + f.name + '；请确认浏览器提示，若无反应请试「分享保存」', 7000);
       });
       row.appendChild(name);
       row.appendChild(save);
-      row.appendChild(open);
       list.appendChild(row);
     });
   }
@@ -1598,8 +1612,10 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.70';
+  const APP_VERSION = '2.5.71';
   let lastSavedFiles = null;
+  let preparedShare = null;
+  let preparedShareSource = null;
   const NOTICE_KEY = 'brushconv_notice_20261022_seen';
   function noticeHtml() {
     return '<h2>公告</h2>' +
@@ -1731,20 +1747,22 @@
     } catch (e) { /* 离线/本地文件忽略 */ }
   })();
   const btnShare = $('#btnShare');
-  if (btnShare) {
-    if (!(navigator.canShare && navigator.share)) btnShare.style.display = 'none';
-    btnShare.addEventListener('click', async function () {
+  const btnShareResult = $('#btnShareResult');
+  [btnShare, btnShareResult].filter(Boolean).forEach(function (button) {
+    if (!(navigator.canShare && navigator.share)) { button.style.display = 'none'; return; }
+    button.hidden = false;
+    button.addEventListener('click', async function () {
       if (!lastSavedFiles || !lastSavedFiles.length) { toast('还没有可分享的转换结果'); return; }
       try {
-        const files = lastSavedFiles.map(function (f) {
-          const data = f.data instanceof Uint8Array ? f.data : new Uint8Array(f.data);
-          return new File([data], f.name, { type: 'application/octet-stream' });
-        });
-        if (navigator.canShare({ files: files })) await navigator.share({ files: files, title: '笔刷转换结果' });
-        else toast('当前浏览器不支持分享文件');
-      } catch (e) { /* 用户取消 */ }
+        if (!preparedShare) { toast('当前浏览器不支持分享这些文件，请点下方下载，或用 Chrome / 安卓版 APK 保存', 8000); return; }
+        await navigator.share({ files: preparedShare.files, title: '笔刷转换结果' });
+        toast('已交给系统分享；请在接收应用或「文件」中确认是否保存', 7000);
+      } catch (e) {
+        if (e && e.name === 'AbortError') toast('已取消分享，转换结果仍在下方');
+        else { pushLog('SHARE ' + (e && e.message || e)); toast('分享未完成：' + (e && e.message || '浏览器限制') + '；请试下载或换 Chrome / 安卓版 APK', 8000); }
+      }
     });
-  }
+  });
   if ($('#optTarget')) $('#optTarget').addEventListener('change', function () { render(); });
   const btnDemo = $('#btnDemo');
   if (btnDemo) btnDemo.addEventListener('click', function (e) { e.stopPropagation(); window.BCDemo.loadSample(); });
@@ -2135,6 +2153,45 @@
         if (r && r.ok) pushLog('启动时已加载图库包 ' + r.count + ' 张');
       });
     }
+  })();
+
+  /* 手机竖屏：向下划动时把顶栏的次要按钮（全选笔刷 / 参数对比 / 清空 / 分享保存）收起，
+     只留「转换并下载」，把屏幕还给列表；向上划或回到顶部自动恢复。
+     桌面宽度不参与，避免大屏误收起。 */
+  (function initMobileTopbarCollapse() {
+    const bar = document.querySelector('.topbar');
+    if (!bar) return;
+    const mq = window.matchMedia ? window.matchMedia('(max-width: 640px)') : null;
+    let lastY = window.scrollY || window.pageYOffset || 0;
+    let ticking = false;
+    let suppressUntil = 0;
+    const setCompact = function (on) {
+      if (on === bar.classList.contains('nav-compact')) return;
+      bar.classList.toggle('nav-compact', on);
+      // 收起/展开会改变文档高度，浏览器可能立刻钳位滚动位置并再触发 scroll；
+      // 这段时间内的滚动事件只同步 lastY，不参与方向判断，避免来回抖动。
+      suppressUntil = Date.now() + 260;
+    };
+    const onScroll = function () {
+      if (ticking) return;
+      ticking = true;
+      (window.requestAnimationFrame || function (f) { return setTimeout(f, 16); })(function () {
+        ticking = false;
+        const y = window.scrollY || window.pageYOffset || 0;
+        const mobile = mq ? mq.matches : window.innerWidth <= 640;
+        if (!mobile) { setCompact(false); lastY = y; return; }
+        if (Date.now() < suppressUntil) { lastY = y; return; }
+        const dy = y - lastY;
+        if (y <= 90) setCompact(false);        // 回到顶部一定恢复
+        else if (dy > 10) setCompact(true);    // 向下划：收起
+        else if (dy < -10) setCompact(false);  // 向上划：恢复
+        lastY = y;
+      });
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    // 转屏 / 拉宽窗口回来时复原，避免停在收起状态
+    if (mq && mq.addEventListener) mq.addEventListener('change', function () { setCompact(false); });
+    else window.addEventListener('resize', function () { setCompact(false); });
   })();
 
   $('#ver').textContent = 'v' + APP_VERSION + ' · 修复 Procreate / Photoshop / 画世界Pro 参数与双笔刷互转 · 纯本地';

@@ -20,14 +20,14 @@
     try {
       var ua = navigator.userAgent || '';
       if (/Android|iPhone|iPad|iPod|Mobile|HarmonyOS/i.test(ua)) return true;
+      if (/Macintosh/i.test(ua) && navigator.maxTouchPoints > 1) return true;
       if (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) return true;
     } catch (e) { /* ignore */ }
     return false;
   }
 
-  /* 只认「真实 http(s) 文件」的浏览器：夸克实测对 blob:/data:/window.open(blob)/
-     a[target=_blank](blob) 全部静默失败；它自己的下载器还会绕过页面里的 Service Worker
-     重新请求 URL。这类环境只能引导用户装 APK 或换浏览器。 */
+  /* These browsers may delegate downloads to an external downloader. Detecting the
+     UA is a hint, not proof that a particular download was blocked or saved. */
   function downloadHostileName() {
     try {
       var ua = navigator.userAgent || '';
@@ -50,13 +50,14 @@
     return map[ext] || 'application/octet-stream';
   }
 
-  /* 手机浏览器（夸克/UC/QQ 等）普遍不支持 blob: 下载：点了没有任何反应。
-     小文件改用 data: URL（这些浏览器吃 data:），大文件仍用 blob，但 blob URL
-     必须活得够久——以前 4 秒就 revoke，下载刚发起就被判失败。 */
+  function downloadName(name) {
+    return String(name || 'file').split(/[\\/]/).pop() || 'file';
+  }
+
   function clickAnchor(url, name) {
     var a = document.createElement('a');
     a.href = url;
-    a.download = String(name || 'file').split('/').pop();
+    a.download = downloadName(name);
     a.rel = 'noopener';
     a.style.display = 'none';
     document.body.appendChild(a);
@@ -64,9 +65,7 @@
     setTimeout(function () { try { document.body.removeChild(a); } catch (e) { /* ignore */ } }, 8000);
   }
 
-  /* iOS / iPadOS 上的 WebKit（Safari、以及所有 iOS 浏览器内核）不认 data: URI 下载：
-     a[download] + data: 会被当成「打开」而不是下载；blob: + a[download] 从 iOS 13 起可用。
-     所以苹果设备上必须走 blob，不能走 data。iPadOS 13+ 的 UA 是 Macintosh，需要靠触点判断。 */
+  /* iPadOS may use a Macintosh UA; include its touch points in detection. */
   function isWebKitIOS() {
     try {
       var ua = navigator.userAgent || '';
@@ -78,18 +77,51 @@
 
   function downloadFile(name, bytes, mime) {
     var mimeType = mime || mimeFor(name);
-    var ios = isWebKitIOS();
-    if (!ios && bytes.length <= 8 * 1024 * 1024) {
-      try {
-        clickAnchor('data:' + mimeType + ';base64,' + base64FromBytes(bytes), name);
-        return 'data';
-      } catch (e) { /* 回退 blob */ }
-    }
     var blob = new Blob([bytes], { type: mimeType });
     var url = URL.createObjectURL(blob);
     clickAnchor(url, name);
     setTimeout(function () { try { URL.revokeObjectURL(url); } catch (e) { /* ignore */ } }, 180000);
     return 'blob';
+  }
+
+  // Visible download links stay usable while the results are shown, including
+  // after minutes of reading the report. Retire them only when results change.
+  var downloadLinks = new WeakMap();
+  var downloadUrls = [];
+  function prepareDownload(file) {
+    if (!file || !file.data || !file.data.length) return null;
+    var info = downloadLinks.get(file);
+    if (!info) {
+      var mime = mimeFor(file.name);
+      var name = downloadName(file.name);
+      var blob = typeof File === 'function' ? new File([file.data], name, { type: mime }) : new Blob([file.data], { type: mime });
+      info = { url: URL.createObjectURL(blob), name: name, mime: mime, blob: blob };
+      downloadLinks.set(file, info);
+      downloadUrls.push(info.url);
+    }
+    return info;
+  }
+
+  function releaseDownloads() {
+    var retired = downloadUrls;
+    downloadUrls = [];
+    downloadLinks = new WeakMap();
+    // An already-started download must survive starting the next conversion.
+    if (retired.length) setTimeout(function () {
+      retired.forEach(function (url) { try { URL.revokeObjectURL(url); } catch (e) { /* ignore */ } });
+    }, 180000);
+  }
+
+  // Prepare before the next user tap: share() needs fresh transient activation.
+  // Some share sheets reject custom brush extensions; offer a real ZIP instead.
+  function prepareShare(files) {
+    if (!(navigator.canShare && navigator.share) || typeof File !== 'function' || !files || !files.length) return null;
+    var raw = files.map(function (f) { return prepareDownload(f).blob; });
+    if (navigator.canShare({ files: raw })) return { files: raw, zipped: false };
+    if (files.length === 1 && /\.zip$/i.test(files[0].name)) return null;
+    if (!window.BC || !window.BC.zip || !window.BC.zip.write) return null;
+    var zipped = new File([window.BC.zip.write(files)], '笔刷转换结果.zip', { type: 'application/zip' });
+    return navigator.canShare({ files: [zipped] }) ? { files: [zipped], zipped: true } : null;
   }
 
   async function saveViaAndroid(name, bytes, mime, onChunk) {
@@ -126,6 +158,10 @@
 
   var webFolder = null;
   window.BCSaver = {
+    isMobileBrowser: isMobileWeb,
+    prepareDownload: prepareDownload,
+    releaseDownloads: releaseDownloads,
+    prepareShare: prepareShare,
     /* 供「结果文件」面板在真实点按手势里重试下载：手机浏览器只肯在用户手势内接受下载，
        自动触发的那次经常被拦（夸克等）。 */
     downloadOne: function (file) {
@@ -135,10 +171,10 @@
     },
     openOne: function (file) {
       if (!file || !file.data || !file.data.length) return false;
-      if (file.data.length > 8 * 1024 * 1024) return false;
       try {
-        var url = 'data:' + mimeFor(file.name) + ';base64,' + base64FromBytes(file.data);
-        return !!window.open(url, '_blank');
+        var opened = window.open(prepareDownload(file).url, '_blank');
+        if (opened) opened.opener = null;
+        return !!opened;
       } catch (e) { return false; }
     },
     supportsDirectory: function () {
@@ -247,24 +283,24 @@
       }
 
       // 4) fallback: browser downloads
-      var bigOnMobile = false;
+      if (opts.manualDownload && isMobileWeb()) {
+        return '转换结果已准备好，请在下方「结果文件」点下载；若未拉起下载，试「分享保存」';
+      }
       for (i = 0; i < files.length; i++) {
         progress(i / files.length, '正在下载 ' + (i + 1) + '/' + files.length + '：' + files[i].name);
         downloadFile(files[i].name, files[i].data, mimeFor(files[i].name));
-        if (isMobileWeb() && files[i].data.length > 8 * 1024 * 1024) bigOnMobile = true;
         await sleep(180);
       }
-      if (bigOnMobile) return '已发起 ' + files.length + ' 个下载；其中有超过 8MB 的文件，手机浏览器常拦这种大文件，建议把输出改成「单独文件」再转一次';
       var hostile = downloadHostileName();
       if (hostile) {
-        return '当前浏览器（' + hostile + '）会拦网页生成的文件，下载多半存不下来；请点下方「安装安卓版 APK」（原生保存到手机），或复制本页地址用 Chrome 打开';
+        return '已请求下载；' + hostile + '可能拦截网页生成的文件。若未拉起下载，请试「分享保存」，或用 Chrome / 安卓版 APK 保存';
       }
       if (isWebKitIOS()) {
         return '已发起 ' + files.length + ' 个下载；苹果设备请到「文件」App →「下载」里查看' +
           (files.length > 1 ? '（Safari 一次只放行一个下载，建议用「整包一个文件」）' : '') +
           '；若没有反应，请点右上「分享保存」存到「文件」';
       }
-      return '已发起 ' + files.length + ' 个下载；手机浏览器若没反应，请点下方「结果文件」里的保存按钮重试';
+      return '已发起 ' + files.length + ' 个下载；手机浏览器若没反应，请点下方「结果文件」里的下载链接重试';
     }
   };
 })();
