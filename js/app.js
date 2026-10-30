@@ -1683,7 +1683,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.6.5';
+  const APP_VERSION = '2.6.6';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -1955,7 +1955,7 @@
     return { map: map, index: index };
   }
   async function bundledShapeLibBytes() {
-    // 安卓 App：图库包就在 APK 里（assets/app/shape-lib.zip），WebView 读不了 file://，走原生分块
+    // 安卓 App：图库包在 APK assets 里，或已下载到 App 私有目录；WebView 读不了 file://，走原生分块
     const native = window.BrushNative;
     if (native && typeof native.shapeLibLength === 'function' && typeof native.shapeLibChunk === 'function') {
       const total = Number(native.shapeLibLength());
@@ -1963,6 +1963,8 @@
         // 小包版（不带图库）不能默默去拉 32MB：直接告知，让用户自己选下载或手动选图库
         throw new Error('这个安装包没带内置图库（可在下面下载，或手动选图库文件夹）');
       }
+      let source = 'asset';
+      try { if (typeof native.shapeLibSource === 'function') source = String(native.shapeLibSource()); } catch (e) { /* ignore */ }
       if (total > 0) {
         const bytes = new Uint8Array(total);
         const CHUNK = 3 * 1024 * 1024;
@@ -1973,7 +1975,7 @@
           const n = Math.min(bin.length, total - off);
           for (let i = 0; i < n; i++) bytes[off + i] = bin.charCodeAt(i);
         }
-        return { bytes: bytes, name: '应用内置图库包', path: 'assets/app/shape-lib.zip' };
+        return { bytes: bytes, name: source === 'file' ? 'App 内已下载的图库包' : '应用内置图库包', path: source === 'file' ? 'files/shape-lib.zip' : 'assets/app/shape-lib.zip' };
       }
     }
     const desk = window.BrushDesktop;
@@ -2280,6 +2282,23 @@
     return (window.BrushNative || window.BrushDesktop) ? SITE_BASE + enc : enc;
   }
   let shapeLibDlBusy = false;
+  /* 安卓：走原生下载（WebView 自己 fetch 32MB 实测卡在 0/32MB），下载完直接读 App 私有目录 */
+  async function nativeShapeLibDownload(url, btn, totalMB) {
+    const native = window.BrushNative;
+    btn.textContent = '下载中 0/' + totalMB + 'MB…';
+    if (!native.shapeLibDownloadStart(url)) throw new Error('已有下载在进行');
+    const started = Date.now();
+    for (;;) {
+      await new Promise(function (r) { setTimeout(r, 400); });
+      const raw = String(native.shapeLibDownloadStatus() || 'idle|0|-1');
+      const parts = raw.split('|');
+      const st = parts[0], got = Number(parts[1]) || 0, total = Number(parts[2]) || 0;
+      if (st === 'done') { btn.textContent = '下载完成，正在导入…'; return; }
+      if (st.indexOf('error') === 0) throw new Error(st.slice(6) || '下载失败');
+      btn.textContent = '下载中 ' + Math.round(got / 1048576) + '/' + (total > 0 ? Math.round(total / 1048576) : totalMB) + 'MB…';
+      if (Date.now() - started > 15 * 60 * 1000) throw new Error('下载超时');
+    }
+  }
   async function downloadShapeLibPack(btn, pack) {
     pack = pack || SHAPE_LIB_PACKS.lite;
     if (shapeLibDlBusy) return;
@@ -2291,6 +2310,21 @@
     try {
       btn.disabled = true;
       const totalBytes = pack.totalMB * 1048576;
+      // 安卓 App：原生下载（接口存在时优先），完成后再从私有目录读字节导入
+      if (window.BrushNative && typeof window.BrushNative.shapeLibDownloadStart === 'function' && pack.parts.length === 1) {
+        await nativeShapeLibDownload(shapeLibUrl(pack.parts[0]), btn, pack.totalMB);
+        btn.textContent = '正在导入图库…';
+        const got = await bundledShapeLibBytes();
+        const nativeFile = new File([got.bytes], pack.zipName, { type: 'application/zip' });
+        const upgrade = !!(state.shapeLib && state.shapeLibPackKey !== pack.key);
+        await loadShapeLibrary([nativeFile], pack.label, upgrade);
+        state.shapeLibPackKey = pack.key;
+        btn.textContent = pack.doneText;
+        toast('图库包已下载到 App 内（下次启动自动加载，不用再下）', 5000);
+        pushLog('图库包已通过原生下载保存：' + got.bytes.length + 'B');
+        render();
+        return;
+      }
       let blob;
       if (pack.parts.length === 1) {
         const resp = await fetch(shapeLibUrl(pack.parts[0]));
