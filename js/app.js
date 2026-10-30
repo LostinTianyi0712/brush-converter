@@ -1683,7 +1683,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.6.4';
+  const APP_VERSION = '2.6.5';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2207,6 +2207,52 @@
      选项区的常驻按钮和缺图笔刷提示里的指引按钮共用这一个流程：
      流式显示下载进度 → 喂给 loadShapeLibrary → 自动 reparse 补回真笔尖。
      #303：精简512（32MB 单文件，推荐）与原图高清（216MB 分 3 卷，浏览器自动合并）两档可选。 */
+  /* 图库包跨会话记忆：小包版/网页每次重开都要重下 32MB 太浪费，下过一次就存 IndexedDB。
+     只存精简档（32MB）；原图 216MB 不存，避免撑爆配额。 */
+  const ShapeLibStore = (function () {
+    const DB_NAME = 'brushconv-shapelib', STORE = 'packs', KEY = 'lite';
+    let dbp = null;
+    function open() {
+      if (dbp) return dbp;
+      dbp = new Promise(function (resolve, reject) {
+        if (!window.indexedDB) return reject(new Error('当前环境不支持 IndexedDB'));
+        const req = indexedDB.open(DB_NAME, 1);
+        req.onupgradeneeded = function () { try { req.result.createObjectStore(STORE); } catch (e) { /* ignore */ } };
+        req.onsuccess = function () { resolve(req.result); };
+        req.onerror = function () { reject(req.error || new Error('IndexedDB 打开失败')); };
+      });
+      return dbp;
+    }
+    async function get() {
+      try {
+        const db = await open();
+        return await new Promise(function (resolve, reject) {
+          const tx = db.transaction(STORE, 'readonly');
+          const r = tx.objectStore(STORE).get(KEY);
+          r.onsuccess = function () { resolve(r.result || null); };
+          r.onerror = function () { reject(r.error); };
+        });
+      } catch (e) { return null; }
+    }
+    async function put(bytes) {
+      try {
+        const db = await open();
+        await new Promise(function (resolve, reject) {
+          const tx = db.transaction(STORE, 'readwrite');
+          tx.objectStore(STORE).put(bytes, KEY);
+          tx.oncomplete = function () { resolve(); };
+          tx.onerror = function () { reject(tx.error); };
+        });
+        return true;
+      } catch (e) { pushLog('图库缓存写入失败：' + ((e && e.message) || e)); return false; }
+    }
+    async function clear() {
+      try { const db = await open(); const tx = db.transaction(STORE, 'readwrite'); tx.objectStore(STORE).delete(KEY); } catch (e) { /* ignore */ }
+    }
+    return { get: get, put: put, clear: clear };
+  })();
+  window.__shapeLibCache = ShapeLibStore;
+
   const SHAPE_LIB_PACKS = {
     lite: {
       key: 'lite',
@@ -2286,11 +2332,16 @@
         blob = new Blob(chunks);
       }
       btn.textContent = '正在导入图库…';
+      const packBytes = new Uint8Array(await blob.arrayBuffer());
+      // 跨会话记忆：精简档存 IndexedDB（小包版/网页下次重开不用重下）
+      if (pack.key === 'lite') {
+        const cached = await ShapeLibStore.put(packBytes);
+        if (cached) pushLog('图库包已缓存到 IndexedDB（' + packBytes.length + 'B）');
+      }
       // 桌面版：顺手把包存到程序目录，下次启动自动加载（不用再下）
       if (window.BrushDesktop && typeof window.BrushDesktop.saveShapeLib === 'function') {
         try {
-          const arr = new Uint8Array(await blob.arrayBuffer());
-          const saved = await window.BrushDesktop.saveShapeLib(arr, pack.key === 'full' ? 'Procreate内置笔尖图库_原图.zip' : 'Procreate内置笔尖图库_精简512.zip');
+          const saved = await window.BrushDesktop.saveShapeLib(packBytes, pack.key === 'full' ? 'Procreate内置笔尖图库_原图.zip' : 'Procreate内置笔尖图库_精简512.zip');
           if (saved && saved.ok) {
             pushLog('图库包已存到程序目录：' + saved.path);
             toast('图库包已下载并保存到程序目录，下次启动自动加载：' + (saved.path || ''), 6000);
@@ -2299,7 +2350,7 @@
           }
         } catch (e) { pushLog('图库包保存异常：' + ((e && e.message) || e)); }
       }
-      const file = new File([blob], pack.zipName, { type: 'application/zip' });
+      const file = new File([packBytes], pack.zipName, { type: 'application/zip' });
       // 精简→原图升级时已有笔刷不缺 tip，需要强制重建才能换上高清笔尖
       const isUpgrade = !!(state.shapeLib && state.shapeLibPackKey !== pack.key);
       await loadShapeLibrary([file], pack.label, isUpgrade);
@@ -2346,11 +2397,30 @@
         dlFull.addEventListener('click', function () { downloadShapeLibPack(dlFull, SHAPE_LIB_PACKS.full); });
       }
     }
-    // 桌面 / 安卓：图库包就在程序目录，启动就加载，用户什么都不用点（网页版要先下 32MB，改成用到才下）
+    // 桌面 / 安卓：图库包就在程序目录（或 APK 内置），启动就加载，用户什么都不用点（网页版要先下 32MB，改成用到才下）
+    // 小包版 / 网页：如果上次下过精简图库（IndexedDB 缓存），直接恢复，不用每次重下 32MB
+    async function restoreCachedShapeLib() {
+      if (state.shapeLib) return;
+      if (window.BrushDesktop) return; // 桌面走程序目录
+      try {
+        const cached = await ShapeLibStore.get();
+        if (!cached || !cached.length || state.shapeLib) return;
+        const file = new File([cached], 'Procreate内置笔尖图库_精简512.zip', { type: 'application/zip' });
+        await loadShapeLibrary([file], '上次下载的精简图库（缓存）', false);
+        if (state.shapeLib && state.shapeLib.size) {
+          state.shapeLibPackKey = 'lite';
+          pushLog('启动时从 IndexedDB 恢复图库 ' + state.shapeLib.size + ' 张 / ' + cached.length + 'B');
+          toast('已恢复上次下载的图库包（' + state.shapeLib.size + ' 张），不用重新下载', 5000);
+        }
+      } catch (e) { pushLog('恢复缓存图库失败：' + ((e && e.message) || e)); }
+    }
     if (!state.shapeLib && (window.BrushDesktop || window.BrushNative)) {
       loadBundledShapeLib().then(function (r) {
         if (r && r.ok) pushLog('启动时已加载图库包 ' + r.count + ' 张');
+        else restoreCachedShapeLib();
       });
+    } else {
+      restoreCachedShapeLib();
     }
   })();
 
