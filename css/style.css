@@ -335,33 +335,26 @@ main {
 .footer > * + * { margin-left: 12px; }
 
 @media (max-width: 640px) {
-  /* 顶栏随上划逐渐收起：收起进度 --navp (0=全展开, 1=全收起) 由 JS 按滚动位置连续设置，
-     各尺寸用 calc() 插值，滚动多少收多少、无级可逆 */
-  .topbar { flex-direction: column; align-items: stretch; gap: calc(10px - 6px * var(--navp, 0)); padding: calc(10px - 4px * var(--navp, 0)) 12px; }
+  /* 顶栏随上划逐渐滑出（不塌缩）：内部内容整体原尺寸上移 + 头部高度裁剪，
+     按钮/标题大小全程不变；进度 --navp (0=全展开, 1=滑到只剩「转换并下载」) 由 JS 按滚动位置连续设置。
+     --barh=整栏高度 --barslide=收起量 --navshift=内容上移距离（均为 JS 实测的纯数字，px 交给 calc）。 */
+  .topbar { flex-direction: column; align-items: stretch; gap: 10px; padding: 10px 12px; }
+  .topbar.nav-ready { overflow: hidden; height: calc(var(--barh, 220) * 1px - var(--navp, 0) * var(--barslide, 0) * 1px); }
+  .topbar > * { transform: translateY(calc(var(--navp, 0) * var(--navshift, 0) * -1px)); will-change: transform; }
   .brand { display: flex; align-items: center; }
-  .brand .logo { width: calc(30px - 4px * var(--navp, 0)); height: calc(30px - 4px * var(--navp, 0)); border-radius: 8px; }
-  .brand h1 { font-size: calc(16px - 1.5px * var(--navp, 0)); }
+  .brand .logo { width: 30px; height: 30px; border-radius: 8px; }
+  .brand h1 { font-size: 16px; }
   .actions {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: calc(8px - 8px * var(--navp, 0));
+    gap: 8px;
     width: 100%;
     margin: 0;
   }
   .actions > * + * { margin-left: 0; }
   .actions .btn { width: 100%; padding: 9px 6px; font-size: 13px; white-space: normal; }
-  /* 转换按钮在手机上占满一整行、排最前；收起过程中略微压缩 */
-  .actions #btnConvert { grid-column: 1 / -1; padding: calc(11px - 3px * var(--navp, 0)) 6px; font-size: calc(14px - 1px * var(--navp, 0)); }
-  /* 次要按钮（全选笔刷/参数对比/清空/分享保存）随进度坍缩：行高、内边距、透明度同步插值 */
-  .actions > .btn:not(#btnConvert):not(#btnCancel) {
-    overflow: hidden;
-    max-height: calc(48px * (1 - var(--navp, 0)));
-    padding-top: calc(9px * (1 - var(--navp, 0)));
-    padding-bottom: calc(9px * (1 - var(--navp, 0)));
-    opacity: calc(1 - var(--navp, 0));
-  }
-  /* 收起过半后次要按钮不可再点（避免点到透明按钮） */
-  .topbar.nav-past .actions > .btn:not(#btnConvert):not(#btnCancel) { pointer-events: none; }
+  /* 转换按钮在手机上占满一整行、排最前（滑出后裁剪线正好停在它下面） */
+  .actions #btnConvert { grid-column: 1 / -1; padding: 11px 6px; font-size: 14px; }
   main { padding: 6px 10px 28px; }
   .step { margin-top: 20px; }
   .step-title h2 { font-size: 18px; }

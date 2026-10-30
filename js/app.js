@@ -1612,7 +1612,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.5.75';
+  const APP_VERSION = '2.5.76';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2155,9 +2155,9 @@
     }
   })();
 
-  /* 手机竖屏：顶栏随上划「逐渐收起」——收起进度与滚动位置连续映射（不是触发式开关），
-     上划多少收多少、下划逐级展开；只留「转换并下载」，把屏幕还给列表。
-     进度写入 CSS 变量 --navp，尺寸插值全在 style.css。桌面宽度不参与。 */
+  /* 手机竖屏：顶栏随上划「逐渐滑出」（不塌缩）——内容整体原尺寸上移，头部高度同步裁剪，
+     滚动位置与滑出进度 --navp 连续映射；滑到底只剩「转换并下载」。
+     上划多少滑多少、下划逐级滑回；桌面宽度不参与。 */
   (function initMobileTopbarCollapse() {
     const bar = document.querySelector('.topbar');
     if (!bar) return;
@@ -2167,19 +2167,33 @@
       const se = document.scrollingElement || document.documentElement;
       return (window.scrollY || window.pageYOffset || 0) || (se && se.scrollTop) || (document.body && document.body.scrollTop) || 0;
     };
-    const START = 90, DIST = 220;   // 滚过 90px 开始收起，再滚 220px 完全收起
+    const START = 90, DIST = 220;   // 滚过 90px 开始滑出，再滚 220px 完全滑出
     let lastP = -1;
     const setProgress = function (p) {
       if (p === lastP) return;
       lastP = p;
       bar.style.setProperty('--navp', p.toFixed(3));
-      bar.classList.toggle('nav-past', p >= 0.5);   // 收起过半后次要按钮不可点
     };
     const applyY = function (y) {
       if (!isMobile()) { setProgress(0); return; }
       const p = Math.max(0, Math.min(1, (y - START) / DIST));
       setProgress(Math.round(p * 200) / 200);       // 量化到 0.5%，减少无谓的样式写入
     };
+    /* 量测（必须在 p=0 时进行）：整栏高度、滑出量（保留「转换并下载」条）、内容上移距离。
+       结果以纯数字写入变量，px 单位在 CSS calc 里乘。 */
+    const measure = function () {
+      const actions = bar.querySelector('.actions');
+      const convert = document.querySelector('#btnConvert');
+      if (!actions || !convert) return;
+      const fullH = bar.offsetHeight;
+      const finalH = convert.offsetHeight + 12;     // 滑到底：上下各留 6px 的转换按钮条
+      bar.style.setProperty('--barh', String(Math.round(fullH)));
+      bar.style.setProperty('--barslide', String(Math.max(0, Math.round(fullH - finalH))));
+      bar.style.setProperty('--navshift', String(Math.max(0, Math.round(actions.offsetTop - 6))));
+      bar.classList.add('nav-ready');               // 量测完成才启用裁剪，避免初始闪烁
+    };
+    measure();
+    if (window.addEventListener) window.addEventListener('load', measure);  // 字体/布局就绪后校准
     let ticking = false;
     let lastScrollAt = 0;
     const onScroll = function () {
@@ -2193,7 +2207,7 @@
     };
     window.addEventListener('scroll', onScroll, { passive: true, capture: true });
     /* 夸克/UC 内核的滚动不一定会更新 window.scrollY（实测夸克里 scroll 事件几乎拿不到位置），
-       兜底：滚动事件 120ms 没动静时，用手指位移累积虚拟滚动量，同样连续映射到收起进度。 */
+       兜底：滚动事件 120ms 没动静时，用手指位移累积虚拟滚动量，同样连续映射到滑出进度。 */
     let touchY = 0, virtY = 0;
     window.addEventListener('touchstart', function (e) {
       if (!isMobile() || !e.touches || !e.touches.length) return;
@@ -2210,9 +2224,13 @@
       applyY(virtY);
     }, { passive: true });
     applyY(scrollTop());
-    // 转屏 / 拉宽窗口回来时复原，避免停在收起状态
-    if (mq && mq.addEventListener) mq.addEventListener('change', function () { setProgress(0); });
-    else window.addEventListener('resize', function () { setProgress(0); });
+    // 转屏 / 拉宽窗口回来时复原并重新量测
+    const onReflow = function () {
+      setProgress(0);
+      (window.requestAnimationFrame || function (f) { return setTimeout(f, 16); })(measure);
+    };
+    if (mq && mq.addEventListener) mq.addEventListener('change', onReflow);
+    else window.addEventListener('resize', onReflow);
   })();
 
   $('#ver').textContent = 'v' + APP_VERSION + ' · 修复 Procreate / Photoshop / 画世界Pro 参数与双笔刷互转 · 纯本地';
