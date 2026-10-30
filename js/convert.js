@@ -1295,8 +1295,20 @@
   /** Convert a whole set to one Procreate .brushset file (zip). */
   function makeProcreateBrushset(brushList, opts) {
     opts = opts || {};
-    const list = brushList.map(function (b) {
+    // 同一包里重名笔刷：Procreate 里会显示多支同名，用户无法区分，统一去重
+    const uniqueNames = (function (list) {
+      const seen = new Set();
+      return list.map(function (b, i) {
+        let base = sanitizeName(b.name, i) || ('笔刷 ' + (i + 1));
+        let name = base, k = 2;
+        while (seen.has(name.toLowerCase())) { name = base + ' (' + k + ')'; k++; }
+        seen.add(name.toLowerCase());
+        return name;
+      });
+    })(brushList);
+    const list = brushList.map(function (b, i) {
       b=withExportSettings(b,opts);
+      if (b.name !== uniqueNames[i]) b = Object.assign({}, b, { name: uniqueNames[i] });
       // Native Procreate resources may be builtin references with no Shape.png.
       // Match the single-brush raw path instead of replacing them with a circle.
       if (opts.fidelity !== false && b._rawArchive && !opts.forceRebuild) return b;
@@ -1856,15 +1868,31 @@ Write-Host 'restart MediBang Paint Pro'
     const gray = textureGray(brush);
     const tex = gray ? {w:gray.w,h:gray.h,sample:function(x,y){return gray.gray[y*gray.w+x]/255;}} : null;
     if (!tex) return rgba;
+    /* Procreate 的「纹理缩放」与「深度最小值」以前没参与烘焙：
+       - textureScale > 1 → 纹理更大，< 1 → 更细（坐标缩放 + 平铺）；
+       - grainDepthMinimum → 纹理暗部不应完全透明（否则整条笔迹发黑）；
+       未指定时保持旧行为（0.15 底部 + 不缩放），避免改变已有笔刷的观感。 */
+    const scale = Math.max(0.02, Math.min(20, brush && brush.textureScale ? brush.textureScale : 1));
+    const useScale = Math.abs(scale - 1) > 0.001;
+    const minDepth = brush && brush.grainDepthMinimum !== undefined && brush.grainDepthMinimum > 0
+      ? Math.max(0, Math.min(1, brush.grainDepthMinimum)) : 0.15;
+    const invScale = useScale ? 1 / scale : 1;
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const i = y * w + x;
         const a = rgba[i * 4 + 3];
         if (!a) continue;
-        const tx = Math.min(tex.w - 1, Math.floor(x * tex.w / Math.max(1, w)));
-        const ty = Math.min(tex.h - 1, Math.floor(y * tex.h / Math.max(1, h)));
+        let tx = Math.floor(x * tex.w / Math.max(1, w) * invScale);
+        let ty = Math.floor(y * tex.h / Math.max(1, h) * invScale);
+        if (useScale) {
+          tx = ((tx % tex.w) + tex.w) % tex.w;
+          ty = ((ty % tex.h) + tex.h) % tex.h;
+        } else {
+          tx = Math.min(tex.w - 1, tx);
+          ty = Math.min(tex.h - 1, ty);
+        }
         const v = tex.sample(tx, ty);
-        const factor = 1 - k + k * (0.15 + 0.85 * v);
+        const factor = 1 - k + k * (minDepth + (1 - minDepth) * v);
         rgba[i * 4 + 3] = Math.max(0, Math.min(255, Math.round(a * factor)));
       }
     }
