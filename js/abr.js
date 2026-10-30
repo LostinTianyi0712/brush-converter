@@ -1435,6 +1435,42 @@
           _descItem('Opct', 'long', new Uint8Array([0, 0, 0, opct100]))
         ])));
       }
+      /* PS 每个笔刷预设都会写这一组标准项；以前我们只在「启用纹理/散布」时才写，
+         纯笔刷就缺 Txtr/TxtC/textureDepth/prVr/… → 画世界 Pro 的 BrushSectionParser
+         扫到缺失对象就抛 NPE（用户导入 ABR 闪退）。这里统一补齐默认值。 */
+      {
+        const have = new Set(presetItems.map(function (x) { return x.key; }));
+        const addDefault = function (key, tag, data) {
+          if (have.has(key)) return;
+          have.add(key);
+          presetItems.push(_descItem(key, tag, data));
+        };
+        const emptyObjc = function (cls) { return _descObjc('', cls, []); };
+        addDefault('flipX', 'bool', _descBool(!!it.brushFlipX));
+        addDefault('flipY', 'bool', _descBool(!!it.brushFlipY));
+        addDefault('brushProjection', 'bool', _descBool(false));
+        addDefault('tiltScale', 'UntF', _descUntF('#Prc', 200));
+        addDefault('useScatter', 'bool', _descBool(false));
+        addDefault('TxtC', 'bool', _descBool(false));
+        addDefault('interpretation', 'bool', _descBool(false));
+        addDefault('textureBlendMode', 'enum', _descEnum('BlnM', 'Ovrl'));
+        addDefault('textureDepth', 'UntF', _descUntF('#Prc', 100));
+        addDefault('minimumDepth', 'UntF', _descUntF('#Prc', 0));
+        addDefault('textureDepthDynamics', 'Objc', emptyObjc('brVr'));
+        addDefault('Txtr', 'Objc', emptyObjc('Ptrn'));
+        addDefault('textureScale', 'UntF', _descUntF('#Prc', 32));
+        addDefault('textureBrightness', 'long', _u32be(0));
+        addDefault('textureContrast', 'long', _u32be(0));
+        addDefault('prVr', 'Objc', emptyObjc('brVr'));
+        addDefault('wtVr', 'Objc', emptyObjc('brVr'));
+        addDefault('mxVr', 'Objc', emptyObjc('brVr'));
+        addDefault('clVr', 'Objc', emptyObjc('brVr'));
+        addDefault('H   ', 'UntF', _descUntF('#Prc', 14));
+        addDefault('Strt', 'UntF', _descUntF('#Prc', 0));
+        addDefault('Brgh', 'UntF', _descUntF('#Prc', 0));
+        addDefault('purity', 'UntF', _descUntF('#Prc', 0));
+        addDefault('colorDynamicsPerTip', 'bool', _descBool(false));
+      }
       const preset = _descObjc('', 'brushPreset', presetItems);
       if(it.rawPreset){
         const patches=patchesFromFresh(it.rawPreset,preset,it.rawPatchPaths);
