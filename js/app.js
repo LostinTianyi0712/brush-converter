@@ -1693,7 +1693,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.6.24';
+  const APP_VERSION = '2.6.25';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2223,7 +2223,7 @@
   /* 图库包跨会话记忆：小包版/网页每次重开都要重下 32MB 太浪费，下过一次就存 IndexedDB。
      只存精简档（32MB）；原图 216MB 不存，避免撑爆配额。 */
   const ShapeLibStore = (function () {
-    const DB_NAME = 'brushconv-shapelib', STORE = 'packs', KEY = 'lite';
+    const DB_NAME = 'brushconv-shapelib', STORE = 'packs';
     let dbp = null;
     function open() {
       if (dbp) return dbp;
@@ -2236,23 +2236,23 @@
       });
       return dbp;
     }
-    async function get() {
+    async function get(key) {
       try {
         const db = await open();
         return await new Promise(function (resolve, reject) {
           const tx = db.transaction(STORE, 'readonly');
-          const r = tx.objectStore(STORE).get(KEY);
+          const r = tx.objectStore(STORE).get(key || 'lite');
           r.onsuccess = function () { resolve(r.result || null); };
           r.onerror = function () { reject(r.error); };
         });
       } catch (e) { return null; }
     }
-    async function put(bytes) {
+    async function put(bytes, key) {
       try {
         const db = await open();
         await new Promise(function (resolve, reject) {
           const tx = db.transaction(STORE, 'readwrite');
-          tx.objectStore(STORE).put(bytes, KEY);
+          tx.objectStore(STORE).put(bytes, key || 'lite');
           tx.oncomplete = function () { resolve(); };
           tx.onerror = function () { reject(tx.error); };
         });
@@ -2260,7 +2260,17 @@
       } catch (e) { pushLog('图库缓存写入失败：' + ((e && e.message) || e)); return false; }
     }
     async function clear() {
-      try { const db = await open(); const tx = db.transaction(STORE, 'readwrite'); tx.objectStore(STORE).delete(KEY); } catch (e) { /* ignore */ }
+      try {
+        const db = await open();
+        await new Promise(function (resolve, reject) {
+          const tx = db.transaction(STORE, 'readwrite');
+          tx.objectStore(STORE).delete('lite');
+          tx.objectStore(STORE).delete('full');
+          tx.oncomplete = function () { resolve(); };
+          tx.onerror = function () { reject(tx.error); };
+        });
+        return true;
+      } catch (e) { return false; }
     }
     return { get: get, put: put, clear: clear };
   })();
@@ -2303,6 +2313,36 @@
   }
   function refreshShapeLibStoreUI() {
     const box = document.getElementById('shapeLibStore');
+    /* 学原神：先校验再决定要不要重下，别动不动整包重下 */
+    const verify = document.getElementById('btnShapeLibVerify');
+    if (verify && !verify.__wired) {
+      verify.__wired = true;
+      verify.addEventListener('click', function () {
+        const n = window.BrushNative;
+        if (!n || typeof n.shapeLibVerify !== 'function') return;
+        const old = verify.textContent;
+        verify.textContent = '校验中…';
+        try {
+          const r = String(n.shapeLibVerify(0) || '');
+          if (r === 'ok:asset') {
+            verify.textContent = '图库在安装包内（完好）';
+            setTimeout(function () { verify.textContent = old; }, 2600);
+            return;
+          }
+          if (r.indexOf('ok:') === 0) {
+            verify.textContent = '图库完好 ' + (Number(r.slice(3)) / 1048576).toFixed(1) + 'MB';
+            setTimeout(function () { verify.textContent = old; }, 2600);
+            return;
+          }
+          verify.textContent = r === 'missing' ? '缺失，开始重下…' : '大小异常，开始修复…';
+          const dl = document.getElementById('btnShapeLibDownload');
+          if (dl) { dl.click(); setTimeout(function () { verify.textContent = old; }, 1500); }
+          else verify.textContent = old;
+        } catch (e) {
+          verify.textContent = old;
+        }
+      });
+    }
     const clear = document.getElementById('btnShapeLibClear');
     if (!box) return;
     const info = nativeShapeLibInfo();
@@ -2319,6 +2359,10 @@
     if (window.__shapeLibDiagOnly) return;
     window.__shapeLibDiagText = '诊断：' + diag.join('；');
     const parts = [];
+    // 原神式：外部 App 私有目录是主存储（升级安装不会被清，卸载时随应用删除）
+    if (info.active === 'ext' && info.activeBytes > 0) {
+      parts.push('图库在 Android/data/com.brushconv.app/files（' + mb(info.activeBytes) + '，升级不丢，卸载随应用删除）');
+    }
     if (info.privateBytes > 0) {
       let when = '';
       if (info.mtime) {
@@ -2338,16 +2382,25 @@
     }
     if (!parts.length) { box.hidden = true; if (clear) clear.hidden = true; return; }
     box.hidden = false;
-    box.textContent = parts.join('；') + '。图库不进安装包（APK 只读），也不计入「应用大小」；卸载 App 时它会和图库一起被删掉。' + '〔' + (window.__shapeLibDiagText || '') + '〕';
-    if (clear) clear.hidden = !(info.privateBytes > 0);
+    if (window.__shapeLibCacheText) parts.push(window.__shapeLibCacheText);
+    box.textContent = parts.join('；') + '。〔' + (window.__shapeLibDiagText || '') + '〕';
+    if (clear) clear.hidden = !(info.privateBytes > 0 || info.active === 'ext');
+    const vbtn = document.getElementById('btnShapeLibVerify');
+    if (vbtn) vbtn.hidden = !(info.privateBytes > 0 || info.extBytes > 0 || info.asset);
   }
   window.__refreshShapeLibStoreUI = refreshShapeLibStoreUI;
   /* 安卓：走原生下载（WebView 自己 fetch 32MB 实测卡在 0/32MB），下载完直接读 App 私有目录。
      resume=true 时不重新发起下载，只接管已有任务（导入笔刷 / Activity 重建后进度不丢）。 */
-  async function nativeShapeLibDownload(url, btn, totalMB, resume) {
+  async function nativeShapeLibDownload(urls, btn, totalMB, resume) {
     const native = window.BrushNative;
+    const list = Array.isArray(urls) ? urls : [urls];
     btn.textContent = '下载中 0/' + totalMB + 'MB…';
-    if (!resume && !native.shapeLibDownloadStart(url)) throw new Error('已有下载在进行');
+    if (!resume) {
+      const started = list.length > 1
+        ? (typeof native.shapeLibDownloadMultiStart === 'function' && native.shapeLibDownloadMultiStart(list.join('|')))
+        : native.shapeLibDownloadStart(list[0]);
+      if (!started) throw new Error('已有下载在进行');
+    }
     const started = Date.now();
     for (;;) {
       await new Promise(function (r) { setTimeout(r, 400); });
@@ -2360,6 +2413,33 @@
       if (Date.now() - started > 15 * 60 * 1000) throw new Error('下载超时');
     }
   }
+  /* 把图库字节分块写进 App 私有目录（安卓：内部 files/，外部 Android/data/<包名>/files）。
+     按块走 base64，避免一次性复制几百 MB；大包只落盘、不进 IndexedDB（内存翻倍会崩）。 */
+  async function nativePersistLibBytes(bytes, quiet) {
+    const n = window.BrushNative;
+    if (!n || typeof n.shapeLibSaveBegin !== 'function') return false;
+    if (!bytes || !bytes.length) return false;
+    try {
+      if (!n.shapeLibSaveBegin()) throw new Error('无法创建文件');
+      const CHUNK = 3 * 1024 * 1024;
+      for (let off = 0; off < bytes.length; off += CHUNK) {
+        const part = bytes.subarray(off, Math.min(CHUNK, bytes.length - off) + off);
+        let bin = '';
+        for (let i = 0; i < part.length; i++) bin += String.fromCharCode(part[i]);
+        if (!n.shapeLibSaveChunk(btoa(bin))) { n.shapeLibSaveAbort(); throw new Error('写入失败'); }
+      }
+      const res = String(n.shapeLibSaveEnd() || '');
+      if (res.indexOf('ok:') !== 0) throw new Error(res.slice(6) || '保存失败');
+      pushLog('图库已写入 App 私有目录：' + res.slice(3) + 'B（升级安装不丢，卸载一起删）');
+      refreshShapeLibStoreUI();
+      return true;
+    } catch (e) {
+      pushLog('图库落盘失败：' + ((e && e.message) || e));
+      if (!quiet) toast('图库已加载，但没能存进 App 目录（下次启动需重下）：' + ((e && e.message) || e), 7000);
+      return false;
+    }
+  }
+
   async function downloadShapeLibPack(btn, pack) {
     pack = pack || SHAPE_LIB_PACKS.lite;
     if (shapeLibDlBusy) return;
@@ -2372,19 +2452,18 @@
       btn.disabled = true;
       const totalBytes = pack.totalMB * 1048576;
       // 安卓 App：原生下载（接口存在时优先），完成后再从私有目录读字节导入
-      if (window.BrushNative && typeof window.BrushNative.shapeLibDownloadStart === 'function' && pack.parts.length === 1) {
-        await nativeShapeLibDownload(shapeLibUrl(pack.parts[0]), btn, pack.totalMB);
+      if (window.BrushNative && typeof window.BrushNative.shapeLibDownloadStart === 'function') {
+        // 单卷、多卷都交给原生：写盘 + Range 续传，关掉进程再点接着下（原神同款行为）
+        await nativeShapeLibDownload(pack.parts.map(shapeLibUrl), btn, pack.totalMB);
         btn.textContent = '正在导入图库…';
         const got = await bundledShapeLibBytes();
         const nativeFile = new File([got.bytes], pack.zipName, { type: 'application/zip' });
         // 安卓也存一份到 IndexedDB：它也是 App 数据（卸载会删），但能当私有目录的安全网——
         // 万一某次更新后 files/ 里的图库读不到，启动时能立即从缓存恢复，不用重下 32MB。
-        if (pack.key === 'lite') {
-          try {
-            const cachedNative = await ShapeLibStore.put(got.bytes);
-            pushLog(cachedNative ? '图库同时缓存到 App 数据（IndexedDB）' + got.bytes.length + 'B，更新后可直接恢复' : '图库缓存失败（不影响使用）');
-          } catch (e) { /* 缓存失败不影响本次使用 */ }
-        }
+        try {
+          const cachedNative = await ShapeLibStore.put(got.bytes, pack.key);
+          pushLog(cachedNative ? '图库同时存进 App 数据（' + got.bytes.length + 'B），更新后可直接恢复' : '图库缓存失败（不影响使用）');
+        } catch (e) { /* 缓存失败不影响本次使用 */ }
         const upgrade = !!(state.shapeLib && state.shapeLibPackKey !== pack.key);
         await loadShapeLibrary([nativeFile], pack.label, upgrade);
         state.shapeLibPackKey = pack.key;
@@ -2437,11 +2516,15 @@
       }
       btn.textContent = '正在导入图库…';
       const packBytes = new Uint8Array(await blob.arrayBuffer());
-      // 跨会话记忆：精简档存 IndexedDB（小包版/网页下次重开不用重下）
-      if (pack.key === 'lite') {
-        const cached = await ShapeLibStore.put(packBytes);
-        if (cached) pushLog('图库包已缓存到 IndexedDB（' + packBytes.length + 'B）');
+      // 原神式落盘：写进 App 私有目录（外部优先），下次启动直接加载，升级安装不丢，卸载才删
+      const savedNative = await nativePersistLibBytes(packBytes, true);
+      if (packBytes.length <= 120 * 1048576) {
+        // 小包再存一份 App 数据缓存（216MB 原图不存：内存和磁盘都翻倍，还容易 OOM）
+        const cached = await ShapeLibStore.put(packBytes, pack.key);
+        if (cached) pushLog('图库包已存入 App 数据（' + pack.key + '，' + Math.round(packBytes.length / 1048576) + 'MB）');
       }
+      if (savedNative) window.__shapeLibCacheText = '已存进 App 私有目录（' + Math.round(packBytes.length / 1048576) + 'MB，升级不丢，卸载一起删）';
+      else if (packBytes.length <= 120 * 1048576) window.__shapeLibCacheText = '已缓存 ' + Math.round(packBytes.length / 1048576) + 'MB（升级不丢，卸载一起删）';
       // 桌面版：顺手把包存到程序目录，下次启动自动加载（不用再下）
       if (window.BrushDesktop && typeof window.BrushDesktop.saveShapeLib === 'function') {
         try {
@@ -2538,17 +2621,19 @@
       // 释放图库空间（用户问「卸载时要把图库一并卸载」——这里也能主动删）
       const clearBtn = $('#btnShapeLibClear');
       if (clearBtn) {
-        clearBtn.addEventListener('click', function () {
+        clearBtn.addEventListener('click', async function () {
           const n = window.BrushNative;
           if (!n || typeof n.shapeLibDownloadClear !== 'function') return;
           try {
             const ok = Boolean(n.shapeLibDownloadClear());
-            if (ok) {
+            // App 数据里的缓存（可能是原图 216MB）也要删，不然「释放空间」是假的
+            const cacheCleared = await ShapeLibStore.clear();
+            if (ok || cacheCleared) {
               state.shapeLib = null;
               state.shapeLibPackKey = null;
               updateShapeLibText();
               refreshShapeLibStoreUI();
-              toast('已删除 App 内图库副本与共享备份，下次要用再下（32MB）', 5000);
+              toast('已删除图库副本和缓存，下次要用再下', 5000);
             } else toast('删除失败：可能没有存储权限', 5000);
           } catch (e) { toast('删除失败：' + ((e && e.message) || e), 5000); }
         });
@@ -2576,21 +2661,33 @@
       if (state.shapeLib) return;
       if (window.BrushDesktop) return; // 桌面走程序目录
       try {
-        const cached = await ShapeLibStore.get();
-        if (!cached || !cached.length || state.shapeLib) return;
-        const file = new File([cached], 'Procreate内置笔尖图库_精简512.zip', { type: 'application/zip' });
-        await loadShapeLibrary([file], '上次下载的精简图库（缓存）', false);
-        if (state.shapeLib && state.shapeLib.size) {
-          state.shapeLibPackKey = 'lite';
-          pushLog('启动时从 IndexedDB 恢复图库 ' + state.shapeLib.size + ' 张 / ' + cached.length + 'B');
-          toast('已恢复上次下载的图库包（' + state.shapeLib.size + ' 张），不用重新下载', 5000);
+        // 原图档优先（用户下过原图就说明想要高清），其次精简档
+        // 原图档不从 IndexedDB 恢复（太大）：它落在 App 私有目录里，启动时由 loadBundledShapeLib 读
+        for (const key of ['lite']) {
+          const cached = await ShapeLibStore.get(key);
+          if (!cached) continue;
+          const size = cached.size || cached.byteLength || 0;
+          if (!size) continue;
+          const name = key === 'full' ? SHAPE_LIB_PACKS.full.zipName : SHAPE_LIB_PACKS.lite.zipName;
+          const file = new File([cached], name, { type: 'application/zip' });
+          await loadShapeLibrary([file], key === 'full' ? '上次下载的原图图库（已缓存）' : '上次下载的精简图库（已缓存）', false);
+          if (state.shapeLib && state.shapeLib.size) {
+            state.shapeLibPackKey = key;
+            window.__shapeLibCacheText = 'App 数据已缓存下载过的图库（' + Math.round(size / 1048576) + 'MB，升级安装不丢，卸载一起删）';
+            pushLog('启动时从 App 数据恢复图库 ' + key + '：' + state.shapeLib.size + ' 张 / ' + size + 'B');
+            toast('已恢复上次下载的图库（' + state.shapeLib.size + ' 张），不用重新下载', 5000);
+            return;
+          }
         }
       } catch (e) { pushLog('恢复缓存图库失败：' + ((e && e.message) || e)); }
     }
     if (!state.shapeLib && (window.BrushDesktop || window.BrushNative)) {
-      loadBundledShapeLib().then(function (r) {
+      // 先看 App 数据里有没有用户下载过的图库（原图优先），没有再退回安装包内置的精简档
+      restoreCachedShapeLib().then(function () {
+        if (state.shapeLib) return null;
+        return loadBundledShapeLib();
+      }).then(function (r) {
         if (r && r.ok) pushLog('启动时已加载图库包 ' + r.count + ' 张');
-        else restoreCachedShapeLib();
       }).then(function () { refreshShapeLibStoreUI(); });
     } else {
       restoreCachedShapeLib().then(function () { refreshShapeLibStoreUI(); });
