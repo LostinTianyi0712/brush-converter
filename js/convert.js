@@ -152,10 +152,11 @@
     }
     for (const entry of entries) {
       if (!/^paintoppresets\/[^/]+\.kpp$/i.test(entry.name)) continue;
-      let data;
-      try { data = entry.data(); } catch (e) { warnings.push(entry.name + ' 读取失败'); continue; }
+      // 第一轮已经解压并做过 CRC 校验，直接复用，避免同一 KPP 再 inflate 一次。
+      const data = resourceMap[entry.name];
+      if (!data) { warnings.push(entry.name + ' 读取失败'); continue; }
       try {
-        const r = krita.parseKpp(data instanceof Uint8Array ? data : new Uint8Array(data), entry.name, resourceMap);
+        const r = krita.parseKpp(data, entry.name, resourceMap);
         (r.brushes || []).forEach(function (b) {
           b.source = 'krita';
           b.bundle = name;
@@ -750,6 +751,7 @@
       textureBrightness: brush.textureBrightness,
       textureContrast: brush.textureContrast,
       textureDepth: outTextureDepth,
+      taperOn: brush.taperOn,
       taperSize: brush.taperSize,
       taperOpacity: brush.taperOpacity,
       wetEdgesOn: brush.wetEdgesOn,
@@ -1911,7 +1913,10 @@ Write-Host 'restart MediBang Paint Pro'
   /* 用源笔刷的真实纹理（ABR 图案 / Procreate Grain）烘焙；没有真实像素时保持原样，
      不生成程序化噪声（伪造纹理会让笔刷图案偏离原笔刷）。 */
   function bakeTextureIntoRGBA(rgba, w, h, brush, strength) {
-    const k = Math.max(0, Math.min(1, strength === undefined ? 0.35 : strength));
+    const rawStrength = strength === undefined ? 0.35 : Number(strength);
+    // NaN/Infinity 经 Math.min/max 仍是 NaN，写入 Uint8Array 后会变成 0，
+    // 导致整支笔尖透明；非有限输入按既有默认强度处理。
+    const k = Number.isFinite(rawStrength) ? Math.max(0, Math.min(1, rawStrength)) : 0.35;
     const gray = textureGray(brush);
     const tex = gray ? {w:gray.w,h:gray.h,sample:function(x,y){return gray.gray[y*gray.w+x]/255;}} : null;
     if (!tex) return rgba;
@@ -1961,7 +1966,8 @@ Write-Host 'restart MediBang Paint Pro'
 
   function bakeGrainIntoRGBA(rgba, w, h, strength, seed) {
     const noise = grainNoise(w, h, seed || 1, 3);
-    const k = Math.max(0, Math.min(1, strength === undefined ? 0.35 : strength));
+    const rawStrength = strength === undefined ? 0.35 : Number(strength);
+    const k = Number.isFinite(rawStrength) ? Math.max(0, Math.min(1, rawStrength)) : 0.35;
     for (let i = 0; i < w * h; i++) {
       const a = rgba[i * 4 + 3];
       if (!a) continue;

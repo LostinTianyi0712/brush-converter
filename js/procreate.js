@@ -78,9 +78,11 @@
     return null;
   }
 
-  function readBrushFolder(entries, prefix, shapeResources) {
+  function readBrushFolder(entries, prefix, shapeResources, entryByName, folderEntries) {
     // prefix like 'UUID/' ('' for single-file .brush)
-    const find = suffix => entries.find(e => e.name === prefix + suffix);
+    // brushset 解析时传入一次性索引，避免每支笔刷都扫描整个 ZIP。
+    const pool = folderEntries || entries;
+    const find = suffix => entryByName ? entryByName.get(prefix + suffix) : entries.find(e => e.name === prefix + suffix);
     const arcEntry = find('Brush.archive');
     if (!arcEntry) return null;
     let params = {};
@@ -88,13 +90,13 @@
     let name = typeof params.name === 'string' ? params.name.trim() : '';
     if (!name || name === '$null') name = '';
     let subArcEntry = null, subShapeEntry = null;
-    const subArcCandidates = entries.filter(function (e) {
+    const subArcCandidates = pool.filter(function (e) {
       return e.name.indexOf(prefix) === 0 && /^Sub\d+\/Brush\.archive$/.test(e.name.slice(prefix.length));
     });
     if (subArcCandidates.length) {
       const subPrefix = subArcCandidates[0].name.replace(/Brush\.archive$/, '');
       subArcEntry = subArcCandidates[0];
-      subShapeEntry = entries.find(function (e) { return e.name === subPrefix + 'Shape.png'; }) || null;
+      subShapeEntry = (entryByName ? entryByName.get(subPrefix + 'Shape.png') : pool.find(function (e) { return e.name === subPrefix + 'Shape.png'; })) || null;
     }
     let shapeEntry = find('Shape.png');
     const bundledShapePath = typeof params.bundledShapePath === 'string' && params.bundledShapePath !== '$null' ? params.bundledShapePath : '';
@@ -102,7 +104,7 @@
     let shapeFromLibrary = false;
     if (!shapeEntry && bundledShapePath && !/(^|[\\/])(?:\.\.|QuickLook|Signature)([\\/]|$)|(^|[\\/])Grain\.png$/i.test(bundledShapePath)) {
       // Resolve only an explicit source reference, never a thumbnail or Grain.
-      const resource = find(bundledShapePath) || entries.find(e=>e.name===bundledShapePath);
+      const resource = find(bundledShapePath) || (entryByName ? entryByName.get(bundledShapePath) : entries.find(e=>e.name===bundledShapePath));
       if (resource) {
         try {
           const bytes=resource.data();
@@ -343,7 +345,7 @@
     brush._rawTipState=util.brushFingerprint({tip:brush.tip});
     brush._rawGrainState=util.brushFingerprint({tip:brush._grainRgba});
     brush._rawBrushState=util.brushFingerprint(brush);
-    brush._rawEntries=entries.filter(e=>!e.dir && e.name.startsWith(prefix)).map(e=>({name:e.name.slice(prefix.length),data:e.data()}));
+    brush._rawEntries=pool.filter(e=>!e.dir && e.name.startsWith(prefix)).map(e=>({name:e.name.slice(prefix.length),data:e.data()}));
     return brush;
   }
 
@@ -354,10 +356,15 @@
     const brushes = [];
     const warnings = [];
     const baseName = (fileName || 'brush').replace(/\.(brush|brushset)$/i, '');
+    const entryByName = new Map();
+    for (const e of entries) {
+      // 与 Array.find 一样保留首个同名条目，避免重名 ZIP 的行为变化。
+      if (!entryByName.has(e.name)) entryByName.set(e.name, e);
+    }
 
     // single .brush: Brush.archive at root
-    if (entries.some(e => e.name === 'Brush.archive')) {
-      const b = readBrushFolder(entries, '', opts.shapeResources);
+    if (entryByName.has('Brush.archive')) {
+      const b = readBrushFolder(entries, '', opts.shapeResources, entryByName, entries);
       if (b) {
         if (!b.name) b.name = baseName;
         if (!b.tip) warnings.push(b.bundledShapePath ? '缺少内置笔尖原图 '+b.bundledShapePath+'；Procreate原生导出保留引用，跨软件圆头仅为近似' : '该笔刷没有可解码Shape图；跨软件只能生成近似圆头，原笔尖未确认');
@@ -368,20 +375,21 @@
 
     // .brushset: top-level folders
     const folders = new Set();
+    const entriesByFolder = new Map();
     for (const e of entries) {
       const m = /^([^/]+)\//.exec(e.name);
-      if (m && !m[1].startsWith('.')) folders.add(m[1]);
+      if (m && !m[1].startsWith('.')) {
+        folders.add(m[1]);
+        if (!entriesByFolder.has(m[1])) entriesByFolder.set(m[1], []);
+        entriesByFolder.get(m[1]).push(e);
+      }
     }
     let autoIndex = 0;
     for (const folder of folders) {
       autoIndex++;
       const prefix = folder + '/';
-      // skip sub-brushes (Sub01 etc.) — only top folder archive
-      if (entries.some(e => e.name === prefix + 'Sub01/Brush.archive')) {
-        // still readable, just ignore sub variants
-      }
       try {
-        const b = readBrushFolder(entries, prefix, opts.shapeResources);
+        const b = readBrushFolder(entries, prefix, opts.shapeResources, entryByName, entriesByFolder.get(folder));
         if (!b) continue;
         if (!b.name) b.name = /^[0-9A-Fa-f-]{20,}$/.test(folder) ? (baseName + ' ' + autoIndex) : folder;
         if (!b.tip) warnings.push(b.name + ': ' + (b.bundledShapePath ? '缺少内置笔尖原图 '+b.bundledShapePath+'；Procreate原生导出保留引用，跨软件圆头仅为近似' : '没有可解码Shape图；跨软件圆头仅为近似'));
@@ -644,7 +652,9 @@
       taperOn:['taperSize','taperOpacity','taperStartLength','taperEndLength'],taperSize:['taperSize'],taperOpacity:['taperOpacity'],
       taperStartLength:['taperStartLength'],taperEndLength:['taperEndLength'],
       wetEdgesOn:['wetEdgesAmount'],wetEdgesAmount:['wetEdgesAmount'],smudgeOn:['smudgeSize','smudgeOpacity'],
-      smudgeAmount:['smudgeSize','smudgeOpacity'],colorJitterHue:['dynamicsJitterHue'],colorJitterSat:['dynamicsJitterSaturation'],
+      smudgeAmount:['smudgeSize','smudgeOpacity'],smudgeSize:['smudgeSize'],smudgeOpacity:['smudgeOpacity'],
+      procreateSmudgeAccumulation:['dynamicsSmudgeAccumulation'],
+      colorJitterHue:['dynamicsJitterHue'],colorJitterSat:['dynamicsJitterSaturation'],
       colorJitterVal:['dynamicsJitterLightness']};
     Object.keys(nativeFields).forEach(key=>{mapping[key]=[nativeFields[key]];});
     Object.keys(mapping).forEach(function(key){if(brush[key]!==before[key])mapping[key].forEach(k=>{changes[k]=params[k];});});
@@ -709,9 +719,15 @@
     if (opts.fidelity !== false && brush._rawArchive && !opts.forceRebuild) {
       const entries = (brush._rawEntries||[]).filter(e=>!['Brush.archive','Shape.png','Grain.png','QuickLook/Thumbnail.png'].includes(e.name)&&!e.name.startsWith('Sub01/'));
       const sameTip=brush._rawTipState===util.brushFingerprint({tip:brush.tip});
-      // 重生成 Shape.png 时像素已是最终覆盖度（反转已烘焙），archive 里的「反转」必须关掉，否则二次反相
-      entries.push({name:'Brush.archive',data:patchArchive(brush,opts,brush.shapeInverted&&!(sameTip&&brush._rawShape)?{shapeInverted:false}:null)});
-      if(sameTip && brush._rawShape)entries.push({name:'Shape.png',data:new Uint8Array(brush._rawShape)});
+      const keepRawShape=sameTip&&brush._rawShape;
+      // 重生成 Shape.png 时像素已烘焙反转，archive 必须关掉以免二次反相；
+      // 像素没变、只切换标志时则尊重新值，并继续复用原 Shape.png。
+      let archiveChanges=null;
+      if(!keepRawShape&&brush.shapeInverted)archiveChanges={shapeInverted:false};
+      else if(keepRawShape&&!!brush.shapeInverted!==!!(brush._rawNormalized||{}).shapeInverted)
+        archiveChanges={shapeInverted:!!brush.shapeInverted};
+      entries.push({name:'Brush.archive',data:patchArchive(brush,opts,archiveChanges)});
+      if(keepRawShape)entries.push({name:'Shape.png',data:new Uint8Array(brush._rawShape)});
       else if(!sameTip && brush.tip)entries.push({name:'Shape.png',data:shapePng(tipRGBA(brush,opts),opts.maxTipSize||512).png});
       const sameGrain=brush._rawGrainState===util.brushFingerprint({tip:brush._grainRgba});
       if(sameGrain && brush._rawGrain)entries.push({name:'Grain.png',data:new Uint8Array(brush._rawGrain)});

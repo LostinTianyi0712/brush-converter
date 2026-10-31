@@ -24,6 +24,8 @@
         for (let k = 0; k < count && i < row.length && out.length < maxOut; k++) out.push(row[i++]);
       } else if (n !== -128) {
         const count = 1 - n;
+        // 截断的重复 run 没有可读取的值，不能把 undefined 当成零像素补齐。
+        if (i >= row.length) break;
         const val = row[i++];
         for (let k = 0; k < count && out.length < maxOut; k++) out.push(val);
       }
@@ -1516,8 +1518,8 @@
     ]);
     const descBlock = _block8('desc', descData);
     // 源 ABR 有纹理图案时，原样带上 patt 块（否则描述符里的 Txtr 引用会悬空）
-    const refOnly = valid.some(function (it) { return it.psTexture && it.patternRef; });
-    const wantTex = !refOnly && valid.some(function (it) { return it.psTexture; });
+    // 外部 patternRef 只影响对应笔刷；同包里其他笔刷仍可能引用生成图案。
+    const wantTex = valid.some(function (it) { return it.psTexture && !it.patternRef; });
     // 优先级：源文件自带的图案块（描述符里的 Txtr 引用能对得上）> 自己生成的 256×256 颗粒图案
     let pattData = null;
     const srcPatt = (optsFromArgs && optsFromArgs.patternBlock) ||
