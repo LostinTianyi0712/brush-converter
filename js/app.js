@@ -1693,7 +1693,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.6.14';
+  const APP_VERSION = '2.6.17';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2292,11 +2292,37 @@
     return (window.BrushNative || window.BrushDesktop) ? SITE_BASE + enc : enc;
   }
   let shapeLibDlBusy = false;
-  /* 安卓：走原生下载（WebView 自己 fetch 32MB 实测卡在 0/32MB），下载完直接读 App 私有目录 */
-  async function nativeShapeLibDownload(url, btn, totalMB) {
+  /* 图库到底存在哪、占多大（安卓原生）：用户问「下载后图库去哪了」，界面直接读原生字段展示 */
+  function nativeShapeLibInfo() {
+    try {
+      const n = window.BrushNative;
+      if (n && typeof n.shapeLibInfo === 'function') return JSON.parse(String(n.shapeLibInfo()));
+    } catch (e) { /* 老版本壳没有这个接口 */ }
+    return null;
+  }
+  function refreshShapeLibStoreUI() {
+    const box = document.getElementById('shapeLibStore');
+    const clear = document.getElementById('btnShapeLibClear');
+    if (!box) return;
+    const info = nativeShapeLibInfo();
+    if (!info) { box.hidden = true; if (clear) clear.hidden = true; return; }
+    const mb = function (b) { return (b / 1048576).toFixed(1) + 'MB'; };
+    const parts = [];
+    if (info.privateBytes > 0) parts.push('App 内副本 ' + mb(info.privateBytes) + '（files/shape-lib.zip）');
+    else if (info.source === 'asset') parts.push('图库在安装包里（assets）');
+    if (info.sharedBytes > 0) parts.push('共享备份 ' + mb(info.sharedBytes) + '（' + (info.sharedPath || '下载/笔刷转换器图库/shape-lib.zip') + '，重装可直接用）');
+    if (!parts.length) { box.hidden = true; if (clear) clear.hidden = true; return; }
+    box.hidden = false;
+    box.textContent = parts.join('；') + '。图库不会进安装包（APK 不可写），也不计入「应用大小」；卸载 App 会删掉 App 内副本，共享备份需在这里手动释放。';
+    if (clear) clear.hidden = !(info.privateBytes > 0 || info.sharedBytes > 0);
+  }
+  window.__refreshShapeLibStoreUI = refreshShapeLibStoreUI;
+  /* 安卓：走原生下载（WebView 自己 fetch 32MB 实测卡在 0/32MB），下载完直接读 App 私有目录。
+     resume=true 时不重新发起下载，只接管已有任务（导入笔刷 / Activity 重建后进度不丢）。 */
+  async function nativeShapeLibDownload(url, btn, totalMB, resume) {
     const native = window.BrushNative;
     btn.textContent = '下载中 0/' + totalMB + 'MB…';
-    if (!native.shapeLibDownloadStart(url)) throw new Error('已有下载在进行');
+    if (!resume && !native.shapeLibDownloadStart(url)) throw new Error('已有下载在进行');
     const started = Date.now();
     for (;;) {
       await new Promise(function (r) { setTimeout(r, 400); });
@@ -2332,6 +2358,7 @@
         btn.textContent = pack.doneText;
         toast('图库包已下载到 App 内（下次启动自动加载，不用再下）', 5000);
         pushLog('图库包已通过原生下载保存：' + got.bytes.length + 'B');
+        refreshShapeLibStoreUI();
         render();
         return;
       }
@@ -2440,7 +2467,26 @@
         dlFull.hidden = false;
         dlFull.addEventListener('click', function () { downloadShapeLibPack(dlFull, SHAPE_LIB_PACKS.full); });
       }
+      // 释放图库空间（用户问「卸载时要把图库一并卸载」——这里也能主动删）
+      const clearBtn = $('#btnShapeLibClear');
+      if (clearBtn) {
+        clearBtn.addEventListener('click', function () {
+          const n = window.BrushNative;
+          if (!n || typeof n.shapeLibDownloadClear !== 'function') return;
+          try {
+            const ok = Boolean(n.shapeLibDownloadClear());
+            if (ok) {
+              state.shapeLib = null;
+              state.shapeLibPackKey = null;
+              updateShapeLibText();
+              refreshShapeLibStoreUI();
+              toast('已删除 App 内图库副本与共享备份，下次要用再下（32MB）', 5000);
+            } else toast('删除失败：可能没有存储权限', 5000);
+          } catch (e) { toast('删除失败：' + ((e && e.message) || e), 5000); }
+        });
+      }
     }
+    refreshShapeLibStoreUI();
     // 桌面 / 安卓：图库包就在程序目录（或 APK 内置），启动就加载，用户什么都不用点（网页版要先下 32MB，改成用到才下）
     // 小包版 / 网页：如果上次下过精简图库（IndexedDB 缓存），直接恢复，不用每次重下 32MB
     async function restoreCachedShapeLib() {
@@ -2462,10 +2508,42 @@
       loadBundledShapeLib().then(function (r) {
         if (r && r.ok) pushLog('启动时已加载图库包 ' + r.count + ' 张');
         else restoreCachedShapeLib();
-      });
+      }).then(function () { refreshShapeLibStoreUI(); });
     } else {
-      restoreCachedShapeLib();
+      restoreCachedShapeLib().then(function () { refreshShapeLibStoreUI(); });
     }
+    /* 导入笔刷/Activity 重建后：原生下载可能还在跑（现在是 static 状态），
+       启动时先把界面接回去——否则用户看到的就是「下载被打断」。 */
+    (function resumeNativeDownload() {
+      const n = window.BrushNative;
+      if (!n || typeof n.shapeLibDownloadStatus !== 'function') return;
+      let st = 'idle';
+      try { st = String(n.shapeLibDownloadStatus() || 'idle|0|-1').split('|')[0]; } catch (e) { return; }
+      if (st !== 'running' && st !== 'done') return;
+      const dlBtn = $('#btnShapeLibDownload');
+      if (!dlBtn) return;
+      dlBtn.hidden = false;
+      shapeLibDlBusy = true;
+      (async function () {
+        try {
+          dlBtn.disabled = true;
+          await nativeShapeLibDownload('', dlBtn, SHAPE_LIB_PACKS.lite.totalMB, true);
+          dlBtn.textContent = '正在导入图库…';
+          const got = await bundledShapeLibBytes();
+          await loadShapeLibrary([new File([got.bytes], SHAPE_LIB_PACKS.lite.zipName, { type: 'application/zip' })], SHAPE_LIB_PACKS.lite.label, false);
+          state.shapeLibPackKey = 'lite';
+          dlBtn.textContent = SHAPE_LIB_PACKS.lite.doneText;
+          toast('上次没下完的图库包已接上并完成（不用重新下载）', 5000);
+          pushLog('启动时接管了未完成的图库下载：' + got.bytes.length + 'B');
+        } catch (e) {
+          pushLog('接管图库下载失败：' + ((e && e.message) || e));
+        } finally {
+          shapeLibDlBusy = false;
+          if (dlBtn) dlBtn.disabled = false;
+          refreshShapeLibStoreUI();
+        }
+      })();
+    })();
   })();
 
   /* 手机竖屏：顶栏随上划逐渐收起（#307 / #308）
