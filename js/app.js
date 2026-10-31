@@ -1693,7 +1693,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.6.19';
+  const APP_VERSION = '2.6.20';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2318,6 +2318,13 @@
       }
       parts.push('App 内副本 ' + mb(info.privateBytes) + '（files/shape-lib.zip' + when + '）');
     } else if (info.source === 'asset') parts.push('图库在安装包里（assets）');
+    if (info.privateBytes > 0) {
+      const b0 = document.getElementById('btnShapeLibBackup');
+      if (b0) b0.hidden = false;
+    } else {
+      const b1 = document.getElementById('btnShapeLibBackup');
+      if (b1) b1.hidden = true;
+    }
     if (!parts.length) { box.hidden = true; if (clear) clear.hidden = true; return; }
     box.hidden = false;
     box.textContent = parts.join('；') + '。图库不进安装包（APK 只读），也不计入「应用大小」；卸载 App 时它会和图库一起被删掉。';
@@ -2533,6 +2540,21 @@
               toast('已删除 App 内图库副本与共享备份，下次要用再下（32MB）', 5000);
             } else toast('删除失败：可能没有存储权限', 5000);
           } catch (e) { toast('删除失败：' + ((e && e.message) || e), 5000); }
+        });
+      }
+      // 手动备份：只在用户点「存一份图库到 下载」时才写公共目录（机型更新后被系统清数据时可一键装回）
+      const backupBtn = $('#btnShapeLibBackup');
+      if (backupBtn) {
+        backupBtn.addEventListener('click', function () {
+          const n = window.BrushNative;
+          if (!n || typeof n.shapeLibBackupToDownloads !== 'function') return;
+          try {
+            const res = String(n.shapeLibBackupToDownloads() || '');
+            if (res.indexOf('ok:') === 0) {
+              toast('已备份到「' + res.slice(3) + '」。更新后万一丢了，用「选择图库 ZIP」选它就能装回（不用重下）', 7000);
+              pushLog('图库已手动备份到：' + res.slice(3));
+            } else toast('备份失败：' + (res.slice(6) || res), 6000);
+          } catch (e) { toast('备份失败：' + ((e && e.message) || e), 6000); }
         });
       }
     }
