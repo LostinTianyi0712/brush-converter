@@ -669,6 +669,30 @@
     let spacingPct = opts.spacingOverride > 0 ? opts.spacingOverride : (brush.spacingPct === undefined ? 10 : brush.spacingPct);
     spacingPct = Math.max(0.1, Math.min(1000, spacingPct));
     const usePressure = opts.pressure === undefined ? (pressureSizeOn(brush) || !!brush.pressureOpacity) : !!opts.pressure;
+    // 笔迹浓度归一（画世界）：真机标定发现画世界按每个笔尖累加 alpha——间距 4.2% 时同一位置叠约 24 次，
+    // α=0.18 的笔尖最终覆盖 1-(0.82)^24≈99%，必然画成纯黑（实测亮度 26.8、颇粒 hf 2.68），
+    // 而 Procreate 原样张是中灰的半透明颇粒（目标覆盖 ~0.6）。
+    // 实测同一支笔刷：不透明度 22% → 亮度 144.1、hf 9.01、颇孔 4.2%。
+    // 所以这里按「目标覆盖度」反算每个笔尖应有的 alpha，再折成不透明度。
+    const densityMode = opts.bruDensity === 'off' ? 'off' : (opts.bruDensity === undefined ? 'auto' : opts.bruDensity);
+    let densityOpacity = null, densityInfo = null;
+    if (brush.source !== 'bru' && densityMode !== 'off') {
+      const target = Math.max(0.2, Math.min(1, Number(opts.bruDensityTarget) || 0.6));
+      const dabs = Math.max(1, Math.min(2000, 60 / spacingPct)); // 标定系数：实测有效叠加次数≈60/间距%（100/间距%偏高 1.7 倍）
+      let alphaMean = 0;
+      for (let i = 3; i < rgba.length; i += 4) alphaMean += rgba[i];
+      alphaMean = alphaMean / (rgba.length / 4) / 255;
+      const wanted = target >= 0.999 ? 1 : (1 - Math.pow(target, 1 / dabs));
+      const baseOpacity = brush.opacity === undefined ? 1 : brush.opacity;
+      if (dabs >= 3 && alphaMean > 0.004 && wanted < alphaMean) {
+        const norm = Math.max(0.05, Math.min(1, wanted / alphaMean));
+        if (norm < 0.98) {
+          // 只能压不能抬：源不透明度为 0（显式零）时必须保持 0，不能凭空抬到地板值
+          densityOpacity = baseOpacity <= 0.001 ? baseOpacity : Math.max(0.02, Math.min(baseOpacity, baseOpacity * norm));
+          densityInfo = { dabs: Math.round(dabs), tipAlpha: Math.round(alphaMean * 1000) / 1000, target: target, opacity: Math.round(densityOpacity * 100) / 100 };
+        }
+      }
+    }
     const rawUnchanged = !brush._rawState || Object.keys(brush._rawState).every(function (key) { return brush[key] === brush._rawState[key]; });
     const meta = {
       name: brush.name || '',
@@ -678,7 +702,7 @@
       sizePx,
       maxSizePx:Math.max(sizePx,brush._rawMaxWidth||500),
       spacingPct,
-      opacity: brush.opacity === undefined ? 1 : brush.opacity,
+      opacity: densityOpacity !== null ? densityOpacity : (brush.opacity === undefined ? 1 : brush.opacity),
       minSizeRatio: usePressure ? (brush.minSizeRatio === undefined ? 0.1 : brush.minSizeRatio) : 1,
       minOpacityRatio: usePressure ? (brush.minOpacityRatio === undefined ? 0.25 : brush.minOpacityRatio) : 1,
       pressure: usePressure,
@@ -767,7 +791,7 @@
       meta._rawPatchFields=Array.from(fields);
     }
     const bytes = bru.writeBrush(Object.assign({ png: pngBytes }, meta), opts);
-    return { bytes, pngBytes, meta, tipW: w, tipH: h, textureBaked };
+    return { bytes, pngBytes, meta, tipW: w, tipH: h, textureBaked, density: densityInfo };
   }
 
   /**
