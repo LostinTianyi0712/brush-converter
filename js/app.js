@@ -1693,7 +1693,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.6.17';
+  const APP_VERSION = '2.6.18';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2308,13 +2308,20 @@
     if (!info) { box.hidden = true; if (clear) clear.hidden = true; return; }
     const mb = function (b) { return (b / 1048576).toFixed(1) + 'MB'; };
     const parts = [];
-    if (info.privateBytes > 0) parts.push('App 内副本 ' + mb(info.privateBytes) + '（files/shape-lib.zip）');
-    else if (info.source === 'asset') parts.push('图库在安装包里（assets）');
-    if (info.sharedBytes > 0) parts.push('共享备份 ' + mb(info.sharedBytes) + '（' + (info.sharedPath || '下载/笔刷转换器图库/shape-lib.zip') + '，重装可直接用）');
+    if (info.privateBytes > 0) {
+      let when = '';
+      if (info.mtime) {
+        try {
+          const d = new Date(Number(info.mtime));
+          when = '，' + (d.getMonth() + 1) + '月' + d.getDate() + '日 ' + ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2) + ' 下载';
+        } catch (e) { /* ignore */ }
+      }
+      parts.push('App 内副本 ' + mb(info.privateBytes) + '（files/shape-lib.zip' + when + '）');
+    } else if (info.source === 'asset') parts.push('图库在安装包里（assets）');
     if (!parts.length) { box.hidden = true; if (clear) clear.hidden = true; return; }
     box.hidden = false;
-    box.textContent = parts.join('；') + '。图库不会进安装包（APK 不可写），也不计入「应用大小」；卸载 App 会删掉 App 内副本，共享备份需在这里手动释放。';
-    if (clear) clear.hidden = !(info.privateBytes > 0 || info.sharedBytes > 0);
+    box.textContent = parts.join('；') + '。图库不进安装包（APK 只读），也不计入「应用大小」；卸载 App 时它会和图库一起被删掉。';
+    if (clear) clear.hidden = !(info.privateBytes > 0);
   }
   window.__refreshShapeLibStoreUI = refreshShapeLibStoreUI;
   /* 安卓：走原生下载（WebView 自己 fetch 32MB 实测卡在 0/32MB），下载完直接读 App 私有目录。
@@ -2352,11 +2359,19 @@
         btn.textContent = '正在导入图库…';
         const got = await bundledShapeLibBytes();
         const nativeFile = new File([got.bytes], pack.zipName, { type: 'application/zip' });
+        // 安卓也存一份到 IndexedDB：它也是 App 数据（卸载会删），但能当私有目录的安全网——
+        // 万一某次更新后 files/ 里的图库读不到，启动时能立即从缓存恢复，不用重下 32MB。
+        if (pack.key === 'lite') {
+          try {
+            const cachedNative = await ShapeLibStore.put(got.bytes);
+            pushLog(cachedNative ? '图库同时缓存到 App 数据（IndexedDB）' + got.bytes.length + 'B，更新后可直接恢复' : '图库缓存失败（不影响使用）');
+          } catch (e) { /* 缓存失败不影响本次使用 */ }
+        }
         const upgrade = !!(state.shapeLib && state.shapeLibPackKey !== pack.key);
         await loadShapeLibrary([nativeFile], pack.label, upgrade);
         state.shapeLibPackKey = pack.key;
         btn.textContent = pack.doneText;
-        toast('图库包已下载到 App 内（下次启动自动加载，不用再下）', 5000);
+        toast('图库包已下载到 App 内（下次启动自动加载，卸载会一起删）', 5000);
         pushLog('图库包已通过原生下载保存：' + got.bytes.length + 'B');
         refreshShapeLibStoreUI();
         render();
