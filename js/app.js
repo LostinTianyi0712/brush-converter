@@ -1693,7 +1693,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.6.21';
+  const APP_VERSION = '2.6.22';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -1937,6 +1937,7 @@
         el.textContent = canDownload
           ? '图库包没读到（' + state.shapeLibError + '）：点下面「下载图库包（精简512 · 32MB）」或「原图高清 216MB」，也可以手动选图库文件夹'
           : '图库包没读到（' + state.shapeLibError + '）：可以点「选择图库文件夹」手动指定';
+      if (window.__shapeLibDiagText) { el.textContent = el.textContent + ' ｜ ' + window.__shapeLibDiagText; }
       } else {
         el.textContent = canDownload
           ? '未加载：缺图时只能用合成圆头。可点下面两档下载：精简512（32MB）或原图高清（216MB）'
@@ -2307,6 +2308,15 @@
     const info = nativeShapeLibInfo();
     if (!info) { box.hidden = true; if (clear) clear.hidden = true; return; }
     const mb = function (b) { return (b / 1048576).toFixed(1) + 'MB'; };
+    // 诊断：区分「文件不在了」和「文件在但读不了」——清后台后要不要重下就靠这行判断
+    const diag = [];
+    if (info.privateBytes > 0) diag.push('files/ ' + mb(info.privateBytes));
+    else diag.push('files/ 不存在');
+    if (info.bakBytes > 0) diag.push('.bak ' + mb(info.bakBytes));
+    if (info.asset) diag.push('安装包内置');
+    if (info.readError) diag.push('读取错误：' + info.readError);
+    if (window.__shapeLibDiagOnly) return;
+    window.__shapeLibDiagText = '诊断：' + diag.join('；');
     const parts = [];
     if (info.privateBytes > 0) {
       let when = '';
@@ -2327,7 +2337,7 @@
     }
     if (!parts.length) { box.hidden = true; if (clear) clear.hidden = true; return; }
     box.hidden = false;
-    box.textContent = parts.join('；') + '。图库不进安装包（APK 只读），也不计入「应用大小」；卸载 App 时它会和图库一起被删掉。';
+    box.textContent = parts.join('；') + '。图库不进安装包（APK 只读），也不计入「应用大小」；卸载 App 时它会和图库一起被删掉。' + '〔' + (window.__shapeLibDiagText || '') + '〕';
     if (clear) clear.hidden = !(info.privateBytes > 0);
   }
   window.__refreshShapeLibStoreUI = refreshShapeLibStoreUI;
