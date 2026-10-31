@@ -126,61 +126,70 @@
    * rootScalarDict: { key: string|number|boolean|Uid }  (UID refs into archived objects)
    * className / classChain: archived class identity (e.g. "SilicaBrush")
    */
-  function writeKeyedArchive(rootScalarDict, className, classChain) {
+  function writeKeyedArchive(rootDict, className, classChain) {
+    // 值可以是标量、字符串、Uint8Array（NSData）、{__data:[...]}（JSON 里的 data）、
+    // 数组和普通对象（归档成 NSArray / NSDictionary）。Procreate 的曲线与颜色就是嵌套结构。
     const objects = [];
     const archived = [];
-    function addObj(o, isArchived) {
-      objects.push(o);
-      const idx = objects.length - 1;
-      if (isArchived) archived.push(idx);
-      return idx;
+    function pushArchived(obj) {
+      objects.push(obj);
+      const i = objects.length - 1;
+      archived.push(i);
+      return i;
     }
-    // every archived object reference inside a dict must be a UID marker
-    function refMarker(targetIdx) { return addObj(new Uid(archived.indexOf(targetIdx)), false); }
-    const idxNull = addObj('$null', true);
-    const idxRoot = addObj(null, true);
-    const idxClass = addObj(null, true);
-    const entries = [];
-    for (const k of Object.keys(rootScalarDict)) {
-      const v = rootScalarDict[k];
-      const kIdx = addObj(k, true);
-      let vIdx;
-      if (v === null || v === undefined) {
-        vIdx = addObj(new Uid(0), false);
-      } else if (v instanceof Uid) {
-        vIdx = addObj(v, false);
-      } else if (typeof v === 'number' || typeof v === 'boolean') {
-        vIdx = addObj(v, true);
-      } else if (typeof v === 'string') {
-        vIdx = refMarker(addObj(v, true));
-      } else {
-        vIdx = refMarker(addObj(v, true));
+    function refSlot(targetIdx) {
+      const ordinal = archived.indexOf(targetIdx);
+      if (ordinal < 0) throw new Error('archive 引用目标未归档');
+      objects.push(new Uid(ordinal));
+      return objects.length - 1;
+    }
+    function dataBytes(v) {
+      if (v instanceof Uint8Array) return v;
+      if (Array.isArray(v)) return new Uint8Array(v);
+      throw new Error('__data 需要字节数组');
+    }
+    function allocValue(v) {
+      if (v && typeof v === 'object' && v.__data !== undefined) return pushArchived(dataBytes(v.__data));
+      if (v instanceof Uint8Array) return pushArchived(v);
+      if (v instanceof Uid) return pushArchived(v);
+      if (v === null || v === undefined) return pushArchived('$null');
+      if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'string') return pushArchived(v);
+      if (Array.isArray(v)) {
+        const refs = v.map(function (item) { return refSlot(allocValue(item)); });
+        return pushArchived({ __array: refs });
       }
-      entries.push([kIdx, vIdx]);
+      if (typeof v === 'object') {
+        const entries = [];
+        for (const k of Object.keys(v)) {
+          const keyIdx = pushArchived(k);
+          entries.push([keyIdx, refSlot(allocValue(v[k]))]);
+        }
+        return pushArchived({ __dict: entries });
+      }
+      throw new Error('bplist 不支持的值类型: ' + typeof v);
     }
-    const classKeyIdx = addObj('$class', true);
-    entries.push([classKeyIdx, refMarker(idxClass)]);
-    objects[idxRoot] = { __dict: entries };
-    const cnKey = addObj('$classname', true);
-    const cnVal = addObj(className, true);
-    const csKey = addObj('$classes', true);
-    const csVals = classChain.map(c => addObj(c, true));
-    const csArr = addObj({ __array: csVals }, true);
-    objects[idxClass] = { __dict: [[cnKey, cnVal], [csKey, csArr]] };
-    // top-level archive plumbing (plain plist objects, not archived)
-    const uidRoot = addObj(new Uid(idxRoot), false);
-    const rootKey = addObj('root', false);
-    const topDict = addObj({ __dict: [[rootKey, uidRoot]] }, false);
-    const objectsArr = addObj({ __array: archived.slice() }, false);
-    const vKey = addObj('$version', false);
-    const vVal = addObj(100000, false);
-    const aKey = addObj('$archiver', false);
-    const aVal = addObj('NSKeyedArchiver', false);
-    const tKey = addObj('$top', false);
-    const oKey = addObj('$objects', false);
-    const archiveIdx = addObj({
-      __dict: [[vKey, vVal], [aKey, aVal], [tKey, topDict], [oKey, objectsArr]]
-    }, false);
+    pushArchived('$null'); // index 0：NSKeyedArchiver 的 nil 占位
+    const classIdx = allocValue({ $classname: className, $classes: classChain });
+    const entries = [];
+    for (const k of Object.keys(rootDict)) {
+      entries.push([pushArchived(k), refSlot(allocValue(rootDict[k]))]);
+    }
+    entries.push([pushArchived('$class'), refSlot(classIdx)]);
+    const rootIdx = pushArchived({ __dict: entries });
+    // 顶层 NSKeyedArchiver 结构（这些是普通 plist 对象，不是归档对象）
+    const rootKey = objects.push('root') - 1;
+    const uidRoot = objects.push(new Uid(archived.indexOf(rootIdx))) - 1;
+    const topDict = objects.push({ __dict: [[rootKey, uidRoot]] }) - 1;
+    const objsArray = objects.push({ __array: archived.slice() }) - 1;
+    const vIdx = objects.push(100000) - 1;
+    const aIdx = objects.push('NSKeyedArchiver') - 1;
+    const archiveEntries = [
+      [objects.push('$version') - 1, vIdx],
+      [objects.push('$archiver') - 1, aIdx],
+      [objects.push('$top') - 1, topDict],
+      [objects.push('$objects') - 1, objsArray],
+    ];
+    const archiveIdx = objects.push({ __dict: archiveEntries }) - 1;
     return serialize(objects, archiveIdx);
   }
 

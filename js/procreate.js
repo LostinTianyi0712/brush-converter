@@ -528,6 +528,10 @@
     return null;
   }
 
+  // Procreate 的纹理缩放上限；越界时它自己的 UI 也不会给出这种值
+  const PROCREATE_TEXTURE_SCALE_MAX = 4;
+  const PROCREATE_EPOCH = 978307200; // 2001-01-01T00:00:00Z（NSDate 纪元）
+
   function archiveParams(brush, opts) {
     const D = defaultsApi.defaults();
     const params = Object.assign(D, {
@@ -553,7 +557,8 @@
       plotSmoothing: Math.max(0, Math.min(1, brush.smoothingStrength === undefined ? 0 : brush.smoothingStrength)),
       grainDepthMinimum: Math.max(0, Math.min(1, brush.grainDepthMinimum === undefined ? 0 : brush.grainDepthMinimum)),
       grainDepthJitter: Math.max(0, Math.min(1, brush.grainDepthJitter || 0)),
-      textureScale: Math.max(0.01, Math.min(20, brush.textureScale === undefined ? 1 : brush.textureScale)),
+      // Procreate 自身纹理缩放范围是 0.01..4（IPA 内置 18 支 + 真实导出 1 支，最大值正好 4.000）
+      textureScale: Math.max(0.01, Math.min(PROCREATE_TEXTURE_SCALE_MAX, brush.textureScale === undefined ? 1 : brush.textureScale)),
       textureBrightness: Math.max(0, Math.min(1, (brush.textureBrightness === undefined ? 51 : brush.textureBrightness) / 100)),
       textureContrast: Math.max(0, Math.min(1, (brush.textureContrast === undefined ? 100 : brush.textureContrast) / 100)),
       textureRotation: brush.textureRotation || 0,
@@ -603,6 +608,8 @@
     Object.keys(nativeFields).forEach(function(key){
       if(brush[key] !== undefined) params[nativeFields[key]]=brush[key];
     });
+    // 真实画笔的 creationDate 是 NSDate 秒；没有它就少一个 Procreate 自己会写的字段
+    params.creationDate = { 'NS.time': Math.round((Date.now() / 1000 - PROCREATE_EPOCH) * 1000) / 1000 };
     return params;
   }
   function buildArchive(brush, opts) {
