@@ -1693,7 +1693,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.6.28';
+  const APP_VERSION = '2.6.29';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2542,7 +2542,9 @@
       toast('图库包下载失败：' + msg + '。也可以在「高级选项」里点「选择图库 ZIP / 图片」手动导入', 12000);
       pushLog('图库包下载失败：' + msg);
       btn.disabled = false;
-      btn.textContent = label;
+      // 失败原因留在按钮上，别静默还原——用户至少要看到为什么没下成（点一下就是重试）
+      btn.textContent = '下载失败：' + msg + '（点此重试）';
+      btn.title = msg;
     } finally {
       shapeLibDlBusy = false;
     }
@@ -2601,6 +2603,33 @@
       const dlFull = $('#btnShapeLibDownloadFull');
       if (dlFull) {
         dlFull.hidden = false;
+        /* 原图分 3 卷：空闲时先做一次 HEAD 预检（异步，不阻塞界面），
+           拿到每卷体积与是否支持 Range，点击时就能立刻开下，少一次握手等待 */
+        (function preflightLibrary() {
+          const n = window.BrushNative;
+          if (!n || typeof n.shapeLibPreflightAsync !== 'function') return;
+          const urls = SHAPE_LIB_PACKS.full.parts.map(shapeLibUrl);
+          try { n.shapeLibPreflightAsync(urls.join('|')); } catch (e) { return; }
+          if (typeof n.shapeLibPreflightState !== 'function') return;
+          let tries = 0;
+          const poll = function () {
+            tries++;
+            let info = null;
+            try { const raw = String(n.shapeLibPreflightState() || ''); if (raw) info = JSON.parse(raw); } catch (e) { /* 还没好 */ }
+            if (!info || !(info.total > 0)) {
+              if (tries < 8) setTimeout(poll, 700);
+              return;
+            }
+            window.__shapeLibPreflight = info;
+            const mb = (info.total / 1048576).toFixed(1);
+            if (!shapeLibDlBusy && dlFull.dataset.label && dlFull.textContent === dlFull.dataset.label) {
+              dlFull.textContent = '下载原图图库包（' + mb + 'MB · 3 卷并发' + (info.ranges ? ' · 可续传' : ' · 不支持断点续传') + '）';
+              dlFull.dataset.label = dlFull.textContent;
+            }
+            pushLog('图库预检：' + mb + 'MB，Range ' + (info.ranges ? '支持（可断点续传/分片）' : '不支持（只能整卷重下）'));
+          };
+          setTimeout(poll, 500);
+        })();
         dlFull.dataset.label = dlFull.textContent;
         dlFull.addEventListener('click', function () { downloadShapeLibPack(dlFull, SHAPE_LIB_PACKS.full); });
       }
