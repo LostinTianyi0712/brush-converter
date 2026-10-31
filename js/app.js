@@ -1693,7 +1693,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.6.18';
+  const APP_VERSION = '2.6.19';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2462,10 +2462,45 @@
     if (btn && input) btn.addEventListener('click', () => input.click());
     // #282：<input type=file> 选不了文件夹，必须另开 webkitdirectory 的入口（Windows 文件对话框里没有「选文件夹」）
     if (dirBtn && dirInput) dirBtn.addEventListener('click', () => dirInput.click());
+    /* 把手动选的图库 ZIP 存进 App 私有目录：以前只存在内存，重启就「图库包没读到」，
+       用户只能重选或重下 32MB（截图上就是这个状态）。 */
+    async function persistPickedLib(files) {
+      const native = window.BrushNative;
+      if (!native || typeof native.shapeLibSaveBegin !== 'function') return false;
+      const list = Array.prototype.slice.call(files || []);
+      if (list.length !== 1 || !/\.zip$/i.test(list[0].name || '')) {
+        toast('图库已加载。想下次启动自动加载，请用图库 ZIP（文件夹/散图不保存）', 6000);
+        return false;
+      }
+      try {
+        const bytes = new Uint8Array(await list[0].arrayBuffer());
+        if (!bytes.length) return false;
+        if (!native.shapeLibSaveBegin()) throw new Error('无法创建文件');
+        const CHUNK = 3 * 1024 * 1024;
+        for (let off = 0; off < bytes.length; off += CHUNK) {
+          const part = bytes.subarray(off, Math.min(CHUNK, bytes.length - off) + off);
+          let bin = '';
+          for (let i = 0; i < part.length; i++) bin += String.fromCharCode(part[i]);
+          if (!native.shapeLibSaveChunk(btoa(bin))) { native.shapeLibSaveAbort(); throw new Error('写入失败'); }
+        }
+        const res = String(native.shapeLibSaveEnd() || '');
+        if (res.indexOf('ok:') !== 0) throw new Error(res.slice(6) || '保存失败');
+        pushLog('手动选的图库已保存到 App 内：' + res.slice(3) + 'B（下次启动自动加载）');
+        toast('已保存到 App 内，下次启动自动加载（卸载会一并删除）', 5000);
+        refreshShapeLibStoreUI();
+        return true;
+      } catch (e) {
+        pushLog('保存图库到 App 内失败：' + ((e && e.message) || e));
+        toast('图库已加载，但保存失败（下次启动需重选）：' + ((e && e.message) || e), 6000);
+        return false;
+      }
+    }
     async function takeFiles(el) {
       if (isBusy()) { el.value = ''; toast('正在转换，稍后再加载图库', 5000); return; }
-      await loadShapeLibrary(el.target.files);
+      const picked = el.target.files;
+      await loadShapeLibrary(picked);
       el.value = '';
+      if (state.shapeLib) await persistPickedLib(picked);
     }
     if (input) input.addEventListener('change', takeFiles);
     if (dirInput) dirInput.addEventListener('change', takeFiles);
