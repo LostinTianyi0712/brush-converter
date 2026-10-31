@@ -1693,7 +1693,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.6.29';
+  const APP_VERSION = '2.6.30';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2447,25 +2447,35 @@
       // 安卓 App：原生下载（接口存在时优先），完成后再从私有目录读字节导入
       if (window.BrushNative && typeof window.BrushNative.shapeLibDownloadStart === 'function') {
         // 单卷、多卷都交给原生：写盘 + Range 续传，关掉进程再点接着下（原神同款行为）
-        await nativeShapeLibDownload(pack.parts.map(shapeLibUrl), btn, pack.totalMB);
-        btn.textContent = '正在导入图库…';
-        const got = await bundledShapeLibBytes();
-        const nativeFile = new File([got.bytes], pack.zipName, { type: 'application/zip' });
-        // 安卓也存一份到 IndexedDB：它也是 App 数据（卸载会删），但能当私有目录的安全网——
-        // 万一某次更新后 files/ 里的图库读不到，启动时能立即从缓存恢复，不用重下 32MB。
+        // 原生失败（例如 CDN 乱发 gzip 触发的 ID1ID2）不要就此停住：清掉 .part，退回下面网页内下载重试
         try {
-          const cachedNative = await ShapeLibStore.put(got.bytes, pack.key);
-          pushLog(cachedNative ? '图库同时存进 App 数据（' + got.bytes.length + 'B），更新后可直接恢复' : '图库缓存失败（不影响使用）');
-        } catch (e) { /* 缓存失败不影响本次使用 */ }
-        const upgrade = !!(state.shapeLib && state.shapeLibPackKey !== pack.key);
-        await loadShapeLibrary([nativeFile], pack.label, upgrade);
-        state.shapeLibPackKey = pack.key;
-        btn.textContent = pack.doneText;
-        toast('图库包已下载到 App 内（下次启动自动加载，卸载会一起删）', 5000);
-        pushLog('图库包已通过原生下载保存：' + got.bytes.length + 'B');
-        refreshShapeLibStoreUI();
-        render();
-        return;
+          await nativeShapeLibDownload(pack.parts.map(shapeLibUrl), btn, pack.totalMB);
+          btn.textContent = '正在导入图库…';
+          const got = await bundledShapeLibBytes();
+          const nativeFile = new File([got.bytes], pack.zipName, { type: 'application/zip' });
+          // 安卓也存一份到 IndexedDB：它也是 App 数据（卸载会删），但能当私有目录的安全网——
+          // 万一某次更新后 files/ 里的图库读不到，启动时能立即从缓存恢复，不用重下 32MB。
+          try {
+            const cachedNative = await ShapeLibStore.put(got.bytes, pack.key);
+            pushLog(cachedNative ? '图库同时存进 App 数据（' + got.bytes.length + 'B），更新后可直接恢复' : '图库缓存失败（不影响使用）');
+          } catch (e) { /* 缓存失败不影响本次使用 */ }
+          const upgrade = !!(state.shapeLib && state.shapeLibPackKey !== pack.key);
+          await loadShapeLibrary([nativeFile], pack.label, upgrade);
+          state.shapeLibPackKey = pack.key;
+          btn.textContent = pack.doneText;
+          toast('图库包已下载到 App 内（下次启动自动加载，卸载会一起删）', 5000);
+          pushLog('图库包已通过原生下载保存：' + got.bytes.length + 'B');
+          refreshShapeLibStoreUI();
+          render();
+          return;
+        } catch (nativeErr) {
+          const nativeMsg = (nativeErr && nativeErr.message) || String(nativeErr);
+          pushLog('原生下载失败，改用网页内下载重试：' + nativeMsg);
+          toast('原生下载失败（' + nativeMsg + '），改用网页内下载重试…', 8000);
+          try { if (typeof window.BrushNative.shapeLibDownloadAbort === 'function') window.BrushNative.shapeLibDownloadAbort(); } catch (e) { /* ignore */ }
+          btn.disabled = false;
+          if (btn.dataset && btn.dataset.label) btn.textContent = btn.dataset.label;
+        }
       }
       let blob;
       if (pack.parts.length === 1) {
