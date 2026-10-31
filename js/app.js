@@ -1693,7 +1693,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.6.25';
+  const APP_VERSION = '2.6.26';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2373,13 +2373,6 @@
       }
       parts.push('App 内副本 ' + mb(info.privateBytes) + '（files/shape-lib.zip' + when + '）');
     } else if (info.source === 'asset') parts.push('图库在安装包里（assets）');
-    if (info.privateBytes > 0) {
-      const b0 = document.getElementById('btnShapeLibBackup');
-      if (b0) b0.hidden = false;
-    } else {
-      const b1 = document.getElementById('btnShapeLibBackup');
-      if (b1) b1.hidden = true;
-    }
     if (!parts.length) { box.hidden = true; if (clear) clear.hidden = true; return; }
     box.hidden = false;
     if (window.__shapeLibCacheText) parts.push(window.__shapeLibCacheText);
@@ -2611,11 +2604,13 @@
       const dlBtn = $('#btnShapeLibDownload');
       if (dlBtn) {
         dlBtn.hidden = false;
+        dlBtn.dataset.label = dlBtn.textContent; // 原始文案：下载失败/取消后要还原
         dlBtn.addEventListener('click', function () { downloadShapeLibPack(dlBtn, SHAPE_LIB_PACKS.lite); });
       }
       const dlFull = $('#btnShapeLibDownloadFull');
       if (dlFull) {
         dlFull.hidden = false;
+        dlFull.dataset.label = dlFull.textContent;
         dlFull.addEventListener('click', function () { downloadShapeLibPack(dlFull, SHAPE_LIB_PACKS.full); });
       }
       // 释放图库空间（用户问「卸载时要把图库一并卸载」——这里也能主动删）
@@ -2631,26 +2626,29 @@
             if (ok || cacheCleared) {
               state.shapeLib = null;
               state.shapeLibPackKey = null;
+              window.__shapeLibCacheText = null;
+              // 原生侧已被叫停，这里把按钮文案也还原，别停在「下载中」
+              shapeLibDlBusy = false;
+              ['#btnShapeLibDownload', '#btnShapeLibDownloadFull'].forEach(function (sel) {
+                const b = $(sel);
+                if (!b) return;
+                b.disabled = false;
+                if (b.dataset && b.dataset.label) b.textContent = b.dataset.label;
+              });
+              // 删完不能就这么空着：安装包里还带 512px 精简图库，回落到内置那份
+              let fellBack = 0;
+              try {
+                const r = await loadBundledShapeLib();
+                fellBack = r && r.ok ? (r.count || 0) : 0;
+              } catch (e) { /* 内置也没有就真的空着 */ }
               updateShapeLibText();
               refreshShapeLibStoreUI();
-              toast('已删除图库副本和缓存，下次要用再下', 5000);
+              render();
+              toast(fellBack > 0
+                ? '已删除下载的图库和缓存（占用的空间已释放），已自动换回安装包内置的 512px 精简图库（' + fellBack + ' 张），现在就能用'
+                : '已删除图库副本和缓存，下次要用再下', 6000);
             } else toast('删除失败：可能没有存储权限', 5000);
           } catch (e) { toast('删除失败：' + ((e && e.message) || e), 5000); }
-        });
-      }
-      // 手动备份：只在用户点「存一份图库到 下载」时才写公共目录（机型更新后被系统清数据时可一键装回）
-      const backupBtn = $('#btnShapeLibBackup');
-      if (backupBtn) {
-        backupBtn.addEventListener('click', function () {
-          const n = window.BrushNative;
-          if (!n || typeof n.shapeLibBackupToDownloads !== 'function') return;
-          try {
-            const res = String(n.shapeLibBackupToDownloads() || '');
-            if (res.indexOf('ok:') === 0) {
-              toast('已备份到「' + res.slice(3) + '」。更新后万一丢了，用「选择图库 ZIP」选它就能装回（不用重下）', 7000);
-              pushLog('图库已手动备份到：' + res.slice(3));
-            } else toast('备份失败：' + (res.slice(6) || res), 6000);
-          } catch (e) { toast('备份失败：' + ((e && e.message) || e), 6000); }
         });
       }
     }
