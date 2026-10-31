@@ -247,6 +247,15 @@
     if (kind === 'bru') {
       result = bru.parseBru(bytes);
       result.brushes = result.brushes.map(b => Object.assign({}, b, { source: 'bru' }));
+      // #23（WorkBuddy 第106轮）：BRU f115（旋转方式）→ PS 角度控制源逆映射。
+      // 1=跟随笔迹方向(6)、2=初始方向(5)、3=笔压(2)；0=固定不映射。
+      // BRU→BRU 写出仍直接用 bruRotationMode，不受影响。
+      result.brushes.forEach(function (b) {
+        if (b.dynamicsControlAngle === undefined && (b.bruRotationMode || 0) > 0) {
+          const inv = { 1: 6, 2: 5, 3: 2 }[b.bruRotationMode];
+          if (inv) b.dynamicsControlAngle = inv;
+        }
+      });
     } else if (kind === 'csp-decrypted') {
       if (!(opts && opts.decrypted && opts.decrypted.json)) {
         throw new Error('这是 CSP 解密目录里的参数文件；请把整个 _decrypted 目录（或包含它的压缩包）导入');
@@ -503,7 +512,8 @@
   }
 
   function sanitizeName(name, index) {
-    let n = (name || '').replace(/[\\/:*?"<>|\r\n\t]/g, ' ').replace(/\s+/g, ' ').trim();
+    // #48（WorkBuddy 第106轮）：补充控制字符（\x00-\x1f）与零宽/双向控制字符（U+200B-F、U+202A-E、U+FEFF）
+    let n = (name || '').replace(/[\\/:*?"<>|\x00-\x1f\x7f\u200b-\u200f\u202a-\u202e\ufeff]/g, ' ').replace(/\s+/g, ' ').trim();
     // Windows 不允许文件名以点/空格结尾（"a." 会被系统截断或创建失败）
     n = n.replace(/[. ]+$/, '');
     if (!n) n = 'brush_' + String(index + 1).padStart(3, '0');
@@ -753,8 +763,10 @@
       borderStrength: brush.borderStrength,
       renderCount: brush.renderCount,
       speedPressure: !!brush.speedPressure,
-      smudgeOn: brush.smudgeOn,
-      smudgeAmount: brush.smudgeAmount,
+      // #37（WorkBuddy 第106轮）：Procreate 湿混「混合」(dynamicsMix) 在 smudge 字段缺失时兜底，
+      // 跨格式（Procreate→BRU）混色强度不再丢回默认值
+      smudgeOn: brush.smudgeOn !== undefined ? brush.smudgeOn : (brush.dynamicsMix > 0 ? true : brush.smudgeOn),
+      smudgeAmount: brush.smudgeAmount !== undefined ? brush.smudgeAmount : (brush.dynamicsMix !== undefined ? brush.dynamicsMix : brush.smudgeAmount),
       colorDynamicsOn: brush.colorDynamicsOn,
       colorJitterHue: brush.colorJitterHue,
       colorJitterSat: brush.colorJitterSat,
@@ -1119,6 +1131,7 @@
         patternRef: patternRef,
         textureDepth: brush.textureDepth,
         textureScale: brush.textureScale,
+        textureBlendMode: brush.textureBlendMode,
         textureEnabled: !!brush.hasTexture,
         // PatternRef 里的 .pat 已经烘入了“是否需要反转”（inversionBaked），所以只要引用了它，
         // InvT 就必须是 false；否则 PS 会把已反转的图案再反转一次，纹理回到未反转原貌。
@@ -1338,19 +1351,11 @@
   function makeProcreateBrushset(brushList, opts) {
     opts = opts || {};
     // 同一包里重名笔刷：Procreate 里会显示多支同名，用户无法区分，统一去重
-    const uniqueNames = (function (list) {
-      const seen = new Set();
-      return list.map(function (b, i) {
-        let base = sanitizeName(b.name, i) || ('笔刷 ' + (i + 1));
-        let name = base, k = 2;
-        while (seen.has(name.toLowerCase())) { name = base + ' (' + k + ')'; k++; }
-        seen.add(name.toLowerCase());
-        return name;
-      });
-    })(brushList);
+    // （#48 WorkBuddy 第106轮：改用全局 uniqueNames，与 ABR/GoPaint 的大小写折叠与长度上限口径一致）
+    const names = uniqueNames(brushList);
     const list = brushList.map(function (b, i) {
       b=withExportSettings(b,opts);
-      if (b.name !== uniqueNames[i]) b = Object.assign({}, b, { name: uniqueNames[i] });
+      if (b.name !== names[i]) b = Object.assign({}, b, { name: names[i] });
       // Native Procreate resources may be builtin references with no Shape.png.
       // Match the single-brush raw path instead of replacing them with a circle.
       if (opts.fidelity !== false && b._rawArchive && !opts.forceRebuild) return b;
@@ -2534,13 +2539,21 @@ Write-Host 'restart MediBang Paint Pro'
   }
 
   function uniqueNames(brushes) {
+    // #48（WorkBuddy 第106轮）：统一去重口径——大小写折叠（Windows/PS 文件名与预设名大小写不敏感，
+    // 'ABC'/'abc' 会互相覆盖导致预设与采样错位）；加后缀后复核 60 字符上限。
     const seen = new Map();
     return brushes.map((b, i) => {
-      let base = sanitizeName(b.name, i);
+      const base = sanitizeName(b.name, i);
       let n = base;
       let k = 2;
-      while (seen.has(n)) { n = base + ' (' + k + ')'; k++; }
-      seen.set(n, 1);
+      while (seen.has(n.toLowerCase())) {
+        const suf = ' (' + k + ')';
+        k++;
+        n = (base.length + suf.length > 60)
+          ? base.slice(0, 60 - suf.length).replace(/[. ]+$/, '') + suf
+          : base + suf;
+      }
+      seen.set(n.toLowerCase(), 1);
       return n;
     });
   }

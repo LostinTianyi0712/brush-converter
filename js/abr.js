@@ -387,6 +387,8 @@
       const cdPur = desc.unitValue(desc.getItem(preset, 'purity'));
       const useTexture = desc.getItem(preset, 'useTexture');
       const textureInverted = desc.getItem(preset, 'InvT') === true;
+      // #56：纹理混合模式（PS「模式」下拉，BlnM 枚举），原样保留字符串
+      const texBlend = desc.getItem(preset, 'textureBlendMode');
       const txtrRef = desc.getItem(preset, 'Txtr');
       const texDepth = desc.unitValue(desc.getItem(preset, 'textureDepth'));
       const texScale = desc.unitValue(desc.getItem(preset, 'textureScale'));
@@ -397,7 +399,8 @@
         return j && j.type === 'unit' ? j.value : 0;
       };
       let controlSize = null, controlOpacity = null, controlAngle = null, controlRoundness = null;
-      function readControl(v) {
+      const controlRaw = {};
+      function readControl(v, key) {
         if (!v || v.type !== 'descriptor') return null;
         // 2 = Pen Pressure (Photoshop brVr control enum)
         let c = desc.getItem(v, 'bVTy');
@@ -405,16 +408,20 @@
         if (typeof c === 'number') return c;
         if (c && c.type === 'enum') {
           if (c.value === 'Prs ' || c.value === 'Prs') return 2;
-          return c.value;
+          // #23：旧版 ABR 用 enum 字符串存控制源（初始方向/方向/倾斜等）。二进制枚举码
+          // 没有可靠样本标定，原样返回字符串会让写出端把字符串当 long 写成垃圾值，
+          // 这里保守归一为 null（按固定角度处理），原始字符串保留在 dynamicsControl*Raw 供报告/人工分析。
+          if (key) controlRaw[key] = c.value;
+          return null;
         }
         return null;
       }
       if (useTipDynamics) {
-        controlSize = readControl(szVr);
-        controlAngle = readControl(angleVr);
-        controlRoundness = readControl(roundVr);
+        controlSize = readControl(szVr, 'Size');
+        controlAngle = readControl(angleVr, 'Angle');
+        controlRoundness = readControl(roundVr, 'Roundness');
       }
-      if (usePaintDynamics === true || (usePaintDynamics === undefined && useTipDynamics)) controlOpacity = readControl(opVr);
+      if (usePaintDynamics === true || (usePaintDynamics === undefined && useTipDynamics)) controlOpacity = readControl(opVr, 'Opacity');
       const name = desc.getItem(preset, 'Nm  ') || '';
       const toolOptions = desc.getItem(preset, 'toolOptions');
       const toolRatio = function (key) {
@@ -468,10 +475,11 @@
         dynamicsControlSize: controlSize,
         dynamicsControlOpacity: controlOpacity,
         dynamicsControlAngle: controlAngle,
+        dynamicsControlAngleRaw: controlRaw.Angle,
         dynamicsControlRoundness: controlRoundness,
-        dynamicsControlScatter: useScatter ? readControl(scatterVr) : null,
-        dynamicsControlCount: useScatter ? readControl(countVr) : null,
-        dynamicsControlFlow: usePaintDynamics ? readControl(flowVr) : null,
+        dynamicsControlScatter: useScatter ? readControl(scatterVr, 'Scatter') : null,
+        dynamicsControlCount: useScatter ? readControl(countVr, 'Count') : null,
+        dynamicsControlFlow: usePaintDynamics ? readControl(flowVr, 'Flow') : null,
         dynamicsFadeSteps: (function () {
           const steps = {};
           const vars = {size:szVr,opacity:opVr,angle:angleVr,roundness:roundVr,
@@ -504,6 +512,8 @@
         textureDepth: texDepth === undefined ? undefined : texDepth / 100,
         textureScale: texScale === undefined ? undefined : texScale / 100,
         textureInverted: textureInverted,
+        // #56：BlnM 枚举原值（'hght'/'Mltp'/'Nrml'…），跨格式映射见 convert 报告
+        textureBlendMode: texBlend && texBlend.type === 'enum' && typeof texBlend.value === 'string' ? texBlend.value : undefined,
         textureName: txtrRef && desc.getItem(txtrRef, 'Nm  ') ? String(desc.getItem(txtrRef, 'Nm  ')).replace(/^.*=/, '') : undefined,
         textureId: txtrRef && desc.getItem(txtrRef, 'Idnt') ? String(desc.getItem(txtrRef, 'Idnt')) : undefined,
         dualBrush: dualInfo,
@@ -1131,6 +1141,18 @@
     return util.concat([_ascii4('8BIM'), _ascii4(type), _u32be(data.length), data, new Uint8Array(pad)]);
   }
 
+  /* #23：写出端防串型——控制源只接受数字。旧读端/手工构造可能给出 enum 字符串
+     （如 'Idir'），字符串当 long 写会产出垃圾 bVTy；这里归一为数字。 */
+  function ctlNum(v) {
+    return typeof v === 'number' ? v : (v === 'Prs ' || v === 'Prs' ? 2 : 0);
+  }
+  /* #56：纹理混合模式白名单（PS BlnM 常用 charID）。源值不在表内时回退默认，
+     避免写出 PS 不认识的枚举导致预设被丢弃。 */
+  const BLNM_MODES = ['Nrml', 'Dslv', 'Drkn', 'Mltp', 'CBrn', 'LBrn', 'Lghn', 'ScrN', 'Ovrl', 'SftL', 'HrdL', 'VlLt', 'LnrL', 'PnLt', 'HrdM', 'Dfrn', 'Excl', 'H   ', 'Strt', 'Colr', 'Lmns'];
+  function blnmMode(v, dflt) {
+    return typeof v === 'string' && BLNM_MODES.indexOf(v) >= 0 ? v : dflt;
+  }
+
   function patchesFromFresh(raw,fresh,paths) {
     const original=desc.readDescriptor(raw),target=desc.readDescriptor(fresh),patches=[],seen=new Set();
     for(const name of paths||[]){
@@ -1310,9 +1332,9 @@
         _descItem('Mnm ', 'UntF', _descUntF('#Prc', Math.round(mnm || 0)))
       ]);
       const sizeJitter = Math.max(0, Math.min(100, it.sizeJitterPct || 0));
-      const sizeControl = it.dynamicsControlSize == null ? (it.pressureSize ? 2 : 0) : it.dynamicsControlSize;
-      const opacityControl = it.dynamicsControlOpacity == null ? (it.pressureOpacity ? 2 : 0) : it.dynamicsControlOpacity;
-      const flowControl = it.dynamicsControlFlow || 0;
+      const sizeControl = it.dynamicsControlSize == null ? (it.pressureSize ? 2 : 0) : ctlNum(it.dynamicsControlSize);
+      const opacityControl = it.dynamicsControlOpacity == null ? (it.pressureOpacity ? 2 : 0) : ctlNum(it.dynamicsControlOpacity);
+      const flowControl = ctlNum(it.dynamicsControlFlow);
       {
         const minD = Math.round(Math.max(0, Math.min(100, (it.minSizeRatio === undefined ? 0.1 : it.minSizeRatio) * 100)));
         presetItems.push(_descItem('minimumDiameter', 'UntF', _descUntF('#Prc', minD)));
@@ -1321,10 +1343,10 @@
       if (sizeControl || sizeJitter > 0 || it.dynamicsControlRoundness || it.roundnessJitterPct || it.rawPreset)
         presetItems.push(_descItem('minimumRoundness', 'UntF', _descUntF('#Prc', it.minRoundnessRatio === undefined ? 25 : Math.max(0, Math.min(100, it.minRoundnessRatio * 100)))));
       if ((it.angleJitterDeg || 0) > 0 || it.dynamicsControlAngle || it.rawPreset) {
-        presetItems.push(_descItem('angleDynamics', 'Objc', brv(it.dynamicsControlAngle || 0, it.angleJitterDeg, 0, 'angle')));
+        presetItems.push(_descItem('angleDynamics', 'Objc', brv(ctlNum(it.dynamicsControlAngle), it.angleJitterDeg, 0, 'angle')));
       }
       if ((it.roundnessJitterPct || 0) > 0 || it.dynamicsControlRoundness || it.rawPreset) {
-        presetItems.push(_descItem('roundnessDynamics', 'Objc', brv(it.dynamicsControlRoundness || 0, it.roundnessJitterPct, 0, 'roundness')));
+        presetItems.push(_descItem('roundnessDynamics', 'Objc', brv(ctlNum(it.dynamicsControlRoundness), it.roundnessJitterPct, 0, 'roundness')));
       }
       if ((it.tiltJitterPct || 0) > 0 || it.rawPreset) {
         presetItems.push(_descItem('ttlVr', 'Objc', brv(3, it.tiltJitterPct, 0, 'tilt')));
@@ -1333,8 +1355,8 @@
         presetItems.push(_descItem('useScatter', 'bool', _descBool(!!(it.scatterOn || (it.scatterCount||1)>1 || it.dynamicsControlScatter || it.dynamicsControlCount || it.countJitterPct))));
         presetItems.push(_descItem('Cnt ', 'doub', _doube(it.scatterCount || 1)));
         presetItems.push(_descItem('bothAxes', 'bool', _descBool(!!it.scatterBothAxes)));
-        presetItems.push(_descItem('scatterDynamics', 'Objc', brv(it.dynamicsControlScatter || 0, it.scatterPct || 0, 0, 'scatter')));
-        presetItems.push(_descItem('countDynamics', 'Objc', brv(it.dynamicsControlCount || 0, it.countJitterPct || 0, 0, 'count')));
+        presetItems.push(_descItem('scatterDynamics', 'Objc', brv(ctlNum(it.dynamicsControlScatter), it.scatterPct || 0, 0, 'scatter')));
+        presetItems.push(_descItem('countDynamics', 'Objc', brv(ctlNum(it.dynamicsControlCount), it.countJitterPct || 0, 0, 'count')));
       }
       {
         presetItems.push(_descItem('opVr', 'Objc', brv(opacityControl, it.opacityJitterPct, (it.minOpacityRatio === undefined ? 0.25 : it.minOpacityRatio) * 100, 'opacity')));
@@ -1346,7 +1368,7 @@
         presetItems.push(_descItem('useTexture', 'bool', _descBool(true)));
         presetItems.push(_descItem('TxtC', 'bool', _descBool(true)));
         presetItems.push(_descItem('interpretation', 'bool', _descBool(true)));
-        presetItems.push(_descItem('textureBlendMode', 'enum', _descEnum('BlnM', 'hght')));
+        presetItems.push(_descItem('textureBlendMode', 'enum', _descEnum('BlnM', blnmMode(it.textureBlendMode, 'hght'))));
         presetItems.push(_descItem('textureDepth', 'UntF', _descUntF('#Prc', Math.round(Math.max(0, Math.min(1, it.textureDepth === undefined ? 0.5 : it.textureDepth)) * 100))));
         presetItems.push(_descItem('minimumDepth', 'UntF', _descUntF('#Prc', 0)));
         presetItems.push(_descItem('Txtr', 'Objc', _descObjc('', 'Ptrn', [
@@ -1358,7 +1380,7 @@
         presetItems.push(_descItem('useTexture', 'bool', _descBool(true)));
         presetItems.push(_descItem('TxtC', 'bool', _descBool(true)));
         presetItems.push(_descItem('interpretation', 'bool', _descBool(true)));
-        presetItems.push(_descItem('textureBlendMode', 'enum', _descEnum('BlnM', 'Nrml')));
+        presetItems.push(_descItem('textureBlendMode', 'enum', _descEnum('BlnM', blnmMode(it.textureBlendMode, 'Nrml'))));
         presetItems.push(_descItem('textureDepth', 'UntF', _descUntF('#Prc', Math.round(Math.max(0, Math.min(1, it.textureDepth === undefined ? 0.5 : it.textureDepth)) * 100))));
         presetItems.push(_descItem('minimumDepth', 'UntF', _descUntF('#Prc', 0)));
         presetItems.push(_descItem('Txtr', 'Objc', _descObjc('', 'Ptrn', [

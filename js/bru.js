@@ -153,9 +153,13 @@
       parts.push(u8arr(fF32(101, Math.max(0, Math.min(1, 1 - (b.wetEdgesAmount === undefined ? 0.4 : b.wetEdgesAmount))))));
       parts.push(u8arr(fF32(129, Math.max(0, Math.min(1, 1 - (b.wetEdgesDepth === undefined ? 0.4 : b.wetEdgesDepth))))));
     }
-    if (b.smudgeOn) {
+    // #37：混色（f103 开关 / f104 强度，反向存储）。smudge 字段优先；
+    // Procreate 源只有湿混「混合」(dynamicsMix) 时用它兜底，跨格式不再把混色丢回默认值。
+    const smudgeActive = b.smudgeOn !== undefined ? !!b.smudgeOn : (b.dynamicsMix !== undefined && b.dynamicsMix > 0);
+    const smudgeAmt = b.smudgeAmount !== undefined ? b.smudgeAmount : (b.dynamicsMix !== undefined ? b.dynamicsMix : 0.3);
+    if (smudgeActive) {
       parts.push(u8arr(fVarint(103, 1)));
-      parts.push(u8arr(fF32(104, Math.max(0, Math.min(1, 1 - (b.smudgeAmount === undefined ? 0.3 : b.smudgeAmount))))));
+      parts.push(u8arr(fF32(104, Math.max(0, Math.min(1, 1 - smudgeAmt)))));
     }
     if (b.colorDynamicsOn) {
       parts.push(u8arr(fVarint(61, 1)));
@@ -609,6 +613,9 @@
         wetEdgesDepth: wetOn ? Math.max(0, Math.min(1, 1 - wetDepthRaw)) : 0,
         smudgeOn: mixOn,
         smudgeAmount: mixOn ? Math.max(0, Math.min(1, 1 - mixStrengthRaw)) : 0,
+        // #37：BRU f103/f104（混色强度）→ Procreate 湿混「混合」。载入/柔化 BRU 无对应
+        // 字段，交由 Procreate 默认值；同格式写出仍优先用 smudgeOn/smudgeAmount。
+        dynamicsMix: mixOn ? Math.max(0, Math.min(1, 1 - mixStrengthRaw)) : undefined,
         taperOn: taperOn,
         taperSize: taperSize,
         taperOpacity: taperOpacity,
