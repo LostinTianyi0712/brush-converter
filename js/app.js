@@ -1693,7 +1693,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.6.22';
+  const APP_VERSION = '2.6.23';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2313,6 +2313,7 @@
     if (info.privateBytes > 0) diag.push('files/ ' + mb(info.privateBytes));
     else diag.push('files/ 不存在');
     if (info.bakBytes > 0) diag.push('.bak ' + mb(info.bakBytes));
+    if (info.extBytes > 0) diag.push('Android/data ' + mb(info.extBytes));
     if (info.asset) diag.push('安装包内置');
     if (info.readError) diag.push('读取错误：' + info.readError);
     if (window.__shapeLibDiagOnly) return;
