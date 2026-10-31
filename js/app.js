@@ -1693,7 +1693,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.6.31';
+  const APP_VERSION = '2.6.32';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -1926,22 +1926,20 @@
     const el = $('#shapeLibText');
     if (!el) return;
     if (state.shapeLib && state.shapeLib.size) {
-      const label = state.shapeLibLabel || (state.shapeLibBuiltIn ? '内置图库包' : '自选图库');
-      const mb = state.shapeLibBytes ? ' · ' + Math.round(state.shapeLibBytes / 1048576) + 'MB' : '';
-      el.textContent = (state.shapeLibBuiltIn ? '图库包已加载：' : '已加载 ') + state.shapeLib.size + ' 张' + mb +
-        '（' + label + '）；缺 shape 的笔刷已按内置资源名补回真图';
+      el.textContent = '图库已加载：' + state.shapeLib.size + ' 张' +
+        (state.shapeLibBytes ? '（' + Math.round(state.shapeLibBytes / 1048576) + 'MB）' : '');
     } else {
       // 安卓壳 / 网页版都能直接下（安卓壳走站点绝对地址），把入口写在提示里，别让用户找按钮
       const canDownload = window.BrushNative || window.BrushDesktop || /^https?:/.test(location.protocol);
       if (state.shapeLibBuiltIn === false && state.shapeLibError) {
         el.textContent = canDownload
-          ? '图库包没读到（' + state.shapeLibError + '）：点下面「下载图库包（精简512 · 32MB）」或「原图高清 216MB」，也可以手动选图库文件夹'
+          ? '还没有图库：下面下载一份，或用「选择图库文件夹」导入'
           : '图库包没读到（' + state.shapeLibError + '）：可以点「选择图库文件夹」手动指定';
-      if (window.__shapeLibDiagText) { el.textContent = el.textContent + ' ｜ ' + window.__shapeLibDiagText; }
+
       } else {
         el.textContent = canDownload
-          ? '未加载：缺图时只能用合成圆头。可点下面两档下载：精简512（32MB）或原图高清（216MB）'
-          : '未加载：把「Procreate 内置笔尖图库」的 zip 放到程序旁边，或点「选择图库 ZIP / 图片」';
+          ? '还没有图库：下面下载一份，或用「选择图库文件夹」导入'
+          : '还没有图库：把图库 zip 放到程序旁边，或点「选择图库 ZIP / 图片」';
       }
     }
   }
@@ -2325,16 +2323,16 @@
         try {
           const r = String(n.shapeLibVerify(0) || '');
           if (r === 'ok:asset') {
-            verify.textContent = '图库在安装包内（完好）';
+            verify.textContent = '图库正常（安装包自带）';
             setTimeout(function () { verify.textContent = old; }, 2600);
             return;
           }
           if (r.indexOf('ok:') === 0) {
-            verify.textContent = '图库完好 ' + (Number(r.slice(3)) / 1048576).toFixed(1) + 'MB';
+            verify.textContent = '图库正常（' + (Number(r.slice(3)) / 1048576).toFixed(1) + 'MB）';
             setTimeout(function () { verify.textContent = old; }, 2600);
             return;
           }
-          verify.textContent = r === 'missing' ? '缺失，开始重下…' : '大小异常，开始修复…';
+          verify.textContent = r === 'missing' ? '图库不在了，开始重新下载…' : '图库异常，开始修复…';
           const dl = document.getElementById('btnShapeLibDownload');
           if (dl) { dl.click(); setTimeout(function () { verify.textContent = old; }, 1500); }
           else verify.textContent = old;
@@ -2358,25 +2356,24 @@
     if (info.readError) diag.push('读取错误：' + info.readError);
     if (window.__shapeLibDiagOnly) return;
     window.__shapeLibDiagText = '诊断：' + diag.join('；');
+    try { if (diag.length && window.__shapeLibDiagLogged !== diag.join('|')) { window.__shapeLibDiagLogged = diag.join('|'); pushLog('图库诊断：' + diag.join('；')); } } catch (e) { /* ignore */ }
     const parts = [];
-    // 原神式：外部 App 私有目录是主存储（升级安装不会被清，卸载时随应用删除）
-    if (info.active === 'ext' && info.activeBytes > 0) {
-      parts.push('图库在 Android/data/com.brushconv.app/files（' + mb(info.activeBytes) + '，升级不丢，卸载随应用删除）');
+    // 只给一句结论：有没有图库、多大、卸载会删；存储细节只写进日志（诊断行）
+    let when = '';
+    if (info.mtime) {
+      try {
+        const d = new Date(Number(info.mtime));
+        when = '，' + (d.getMonth() + 1) + '月' + d.getDate() + '日下载';
+      } catch (e) { /* ignore */ }
     }
-    if (info.privateBytes > 0) {
-      let when = '';
-      if (info.mtime) {
-        try {
-          const d = new Date(Number(info.mtime));
-          when = '，' + (d.getMonth() + 1) + '月' + d.getDate() + '日 ' + ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2) + ' 下载';
-        } catch (e) { /* ignore */ }
-      }
-      parts.push('App 内副本 ' + mb(info.privateBytes) + '（files/shape-lib.zip' + when + '）');
-    } else if (info.source === 'asset') parts.push('图库在安装包里（assets）');
+    const readyBytes = info.activeBytes > 0 ? info.activeBytes : info.privateBytes;
+    if (readyBytes > 0) {
+      parts.push('图库已就绪（' + mb(readyBytes) + '）' + when + '，卸载 App 时会一起删除');
+    } else if (info.source === 'asset') parts.push('图库已就绪（安装包自带）');
     if (!parts.length) { box.hidden = true; if (clear) clear.hidden = true; return; }
     box.hidden = false;
-    if (window.__shapeLibCacheText) parts.push(window.__shapeLibCacheText);
-    box.textContent = parts.join('；') + '。〔' + (window.__shapeLibDiagText || '') + '〕';
+
+    box.textContent = parts.join('；') + '。';
     if (clear) clear.hidden = !(info.privateBytes > 0 || info.active === 'ext');
     const vbtn = document.getElementById('btnShapeLibVerify');
     if (vbtn) vbtn.hidden = !(info.privateBytes > 0 || info.extBytes > 0 || info.asset);
@@ -2478,7 +2475,7 @@
         } catch (nativeErr) {
           const nativeMsg = (nativeErr && nativeErr.message) || String(nativeErr);
           pushLog('原生下载失败，改用网页内下载重试：' + nativeMsg);
-          toast('原生下载失败（' + nativeMsg + '），改用网页内下载重试…', 8000);
+          toast('正在换个方式重新下载…', 5000);
           try { if (typeof window.BrushNative.shapeLibDownloadAbort === 'function') window.BrushNative.shapeLibDownloadAbort(); } catch (e) { /* ignore */ }
           btn.disabled = false;
           if (btn.dataset && btn.dataset.label) btn.textContent = btn.dataset.label;
@@ -2556,11 +2553,11 @@
       render(); // 刷新所有卡片：缺图提示里的下载按钮随图库就位一并消失
     } catch (e) {
       const msg = e && e.message ? e.message : String(e);
-      toast('图库包下载失败：' + msg + '。也可以在「高级选项」里点「选择图库 ZIP / 图片」手动导入', 12000);
+      toast('图库下载失败，请重试；多次失败可在「高级选项」里手动选择图库文件', 9000);
       pushLog('图库包下载失败：' + msg);
       btn.disabled = false;
       // 失败原因留在按钮上，别静默还原——用户至少要看到为什么没下成（点一下就是重试）
-      btn.textContent = '下载失败：' + msg + '（点此重试）';
+      btn.textContent = '下载失败，点这里重试';
       btn.title = msg;
     } finally {
       shapeLibDlBusy = false;
@@ -2640,10 +2637,10 @@
             window.__shapeLibPreflight = info;
             const mb = (info.total / 1048576).toFixed(1);
             if (!shapeLibDlBusy && dlFull.dataset.label && dlFull.textContent === dlFull.dataset.label) {
-              dlFull.textContent = '下载原图图库包（' + mb + 'MB · 3 卷并发' + (info.ranges ? ' · 可续传' : ' · 不支持断点续传') + '）';
+              dlFull.textContent = '下载高清图库包（' + mb + 'MB）';
               dlFull.dataset.label = dlFull.textContent;
             }
-            pushLog('图库预检：' + mb + 'MB，Range ' + (info.ranges ? '支持（可断点续传/分片）' : '不支持（只能整卷重下）'));
+            pushLog('图库预检：' + mb + 'MB，断点续传 ' + (info.ranges ? '可用' : '不可用（整卷重下）'));
           };
           setTimeout(poll, 500);
         })();
