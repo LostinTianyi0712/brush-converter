@@ -1693,7 +1693,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.6.30';
+  const APP_VERSION = '2.6.31';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2388,6 +2388,7 @@
     const native = window.BrushNative;
     const list = Array.isArray(urls) ? urls : [urls];
     btn.textContent = '下载中 0/' + totalMB + 'MB…';
+    let lastT = Date.now(), lastGot = 0, speed = 0;
     if (!resume) {
       const started = list.length > 1
         ? (typeof native.shapeLibDownloadMultiStart === 'function' && native.shapeLibDownloadMultiStart(list.join('|')))
@@ -2402,7 +2403,13 @@
       const st = parts[0], got = Number(parts[1]) || 0, total = Number(parts[2]) || 0;
       if (st === 'done') { btn.textContent = '下载完成，正在导入…'; return; }
       if (st.indexOf('error') === 0) throw new Error(st.slice(6) || '下载失败');
-      btn.textContent = '下载中 ' + Math.round(got / 1048576) + '/' + (total > 0 ? Math.round(total / 1048576) : totalMB) + 'MB…';
+      const nowT = Date.now();
+      if (nowT - lastT >= 1500 && got > lastGot) {
+        speed = (got - lastGot) / ((nowT - lastT) / 1000);
+        lastT = nowT; lastGot = got;
+      }
+      const mbps = speed > 0 ? (speed / 1048576).toFixed(2) + 'MB/s' : '';
+      btn.textContent = '下载中 ' + Math.round(got / 1048576) + '/' + (total > 0 ? Math.round(total / 1048576) : totalMB) + 'MB' + (mbps ? ' · ' + mbps : '') + '…';
       if (Date.now() - started > 15 * 60 * 1000) throw new Error('下载超时');
     }
   }
