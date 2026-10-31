@@ -1693,7 +1693,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.6.26';
+  const APP_VERSION = '2.6.27';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2569,19 +2569,10 @@
       try {
         const bytes = new Uint8Array(await list[0].arrayBuffer());
         if (!bytes.length) return false;
-        if (!native.shapeLibSaveBegin()) throw new Error('无法创建文件');
-        const CHUNK = 3 * 1024 * 1024;
-        for (let off = 0; off < bytes.length; off += CHUNK) {
-          const part = bytes.subarray(off, Math.min(CHUNK, bytes.length - off) + off);
-          let bin = '';
-          for (let i = 0; i < part.length; i++) bin += String.fromCharCode(part[i]);
-          if (!native.shapeLibSaveChunk(btoa(bin))) { native.shapeLibSaveAbort(); throw new Error('写入失败'); }
-        }
-        const res = String(native.shapeLibSaveEnd() || '');
-        if (res.indexOf('ok:') !== 0) throw new Error(res.slice(6) || '保存失败');
-        pushLog('手动选的图库已保存到 App 内：' + res.slice(3) + 'B（下次启动自动加载）');
+        // 和下载落盘共用同一份分块写入实现（nativePersistLibBytes）
+        const ok = await nativePersistLibBytes(bytes, true);
+        if (!ok) throw new Error('写入失败');
         toast('已保存到 App 内，下次启动自动加载（卸载会一并删除）', 5000);
-        refreshShapeLibStoreUI();
         return true;
       } catch (e) {
         pushLog('保存图库到 App 内失败：' + ((e && e.message) || e));
