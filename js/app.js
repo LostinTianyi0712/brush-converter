@@ -1023,8 +1023,14 @@
         const textured = list.filter(function (b) { return b.source !== 'bru' && b.hasTexture; });
         if (textured.length) {
           const available = textured.filter(function (b) { return !!(b._grainRgba || b._patternPixels); }).length;
-          if (available && opts.grainBake !== false) warnings.push('画世界：' + available + ' 支真实纹理按选项近似烘焙进笔尖；独立纹理层未写出，不能独立调节，空纹理保持关闭。');
+          const texLayerOn = opts.bruTexAsset && opts.bruTexAsset !== 'off';
+          if (available && opts.grainBake !== false) {
+            warnings.push(texLayerOn
+              ? '画世界：' + available + ' 支真实纹理已烘进笔尖，并额外挂了画世界内置材质纹理层（两者叠加）；材质 id 依赖画世界版本，导入后请先试画一笔。'
+              : '画世界：' + available + ' 支真实纹理按选项近似烘焙进笔尖；单独纹理层未开启（可在高级设置「画世界真纹理」打开），空纹理保持关闭。');
+          }
           if (available < textured.length || opts.grainBake === false) warnings.push('画世界：缺少纹理原图或关闭烘焙的笔刷未写出纹理，已关闭空纹理避免无法出墨。');
+          if (texLayerOn) warnings.push('画世界：纹理层只验证过「沙纸（pt24）」；若某些笔刷画不出来，把「画世界真纹理」改回关再转一次。');
         }
       }
       if (opts.dualCompanion !== false && targets.indexOf('bru') >= 0) {
@@ -1685,7 +1691,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.6.11';
+  const APP_VERSION = '2.6.12';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;

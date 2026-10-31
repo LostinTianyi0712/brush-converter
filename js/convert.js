@@ -2111,9 +2111,12 @@ Write-Host 'restart MediBang Paint Pro'
           ? '未写出（已关闭纹理输出，重建时禁用纹理）' : '参数映射（原纹理图，笔触待验证）';
       }
       if (target === 'bru') {
-        if (brush.source !== 'bru') return pixels && opts.noTextureBake !== true
-          ? '近似（真实纹理烘焙进笔尖，独立纹理层未写出）'
-          : '未写出（缺少原图或已关闭烘焙，禁用空纹理避免无墨）';
+        if (brush.source !== 'bru') {
+          if (!(pixels && opts.noTextureBake !== true)) return '未写出（缺少原图或已关闭烘焙，禁用空纹理避免无墨）';
+          return opts.bruTexAsset && opts.bruTexAsset !== 'off'
+            ? '近似（烘焙进笔尖 + 画世界内置材质纹理层，材质 id 依赖 App 版本）'
+            : '近似（真实纹理烘焙进笔尖，未开启单独纹理层）';
+        }
         return '未完整写入（当前仅纹理参数）';
       }
     }
@@ -2344,7 +2347,7 @@ Write-Host 'restart MediBang Paint Pro'
     };
     const reason = {
       abr: 'ABR 支持这些；纹理需配合 .pat 图案（目标 PS 里要有同名图案）',
-      bru: '外来真实纹理按选项近似烘焙进笔尖；独立纹理层尚未写出，空纹理保持关闭；动态和实际笔触需验证',
+      bru: '外来真实纹理按选项近似烘焙进笔尖；开「画世界真纹理」时会再叠一层内置材质（受 App 版本影响）；动态和实际笔触需验证',
       brushset: 'Procreate 原生双笔刷、倾斜/速度分开写出；不同引擎效果需验证',
       brush: 'Procreate 原生双笔刷、倾斜/速度分开写出；不同引擎效果需验证',
       kbundle: 'Krita 6 元组曲线/颜色率未映射',
