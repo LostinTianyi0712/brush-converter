@@ -621,6 +621,41 @@
     return makeBru(primary, Object.assign({}, opts, { embedSubTip: false }));
   }
 
+  /* Procreate 的纹理亮度/对比度：中性 51 / 100，调低会写成负数（偏移语义）。
+     画世界 f35/f33 是 0~100 的绝对值，所以负值要加回中性再看。 */
+  function bruTexBrightness(brush) {
+    const v = brush && brush.textureBrightness;
+    if (v === undefined || !Number.isFinite(Number(v))) return 51;
+    const n = Number(v);
+    const abs = n < 0 ? 51 + n : n;
+    return Math.max(0, Math.min(100, Math.round(abs * 100) / 100));
+  }
+  function bruTexContrast(brush) {
+    const v = brush && brush.textureContrast;
+    if (v === undefined || !Number.isFinite(Number(v))) return 100;
+    const n = Number(v);
+    const abs = n < 0 ? 100 + n : n;
+    return Math.max(0, Math.min(100, Math.round(abs * 100) / 100));
+  }
+
+  /* 从笔尖 alpha 轮廓估算硬边程度：纯二值边（只有 0/255）≈1，
+     大面积半透明过渡（柔边圆笔）会显著降低。用于源笔刷没有 hardness 字段时，
+     不要一律按 1（硬边）写 BRU。 */
+  function hardnessFromAlpha(rgba, w, h) {
+    if (!rgba || !w || !h) return 0.8;
+    let solid = 0, mid = 0;
+    for (let i = 0; i < w * h; i++) {
+      const a = rgba[i * 4 + 3];
+      if (a < 8) continue;
+      if (a >= 250) solid++; else mid++;
+    }
+    const total = solid + mid;
+    if (!total) return 0.8;
+    const frac = mid / total;
+    // 过渡像素占比越大越软；0.9 系数 + 0.15 下限让柔边落在 0.3~0.8 这一档，硬边≈1
+    return Math.max(0.20, Math.min(1, 1 - Math.min(1, frac * 0.6)));
+  }
+
   function makeBru(brush, opts) {
     if (opts && opts.embedSubTip && brush && brush.dualTip) return makeBruEmbedded(brush, opts);
     opts = opts || {};
@@ -674,6 +709,9 @@
     const texUiDepth = texAssetId
       ? Math.max(0, Math.min(0.9, 0.70 + 0.25 * Math.max(0, Math.min(1, brush.textureDepth === undefined ? 0.35 : brush.textureDepth)))) : null;
     const outTextureDepth = texAssetId ? (1 - texUiDepth) : brush.textureDepth;
+    // 没有纹理层（非原生 BRU、也没有内置材质 id）时不要写 f123：
+    // 画世界会把它当成「有纹理深度」而套默认材质，笔迹会比原笔刷花。
+    const effectiveTextureDepth = (texAssetId || brush.source === 'bru' || brush.hasTexture) ? outTextureDepth : undefined;
     const pngBytes = png.encode(w, h, brush.source === 'bru' ? rgba : png.toMaskRgba(rgba));
     const sizeScale = opts.sizeScale || 1;
     let sizePx = (brush.sizePx || 100) * sizeScale;
@@ -725,7 +763,7 @@
       flowPct: brush.flowPct,
       minFlowRatio: brush.minFlowRatio,
       roundness: brush.roundness,
-      hardness: brush.hardness,
+      hardness: brush.hardness === undefined ? hardnessFromAlpha(rgba, w, h) : brush.hardness,
       smoothingStrength: brush.smoothingStrength,
       angle: brush.angle,
       // ABR jitter is percent of a full circle; BRU stores the +/- degree range.
@@ -750,9 +788,9 @@
       hasTexture: brush.source === 'bru' ? brush.hasTexture : !!texAssetId,
       textureInverted: brush.textureInverted,
       textureScale: brush.textureScale,
-      textureBrightness: brush.textureBrightness,
-      textureContrast: brush.textureContrast,
-      textureDepth: outTextureDepth,
+      textureBrightness: bruTexBrightness(brush),
+      textureContrast: bruTexContrast(brush),
+      textureDepth: effectiveTextureDepth,
       taperOn: brush.taperOn,
       taperSize: brush.taperSize,
       taperOpacity: brush.taperOpacity,
