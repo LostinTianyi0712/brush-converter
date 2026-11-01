@@ -1693,7 +1693,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.7.8';
+  const APP_VERSION = '2.7.9';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2505,6 +2505,17 @@
       // 在途 read，此时接管会错位丢数据，只能等下一轮带 Range 换源重试。
       const st = live.map(function (x) { return { reader: x.reader, url: x.url, got: 0, chunks: [], done: false, err: null, skip: false }; });
       const t0 = Date.now();
+      // 观察窗口里也要报进度：否则用户看到的是「一直不动，等一整卷下完才跳」。
+      // 取各源已收字节的最大值（就是当前领先者），250ms 节流，避免刷 DOM。
+      let lastReport = 0;
+      function reportEval() {
+        const now = Date.now();
+        if (now - lastReport < 250) return;
+        lastReport = now;
+        let max = 0;
+        for (let i = 0; i < st.length; i++) if (st[i].got > max) max = st[i].got;
+        onProgress && onProgress(chunksGot + max);
+      }
       const pending = []; // 每源在途 read 的 promise（宽限判定用）
       function step(s, i) {
         if (s.done || s.err || s.skip) return Promise.resolve();
@@ -2514,6 +2525,7 @@
           if (r.done) { s.done = true; return; }
           s.chunks.push(r.value);
           s.got += r.value.length;
+          reportEval();
           if (Date.now() - t0 < EVAL_MS) return step(s, i); // 窗口内继续读
         }, function (e) {
           pending[i] = null;
@@ -2587,6 +2599,36 @@
     return round();
   }
 
+  /* 下载进度显示：UI 自己每 200ms 重绘（转圈 + 百分比 + 速度），不依赖下载内核多久回调一次。
+     多卷包以前看着就是「一整卷下完才跳一格」——内核只报整卷边界时，界面照样在动。 */
+  let shapeDlTick = null;
+  function shapeDlProgressStart(btn, totalBytes) {
+    shapeDlProgressStop();
+    const st = { got: 0, total: Number(totalBytes) > 0 ? Number(totalBytes) : 0, t0: Date.now(), frame: 0, timer: null };
+    const spin = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
+    function paint() {
+      if (!btn || btn.isConnected === false) { shapeDlProgressStop(); return; }
+      const secs = Math.max(1, (Date.now() - st.t0) / 1000);
+      const mb = st.got / 1048576;
+      const rate = mb / secs;
+      const totalMB = st.total > 0 ? Math.max(1, Math.round(st.total / 1048576)) : 0;
+      const pct = st.total > 0 ? Math.min(100, Math.floor(st.got * 100 / st.total)) : 0;
+      const size = totalMB > 0 ? mb.toFixed(1) + '/' + totalMB + 'MB' : mb.toFixed(1) + 'MB';
+      btn.textContent = spin[st.frame++ % spin.length] + ' 下载中 ' + (totalMB > 0 ? pct + '% · ' : '') + size + ' · ' + rate.toFixed(rate >= 10 ? 0 : 1) + 'MB/s…';
+    }
+    st.set = function (n) { n = Number(n) || 0; if (n > st.got) st.got = n; };
+    st.paint = paint;
+    shapeDlTick = st;
+    paint();
+    st.timer = setInterval(paint, 200);
+    return st;
+  }
+  function shapeDlProgressStop() {
+    const st = shapeDlTick;
+    shapeDlTick = null;
+    if (st && st.timer !== null && st.timer !== undefined) clearInterval(st.timer); // 定时器 id 可能是 0
+    return st;
+  }
   async function downloadShapeLibPack(btn, pack) {
     pack = pack || SHAPE_LIB_PACKS.lite;
     if (shapeLibDlBusy) return;
@@ -2632,10 +2674,11 @@
         }
       }
       let blob;
+      shapeDlProgressStart(btn, totalBytes); // 网页内下载：进度由本地定时器驱动，始终在动
       if (pack.parts.length === 1) {
         // 多源竞速：网页版同源 + GitHub Pages 直连 + 加速镜像，自动用最快的
         blob = await raceDownloadBlob(shapeLibSourceUrls(pack.parts[0]), function (n) {
-          btn.textContent = '下载中 ' + Math.round(n / 1048576) + '/' + Math.round(totalBytes / 1048576) + 'MB…';
+          if (shapeDlTick) shapeDlTick.set(n);
         });
       } else {
         // 多卷包：逐卷竞速下载，跨卷累计进度，最后在浏览器里合并成一个 zip
@@ -2643,13 +2686,14 @@
         let got = 0;
         for (const part of pack.parts) {
           const partBlob = await raceDownloadBlob(shapeLibSourceUrls(part), function (n) {
-            btn.textContent = '下载中 ' + Math.round((got + n) / 1048576) + '/' + Math.round(totalBytes / 1048576) + 'MB…';
+            if (shapeDlTick) shapeDlTick.set(got + n); // 跨卷累加：每卷都从上一卷的字节数接着走
           });
           chunks.push(new Uint8Array(await partBlob.arrayBuffer()));
           got += partBlob.size;
         }
         blob = new Blob(chunks);
       }
+      shapeDlProgressStop();
       btn.textContent = '正在导入图库…';
       const packBytes = new Uint8Array(await blob.arrayBuffer());
       // 原神式落盘：写进 App 私有目录（外部优先），下次启动直接加载，升级安装不丢，卸载才删
@@ -2689,6 +2733,7 @@
       btn.textContent = '下载失败，点这里重试';
       btn.title = msg;
     } finally {
+      shapeDlProgressStop();
       shapeLibDlBusy = false;
     }
   }
