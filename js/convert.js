@@ -1004,10 +1004,20 @@
     }
     if (!list.length) {
       const made = patMod.buildGrainPat({ size: opts.size || 256, seed: opts.seed || 11 });
-      return { bytes: made.bytes, count: 1, refs: new Map(), ref: { id: made.id, name: made.name }, width: made.width, height: made.height };
+      return { bytes: made.bytes, count: 1, refs: new Map(), ref: { id: made.id, name: made.name }, width: made.width, height: made.height,
+        files: [{ name: '纹理图案', bytes: made.bytes }] };
     }
     const records = [];
     const refs = new Map();
+    const usedNames = {};   // 文件名去重（同名笔刷的纹理也要各自成档）
+    const files = [];       // 按纹理拆分的单图案 .pat，命名「笔刷名-纹理」
+    function fileNameFor(base, i) {
+      let nm = String(base || ('纹理 ' + i)).replace(/[\\/:*?"<>|]/g, '_').trim().slice(0, 60) || ('纹理 ' + i);
+      nm += '-纹理';
+      if (usedNames[nm]) { usedNames[nm]++; nm += ' #' + usedNames[nm]; }
+      else usedNames[nm] = 1;
+      return nm;
+    }
     let i = 0;
     for (const item of list) {
       i++;
@@ -1017,6 +1027,7 @@
       const p = patMod.buildPattern(nm, item.t.w, item.t.h, [item.t.gray, item.t.gray, item.t.gray], undefined, true);
       records.push(p);
       refs.set(item.key, { id: p.id, name: p.name, inversionBaked: true });
+      files.push({ name: fileNameFor(base, i), bytes: patMod.buildPat([p]) });
     }
     const bytes = patMod.buildPat(records);
     // 自检：用内置 .pat 读取器回读，确认图案数量/尺寸与预期一致（不需要真实 PS）
@@ -1042,7 +1053,7 @@
         selfCheck.names = back.map(function (x) { return x.name; });
       }
     } catch (e) { selfCheck.ok = false; selfCheck.error = e.message; }
-    return { bytes: bytes, count: records.length, refs: refs, ref: records[0] ? { id: records[0].id, name: records[0].name, inversionBaked: true } : null, width: list[0].t.w, height: list[0].t.h, selfCheck: selfCheck };
+    return { bytes: bytes, count: records.length, refs: refs, ref: records[0] ? { id: records[0].id, name: records[0].name, inversionBaked: true } : null, width: list[0].t.w, height: list[0].t.h, selfCheck: selfCheck, files: files };
   }
 
   function makeAbrPack(brushList, opts) {

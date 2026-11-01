@@ -926,9 +926,12 @@
         if (texBrushes.length) {
           const pat = BC.convert.makePatternFile(texBrushes, { size: 256 });
           if (opts.textureMode === 'pattern') commonPatRefs = pat.refs;
-          outFiles.push({ name: 'PS纹理图案合集.pat', data: pat.bytes });
-          warnings.push('已将 ' + pat.count + ' 张真实纹理合并为一个 PAT，与 ABR 放在同一导出包或保存目录中；' +
-            (opts.textureMode === 'pattern' ? '已按图案 ID 自动关联；先在 PS 图案面板导入 PAT，再导入 ABR，无需逐支选择纹理' : '笔刷仍按烘焙模式输出，PAT 可按需导入 PS 图案面板备用'));
+          // 每张纹理一个 .pat，按「笔刷名-纹理.pat」命名（buildPat 按内容去重后同纹理只出一档）
+          for (const f of (pat.files || [{ name: 'PS纹理图案合集', bytes: pat.bytes }])) {
+            outFiles.push({ name: f.name + '.pat', data: f.bytes });
+          }
+          warnings.push('已将 ' + pat.count + ' 张真实纹理导出为 ' + (pat.files ? pat.files.length : 1) + ' 个 PAT（按「笔刷名-纹理」命名），与 ABR 放在同一导出包或保存目录中；' +
+            (opts.textureMode === 'pattern' ? '已按图案 ID 自动关联；在 PS 图案面板导入这些 PAT，再导入 ABR，无需逐支选择纹理' : '笔刷仍按烘焙模式输出，PAT 可按需导入 PS 图案面板备用'));
         }
         if (missingTextures) warnings.push(missingTextures + ' 支笔刷缺少原纹理图片，未收入本次 PAT 合集');
       } catch (e) { warnings.push('纹理合集生成失败：' + e.message); }
@@ -1672,7 +1675,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.7.16';
+  const APP_VERSION = '2.7.17';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;

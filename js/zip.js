@@ -15,12 +15,30 @@
     const le16 = o => dv.getUint16(o, true);
     const le32 = o => dv.getUint32(o, true);
     // locate End of Central Directory
-    let eocd = -1;
+    // 从尾部往前找「自洽」的 EOCD：注释长度不能越过文件末尾，中央目录必须落在它前面。
+    // 这样既能容忍 EOCD 之后被追加的垃圾字节（网盘/店铺水印、传输尾巴），
+    // 又不会被注释里恰好出现的 0x06054b50 骗到。
+    let eocd = -1, looseEocd = -1;
     for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 65557); i--) {
-      // A signature inside an archive comment is not an EOCD record.
-      if (le32(i) === 0x06054b50 && i + 22 + le16(i + 20) === bytes.length) { eocd = i; break; }
+      if (le32(i) !== 0x06054b50) continue;
+      const tailEnd = i + 22 + le16(i + 20);
+      if (tailEnd > bytes.length) continue;
+      const cdS = le32(i + 12), cdO = le32(i + 16), n = le16(i + 10);
+      if (cdO === 0xffffffff || cdS === 0xffffffff || n === 0xffff) { looseEocd = i; continue; }
+      // 空包后面还挂着字节：不像真的 EOCD（数据里常出现这种全零伪记录）
+      if (!n) { if (tailEnd === bytes.length) { eocd = i; break; } continue; }
+      if (cdS < 46 || cdO + cdS > i) { looseEocd = i; continue; }
+      if (le32(cdO) !== 0x02014b50) { looseEocd = i; continue; } // 签名不对：中央目录被改坏了
+      eocd = i;
+      break;
     }
-    if (eocd < 0) throw new Error('不是有效的 ZIP 文件');
+    if (eocd < 0) {
+      // 找到 EOCD 但中央目录读不通：这是「坏包」，给准确一点的说法
+      if (looseEocd >= 0) throw new Error('ZIP 中央目录损坏或条目不完整');
+      // 有 PK 头却找不到自洽的 EOCD：多半是没下完整（网盘断点、传输截断），别只说「不是 ZIP」
+      const looksZip = bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b;
+      throw new Error(looksZip ? '不是有效的 ZIP 文件（像是没下载完整）' : '不是有效的 ZIP 文件');
+    }
     const count = le16(eocd + 10);
     const cdOff = le32(eocd + 16);
     const cdSize = le32(eocd + 12), cdEnd = cdOff + cdSize;
