@@ -1318,7 +1318,8 @@
         _descItem('flipY', 'bool', _descBool(!!it.brushFlipY)),
         _descItem('sampledData', 'TEXT', _descText(p.uuid))
       ].concat(it.hardness === undefined ? [] : [
-        // // PS 描述符没有 Hrdn 字段：写了之后 PS 报「文件格式无效」（用户样本 29 支证实参照文件无此项）
+        // Sampled tips encode their edge softness in the bitmap. Do not invent
+        // a sampledBrush hardness field; this alone is not a PS import check.
         // _descItem('Hrdn', 'UntF', _descUntF('#Prc', Math.round(Math.max(0, Math.min(1, it.hardness)) * 100)))
       ]));
       // Preset item set/order copied from real Photoshop exports: PS silently falls back
@@ -1478,17 +1479,24 @@
         }
         presetItems.push(_descItem('toolOptions', 'Objc', _descObjc('', 'PbTl', toolItems)));
       }
-      /* PS 每个笔刷预设都会写这一组标准项；以前我们只在「启用纹理/散布」时才写，
-         纯笔刷就缺 Txtr/TxtC/textureDepth/prVr/… → 画世界 Pro 的 BrushSectionParser
-         扫到缺失对象就抛 NPE（用户导入 ABR 闪退）。这里统一补齐默认值。 */
+      /* 为兼容画世界等第三方 ABR 读取器统一补齐默认值。
+         PS 原生可省略未启用项；补齐时必须保留已有参数，且 brVr 必须完整。
+         空 brVr 虽能自解析，却会令 Photoshop 2026 导入报「程序错误」。 */
       {
-        const have = new Set(presetItems.map(function (x) { return x.key; }));
+        // Items are encoded Uint8Arrays, not {key, ...} objects. Read the
+        // encoded ID so defaults cannot overwrite active texture/dynamic fields.
+        const have = new Set(presetItems.map(function (x) {
+          const n = new DataView(x.buffer, x.byteOffset, x.byteLength).getUint32(0, false) || 4;
+          return String.fromCharCode.apply(null, x.subarray(4, 4 + n));
+        }));
         const addDefault = function (key, tag, data) {
           if (have.has(key)) return;
           have.add(key);
           presetItems.push(_descItem(key, tag, data));
         };
-        const emptyObjc = function (cls) { return _descObjc('', cls, []); };
+        // Photoshop rejects empty brVr objects even when their feature is off.
+        // Keep the complete neutral schema required by PS and third-party readers.
+        const neutralVariation = brv(0, 0, 0);
         addDefault('flipX', 'bool', _descBool(!!it.brushFlipX));
         addDefault('flipY', 'bool', _descBool(!!it.brushFlipY));
         addDefault('brushProjection', 'bool', _descBool(false));
@@ -1499,15 +1507,15 @@
         addDefault('textureBlendMode', 'enum', _descEnum('BlnM', 'Ovrl'));
         addDefault('textureDepth', 'UntF', _descUntF('#Prc', 100));
         addDefault('minimumDepth', 'UntF', _descUntF('#Prc', 0));
-        addDefault('textureDepthDynamics', 'Objc', emptyObjc('brVr'));
-        addDefault('Txtr', 'Objc', emptyObjc('Ptrn'));
+        addDefault('textureDepthDynamics', 'Objc', neutralVariation);
+        addDefault('Txtr', 'Objc', _descObjc('', 'Ptrn', []));
         addDefault('textureScale', 'UntF', _descUntF('#Prc', 32));
         addDefault('textureBrightness', 'long', _u32be(0));
         addDefault('textureContrast', 'long', _u32be(0));
-        addDefault('prVr', 'Objc', emptyObjc('brVr'));
-        addDefault('wtVr', 'Objc', emptyObjc('brVr'));
-        addDefault('mxVr', 'Objc', emptyObjc('brVr'));
-        addDefault('clVr', 'Objc', emptyObjc('brVr'));
+        addDefault('prVr', 'Objc', neutralVariation);
+        addDefault('wtVr', 'Objc', neutralVariation);
+        addDefault('mxVr', 'Objc', neutralVariation);
+        addDefault('clVr', 'Objc', neutralVariation);
         addDefault('H   ', 'UntF', _descUntF('#Prc', 14));
         addDefault('Strt', 'UntF', _descUntF('#Prc', 0));
         addDefault('Brgh', 'UntF', _descUntF('#Prc', 0));
