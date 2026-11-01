@@ -453,6 +453,7 @@
               libBtn.disabled = true;
               libBtn.textContent = '正在加载内置图库…';
               const r = await loadBundledShapeLib({
+                progressButton: libBtn,
                 onStart: function () {
                   toast(native ? '正在下载内置笔尖图库（约 32MB，仅首次，需联网）…'
                     : (desktop ? '先找程序目录的图库包，没有就联网下载（约 32MB）…' : '正在加载内置笔尖图库（约 32MB，仅首次）…'), 12000);
@@ -1693,7 +1694,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.7.10';
+  const APP_VERSION = '2.7.11';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -1963,7 +1964,7 @@
     }
     return { map: map, index: index };
   }
-  async function bundledShapeLibBytes() {
+  async function bundledShapeLibBytes(onProgress) {
     // 安卓 App：图库包在 APK assets 里，或已下载到 App 私有目录；WebView 读不了 file://，走原生分块
     const native = window.BrushNative;
     if (native && typeof native.shapeLibLength === 'function' && typeof native.shapeLibChunk === 'function') {
@@ -1997,24 +1998,31 @@
     if (typeof fetch === 'function') {
       // 网页版：同源 shape-lib.zip；安卓/桌面（file:// 壳）：本地取不到时改从站点/镜像拉
       const urls = shapeLibSourceUrls('shape-lib.zip');
-      let lastErr = null;
-      for (const u of urls) {
-        try {
-          const res = await fetch(u, { cache: 'force-cache' });
-          if (!res.ok) throw new Error('HTTP ' + res.status);
-          return { bytes: new Uint8Array(await res.arrayBuffer()), name: 'shape-lib.zip', path: u };
-        } catch (e) { lastErr = e; }
-      }
-      throw (lastErr || new Error('图库包下载失败'));
+      if (onProgress) onProgress(0);
+      const blob = await raceDownloadBlob(urls, onProgress);
+      return { bytes: new Uint8Array(await blob.arrayBuffer()), name: 'shape-lib.zip', path: '' };
     }
     throw new Error('当前环境读不到内置图库');
   }
   async function loadBundledShapeLib(opts) {
     if (bundledLoading) return bundledLoading;
     bundledLoading = (async function () {
+      const progressButton = (opts && opts.progressButton) || $('#btnShapeLibDownload');
+      let downloadTick = null, loaded = false;
       try {
         if (opts && opts.onStart) opts.onStart();
-        const got = await bundledShapeLibBytes();
+        const got = await bundledShapeLibBytes(function (n) {
+          if (!downloadTick && !shapeLibDlBusy && progressButton) {
+            shapeLibDlBusy = true;
+            progressButton.disabled = true;
+            downloadTick = shapeDlProgressStart(progressButton, SHAPE_LIB_PACKS.lite.totalMB * 1048576);
+          }
+          if (downloadTick) downloadTick.set(n);
+        });
+        if (downloadTick) {
+          if (shapeDlTick === downloadTick) shapeDlProgressStop();
+          progressButton.textContent = '正在导入图库…';
+        }
         const parsed = shapeLibFromZipBytes(got.bytes);
         const map = parsed.map;
         if (!map.size) throw new Error('内置图库为空');
@@ -2036,6 +2044,7 @@
           const liteBtn = document.getElementById('btnShapeLibDownload');
           if (liteBtn && state.shapeLibBuiltIn) liteBtn.hidden = true;
         }
+        loaded = true;
         return { ok: true, count: map.size, fixed: fixed, label: state.shapeLibLabel };
       } catch (e) {
         state.shapeLibError = e && e.message ? e.message : String(e);
@@ -2043,7 +2052,15 @@
         updateShapeLibText();
         pushLog('图库包加载失败：' + state.shapeLibError);
         return { ok: false, error: state.shapeLibError };
-      } finally { bundledLoading = null; }
+      } finally {
+        if (downloadTick) {
+          if (shapeDlTick === downloadTick) shapeDlProgressStop();
+          progressButton.disabled = false;
+          progressButton.textContent = loaded ? '图库已加载' : '下载失败，点这里重试';
+          shapeLibDlBusy = false;
+        }
+        bundledLoading = null;
+      }
     })();
     return bundledLoading;
   }
@@ -2474,37 +2491,14 @@
 
     async function round() {
       const headers = chunksGot > 0 ? { Range: 'bytes=' + chunksGot + '-' } : {};
-      const opened = await Promise.all(remaining.map(function (u) {
-        return fetch(u, { cache: 'default', headers: headers })
-          .then(function (res) {
-            if (!res.ok) throw new Error('HTTP ' + res.status);
-            if (chunksGot > 0 && res.status !== 206) throw new Error('no-range'); // 续传被忽略，这源不能接
-            return { url: u, reader: res.body && res.body.getReader ? res.body.getReader() : null, len: resLen(res) };
-          })
-          .catch(function () { return null; });
-      }));
-      const live = opened.filter(Boolean);
-      if (!live.length) throw new Error('所有下载源都不可用');
-      // 老浏览器没有流式 body：退回普通整包下载（无进度）
-      if (!live[0].reader) {
-        let lastErr = null;
-        for (const x of live) {
-          try {
-            const res = await fetch(x.url, { cache: 'default' });
-            if (!res.ok) throw new Error('HTTP ' + res.status);
-            return new Blob([await res.arrayBuffer()]);
-          } catch (e) { lastErr = e; }
-        }
-        throw (lastErr || new Error('所有下载源都不可用'));
-      }
-      for (const x of live) { if (x.len > 0) { expectTotal = x.len; break; } }
+      const st = [], pending = [], requests = [];
+      let accepting = true, t0 = 0, announceReady;
+      const firstReady = new Promise(function (resolve) { announceReady = resolve; });
       // 观察窗口：所有源并发各读一段，比较字节量，选最快的；
       // 读过程不设每读定时器（不误杀健康的慢源）。窗口到点后对还在途的 read
       // 限时宽限（并行等）：宽限内落地的源连接干净、交给主循环接着读；
       // 仍不返回的源判挂死（skip）：连接掐掉、本轮不再参选——它 reader 上还有
       // 在途 read，此时接管会错位丢数据，只能等下一轮带 Range 换源重试。
-      const st = live.map(function (x) { return { reader: x.reader, url: x.url, got: 0, chunks: [], done: false, err: null, skip: false }; });
-      const t0 = Date.now();
       // 观察窗口里也要报进度：否则用户看到的是「一直不动，等一整卷下完才跳」。
       // 取各源已收字节的最大值（就是当前领先者），250ms 节流，避免刷 DOM。
       let lastReport = 0;
@@ -2516,7 +2510,7 @@
         for (let i = 0; i < st.length; i++) if (st[i].got > max) max = st[i].got;
         onProgress && onProgress(chunksGot + max);
       }
-      const pending = []; // 每源在途 read 的 promise（宽限判定用）
+      // 每源在途 read 的 promise（宽限判定用）
       function step(s, i) {
         if (s.done || s.err || s.skip) return Promise.resolve();
         const p = s.reader.read().then(function (r) {
@@ -2534,10 +2528,57 @@
         pending[i] = p;
         return p;
       }
+      // Each response starts streaming as soon as its headers arrive. Waiting
+      // for Promise.all(fetches) here let one stalled mirror freeze every source.
+      const opened = Promise.all(remaining.map(async function (u) {
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+        const request = { url: u, reader: null, cancel: null };
+        requests.push(request);
+        let timer;
+        try {
+          const res = await new Promise(function (resolve, reject) {
+            request.cancel = function () {
+              if (controller) controller.abort();
+              reject(new Error('下载源连接超时'));
+            };
+            timer = setTimeout(request.cancel, 10000);
+            fetch(u, { cache: 'default', headers: headers, signal: controller ? controller.signal : undefined })
+              .then(resolve, reject);
+          });
+          clearTimeout(timer);
+          if (!accepting || !res.ok || (chunksGot > 0 && res.status !== 206)) {
+            if (controller) controller.abort();
+            if (res.body && res.body.cancel) Promise.resolve(res.body.cancel()).catch(function () {});
+            return;
+          }
+          const reader = res.body && res.body.getReader ? res.body.getReader() : null;
+          request.reader = reader;
+          const s = { reader: reader, response: res, url: u, got: 0, chunks: [], done: false, err: null, skip: false };
+          const i = st.push(s) - 1;
+          const len = resLen(res);
+          if (!expectTotal && len > 0) expectTotal = len;
+          if (!t0) t0 = Date.now();
+          announceReady();
+          if (reader) await step(s, i);
+        } catch (e) { /* 本轮其余源继续，全部失败时统一报错 */ }
+        finally { clearTimeout(timer); }
+      }));
+      await Promise.race([firstReady, opened]);
+      if (!st.length) throw new Error('所有下载源都不可用');
+      // Legacy browsers without streaming bodies still reuse the open response.
+      if (!st[0].reader) {
+        accepting = false;
+        for (const req of requests) if (req.url !== st[0].url && req.cancel) req.cancel();
+        const bytes = new Uint8Array(await st[0].response.arrayBuffer());
+        onProgress && onProgress(chunksGot + bytes.length);
+        return new Blob(chunks.concat([bytes]));
+      }
       await Promise.race([
-        Promise.all(st.map(function (s, i) { return step(s, i); })),
+        opened,
         new Promise(function (res) { setTimeout(res, EVAL_MS); }) // 窗口到点
       ]);
+      accepting = false;
+      for (const req of requests) if (!req.reader && req.cancel) req.cancel();
       // 窗口结束：对仍在途的 read 并行限时宽限（settled 标记保证先落地的源
       // 不会被 3 秒后仍然到点的超时回调误杀——race 的输家回调照样会执行）
       await Promise.all(st.map(function (s, i) {
@@ -2560,7 +2601,12 @@
       }
       if (best < 0) throw new Error('所有下载源都不可用');
       const leader = st[best];
-      const others = st.filter(function (_, i) { return i !== best; }).map(function (s) { return s.url; });
+      const others = remaining.filter(function (u) { return u !== leader.url; });
+      for (const req of requests) {
+        if (req.url === leader.url) continue;
+        if (req.reader) Promise.resolve(req.reader.cancel()).catch(function () {});
+        if (req.cancel) req.cancel();
+      }
       chunks = chunks.concat(leader.chunks);
       chunksGot += leader.got;
       onProgress && onProgress(chunksGot);
