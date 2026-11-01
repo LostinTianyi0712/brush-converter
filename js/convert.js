@@ -78,9 +78,19 @@
     return b;
   }
 
+  function angleControlAliases(brush) {
+    // Procreate exposes both target aliases. A changed control must not be
+    // overwritten by the unchanged snapshot of the other target's setting.
+    if (brush.source==='procreate' && brush._rawNormalized) {
+      const before=brush._rawNormalized;
+      if (brush.bruRotationMode!==before.bruRotationMode && brush.dynamicsControlAngle===before.dynamicsControlAngle) return Object.assign({},brush,{dynamicsControlAngle:brush.bruRotationMode===1?6:0});
+      if (brush.dynamicsControlAngle!==before.dynamicsControlAngle && brush.bruRotationMode===before.bruRotationMode) return Object.assign({},brush,{bruRotationMode:brush.dynamicsControlAngle===6?1:0});
+    }
+    return brush;
+  }
   function withExportSettings(brush, opts) {
     opts = opts || {};
-    const b = withSizeAndSpacing(brush, opts);
+    const b = withSizeAndSpacing(angleControlAliases(brush), opts);
     b.pressureSize = opts.pressure === undefined ? pressureSizeOn(brush) : !!opts.pressure;
     b.pressureOpacity = opts.pressure === false ? false : !!brush.pressureOpacity;
     b.pressure = b.pressureSize || b.pressureOpacity;
@@ -680,6 +690,7 @@
   }
 
   function makeBru(brush, opts) {
+    brush = angleControlAliases(brush);
     if (opts && opts.embedSubTip && brush && brush.dualTip) return makeBruEmbedded(brush, opts);
     opts = opts || {};
     let tipImg = tipToRGBA(brush);
@@ -688,7 +699,12 @@
     const bakingDual = !brush.bruDualRefUuid && opts.dualBake !== false && brush.dualOn && brush.dualTip && (brush.dualTip.rgba || brush.dualTip.data) && opts.noDualBake !== true;
     if (bakingDual) tipImg = bakeDualTip(tipImg, brush);
     // 圆度/角度只在 bakeTipTransform 里应用一次（之前 abr 源会被压两次 → 笔刷变得又细又扁）
-    if (brush.source !== 'bru' && !synthesizedTip) tipImg = bakeTipTransform(tipImg, brush);
+    if (brush.source !== 'bru' && !synthesizedTip) {
+      // Procreate angle/roundness are written to native BRU f20/f22. Preserve
+      // the shape canvas: also baking/cropping them deforms the same tip twice.
+      const transform = brush.source === 'procreate' ? Object.assign({},brush,{angle:0,roundness:100}) : brush;
+      tipImg = bakeTipTransform(tipImg, transform);
+    }
     const maxTip = Math.max(16, Math.min(2048, opts.maxTipSize || 512));
     let w = tipImg.w, h = tipImg.h, rgba = tipImg.rgba;
     const maxSide = Math.max(w, h);
@@ -2167,12 +2183,25 @@ Write-Host 'restart MediBang Paint Pro'
     if (rawCache) rawCache.set(brush, raw);
     if (raw) return '原样保留';
     if (brush.source === 'procreate' && target !== 'brush' && target !== 'brushset') {
+      if (key === 'angle') {
+        const native=brush._params||{}, rotation=Number(native.shapeRotation)||0;
+        const adjusted=withExportSettings(brush,opts),before=brush._rawNormalized;
+        if (before && (brush.bruRotationMode!==before.bruRotationMode || brush.dynamicsControlAngle!==before.dynamicsControlAngle)) {
+          if (adjusted.bruRotationMode===1) return '参数映射（按修改开启完整方向跟随）';
+          if (!adjusted.bruRotationMode && !adjusted.dynamicsControlAngle) return '参数映射（按修改关闭方向跟随）';
+        }
+        if (native.shapeAzimuth) return '未完整写入（原生手写笔方位角未映射，未替换为笔迹方向）';
+        if (Math.abs(rotation)>0.000001 && Math.abs(rotation-1)>0.000001) return '未完整写入（部分或反向方向跟随未映射，保留固定朝向）';
+        if (Math.abs(rotation-1)<0.000001) return '参数映射（完整跟随笔迹方向；原生轨迹效果仍需复测）';
+      }
       if (key === 'opacity') return '近似（原生上下限插值；压力流量与叠色渲染未完全映射' + (target === 'bru' && opts.bruDensity === 'auto' ? '；已开启浓度归一' : '') + '）';
       if (key === 'spacingPct') return '近似（保留间距滑块；原生采样步长含最小偏移，实际点距待标定）';
       if (key === 'scatterPct' && brush.scatterPct > 0) return '近似（原生径向采样；位置散布幅度仍待目标引擎标定）';
       if (key === 'angleJitterDeg') return '近似（原生弧度范围已换算；目标角度上限与随机分布不同）';
       if (key === 'countJitterPct' && brush.countJitterPct > 0) return '近似（原生随机额外数量后加基础笔尖；目标数量分布不同）';
     }
+    if (key === 'angle' && (target === 'brush' || target === 'brushset') && brush.source !== 'procreate' &&
+        ((brush.dynamicsControlAngle && brush.dynamicsControlAngle!==6) || (brush.bruRotationMode && brush.bruRotationMode!==1))) return '未完整写入（当前Procreate重建只映射完整方向跟随，其余角度控制仍需适配）';
     if (key === 'opacity' && (target === 'brush' || target === 'brushset') && brush.opacity < 0.01) return '近似（Procreate原生不透明度计算最低1%，不能视为完全透明）';
     if (key === 'roundness' && (target === 'brush' || target === 'brushset') && pressureSizeOn(brush) && brush.roundness < (brush.minSizeRatio || 0) * 100) return '近似（Procreate尺寸下限限制最小圆度，无法完全压扁）';
     if (key === 'sizePx' && (target === 'brush' || target === 'brushset')) {

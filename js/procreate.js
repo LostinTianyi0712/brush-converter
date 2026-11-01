@@ -62,6 +62,22 @@
       : brush.angleJitterDeg / (brush.source === 'abr' ? 100 : 180);
     return Math.max(0, Math.min(2, raw));
   }
+  // Brush options call ValkyrieDocument.angleFromOrientation:, not UIKit's
+  // same-named helpers: 1/2/3/4 -> 0/180/90/-90 degrees (5.3.8 native code).
+  function orientationDegrees(params) {
+    return ({2:180,3:90,4:-90})[params.shapeOrientation] || 0;
+  }
+  function directionArchiveParams(brush) {
+    const before=brush._rawNormalized;
+    const modeEdited=before && brush.bruRotationMode!==before.bruRotationMode;
+    const controlEdited=before && brush.dynamicsControlAngle!==before.dynamicsControlAngle;
+    if (!modeEdited && !controlEdited && brush.source==='procreate' && brush._params) {
+      return {shapeRotation:toRatio(brush._params.shapeRotation,0),shapeAzimuth:!!brush._params.shapeAzimuth};
+    }
+    const follows=modeEdited ? brush.bruRotationMode===1 : controlEdited ? brush.dynamicsControlAngle===6
+      : brush.bruRotationMode===1 || brush.dynamicsControlAngle===6;
+    return {shapeRotation:follows?1:0,shapeAzimuth:false};
+  }
 
   function luminanceToTip(im, inverted) {
     // Procreate shape: white = opaque, black = transparent (luminance as coverage)
@@ -228,7 +244,10 @@
     const minOpacityRatio = pressOpacity > 0.05 ? Math.max(0, Math.min(1, minOpacity / opacity)) : 1;
     const nv = function (k, d) { const raw = params[k]; if (raw === null || raw === undefined || raw === '') return d === undefined ? 0 : d; const v = Number(raw); return isFinite(v) ? v : (d === undefined ? 0 : d); };
     // Procreate 的 shapeAngle 存的是弧度（真实样本 -1.5708 = -90°）
-    const angleDeg = nv('shapeAngle') * 180 / Math.PI;
+    const angleDeg = nv('shapeAngle') * 180 / Math.PI + orientationDegrees(params);
+    // Native image rotation is shapeRotation * tangent. Stylus azimuth
+    // suppresses the tangent input, so it must never enable direction mode.
+    const followsDirection = !params.shapeAzimuth && Math.abs(nv('shapeRotation') - 1) < 0.000001;
     const roundnessPct = fullSize > 0 ? Math.max(0, Math.min(100,
       nativeSizeDiameter(sizeRange, Math.max(0, Math.min(1, nv('shapeRoundness', 1)))) / fullSize * 100)) : 100;
     const taperOn = nv('taperSize') > 0.001 || nv('taperOpacity') > 0.001;
@@ -332,6 +351,8 @@
       hardness: tip ? undefined : 0.8,
       hasTexture: !!(grainEntry || grainFromLibrary) && grainDepthV > 0,
       angle: angleDeg,
+      dynamicsControlAngle: followsDirection ? 6 : undefined,
+      bruRotationMode: followsDirection ? 1 : 0,
       roundness: roundnessPct,
       taperOn: taperOn,
       taperSize: taperSizeV,
@@ -585,6 +606,7 @@
   function archiveParams(brush, opts) {
     const D = defaultsApi.defaults();
     const sizeParams = sizeArchiveParams(brush);
+    const directionParams = directionArchiveParams(brush);
     const params = Object.assign(D, {
       version: 2,
       plotSpacingVersion: 1,
@@ -599,6 +621,8 @@
       // PS 圆度 0% 是合法值（扁线），不要抬到 5%
       shapeRoundness: roundnessArchiveParam(brush, {low:sizeParams.minSize, high:sizeParams.maxSize, slider:sizeParams.paintSize}),
       shapeAngle: ((brush.angle || 0) * Math.PI / 180),
+      shapeRotation: directionParams.shapeRotation,
+      shapeAzimuth: directionParams.shapeAzimuth,
       shapeScatter: rotationArchiveParam(brush),
       // Native value represents 0..15 additional stamps, plus the base stamp.
       shapeCount: (Math.max(1, Math.min(16, Math.round(brush.scatterCount || 1))) - 1) / 15,
@@ -681,6 +705,7 @@
     const before=brush._rawNormalized||{},params=archiveParams(brush,opts),changes={};
     const mapping={sizePx:['paintSize'],spacingPct:['plotSpacing'],name:['name'],opacity:['maxOpacity','paintOpacity'],
       minSizeRatio:['minSize'],minOpacityRatio:['minOpacity'],angle:['shapeAngle'],roundness:['shapeRoundness'],
+      dynamicsControlAngle:['shapeRotation','shapeAzimuth'],bruRotationMode:['shapeRotation','shapeAzimuth'],
       pressure:['dynamicsPressureSize'],pressureSize:['dynamicsPressureSize'],pressureOpacity:['dynamicsPressureOpacity'],
       scatterOn:['plotJitter'],scatterPct:['plotJitter'],scatterCount:['shapeCount'],
       angleJitterDeg:['shapeScatter'],procreateRotationScatterPct:['shapeScatter'],
@@ -700,6 +725,7 @@
       colorJitterVal:['dynamicsJitterLightness']};
     Object.keys(nativeFields).forEach(key=>{mapping[key]=[nativeFields[key]];});
     Object.keys(mapping).forEach(function(key){if(brush[key]!==before[key])mapping[key].forEach(k=>{changes[k]=params[k];});});
+    if(changes.shapeAngle!==undefined)changes.shapeAngle-=orientationDegrees(plist.unarchive(brush._rawArchive))*Math.PI/180;
     // Native slider and bounds are coupled. Never patch normalized slider units
     // with pixels / 400 while leaving bounds from the source archive behind.
     if(changes.paintSize!==undefined || changes.minSize!==undefined){
