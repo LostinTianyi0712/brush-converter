@@ -48,6 +48,20 @@
     const ratio = Math.max(0, Math.min(1, brush.minSizeRatio === undefined ? 0.05 : brush.minSizeRatio));
     return {paintSize: 1, maxSize: high, minSize: pressure ? high * ratio : 0};
   }
+  function roundnessArchiveParam(brush, range) {
+    const span = (range.high - range.low) * range.slider;
+    if (!(span > 0)) return 1;
+    const ratio = Math.max(0, Math.min(1, (brush.roundness === undefined ? 100 : brush.roundness) / 100));
+    return Math.max(0, Math.min(1, (ratio * nativeSizeDiameter(range, 1) / 256 - range.low) / span));
+  }
+  function rotationArchiveParam(brush) {
+    const before = brush._rawNormalized;
+    const aliasEdited = before && brush.procreateRotationScatterPct !== before.procreateRotationScatterPct && brush.angleJitterDeg === before.angleJitterDeg;
+    const raw = aliasEdited || brush.angleJitterDeg === undefined
+      ? (brush.procreateRotationScatterPct || 0) / 50
+      : brush.angleJitterDeg / (brush.source === 'abr' ? 100 : 180);
+    return Math.max(0, Math.min(2, raw));
+  }
 
   function luminanceToTip(im, inverted) {
     // Procreate shape: white = opaque, black = transparent (luminance as coverage)
@@ -206,14 +220,17 @@
     const spacing = toRatio(params.plotSpacing, 0);
     const fullSize = nativeSizeDiameter(sizeRange, 1);
     const sizePx = Math.max(0.2, Math.min(4096, Math.round(fullSize)));
-    const opacity = Math.max(0, Math.min(1, paintOpacity * maxOpacity));
+    // Native scaledOpacity interpolates BOTH bounds, then clamps to 1%..100%.
+    // This is the nominal alpha parameter, not the renderer's final pixel alpha.
+    const opacity = Math.max(0.01, Math.min(1, minOpacity + (maxOpacity - minOpacity) * paintOpacity));
     const minSizeRatio = pressSize > 0.05 && fullSize > 0 ? Math.max(0, Math.min(1,
       nativeSizeDiameter(sizeRange, 1 - Math.min(1, pressSize)) / fullSize)) : 1;
-    const minOpacityRatio = pressOpacity > 0.05 ? Math.max(0, Math.min(1, minOpacity)) : 1;
+    const minOpacityRatio = pressOpacity > 0.05 ? Math.max(0, Math.min(1, minOpacity / opacity)) : 1;
     const nv = function (k, d) { const raw = params[k]; if (raw === null || raw === undefined || raw === '') return d === undefined ? 0 : d; const v = Number(raw); return isFinite(v) ? v : (d === undefined ? 0 : d); };
     // Procreate 的 shapeAngle 存的是弧度（真实样本 -1.5708 = -90°）
     const angleDeg = nv('shapeAngle') * 180 / Math.PI;
-    const roundnessPct = nv('shapeRoundness', 1) * 100;
+    const roundnessPct = fullSize > 0 ? Math.max(0, Math.min(100,
+      nativeSizeDiameter(sizeRange, Math.max(0, Math.min(1, nv('shapeRoundness', 1)))) / fullSize * 100)) : 100;
     const taperOn = nv('taperSize') > 0.001 || nv('taperOpacity') > 0.001;
     const taperSizeV = nv('taperSize'), taperOpacityV = nv('taperOpacity');
     const taperStartLen = nv('taperStartLength'), taperEndLen = nv('taperEndLength');
@@ -269,7 +286,8 @@
     // plotJitter 内部刻度约 0–10（样本最高 7.02 = 约 70%），换算成百分比
     const scatterPct = Math.max(0, Math.min(1000, plotJitterRaw * 10));
     const rotationScatterPct = Math.max(0, Math.min(100, shapeScatterRaw * 50));
-    const scatterCount = shapeCountRaw > 0.001 ? Math.max(1, Math.round(shapeCountRaw * 16)) : 1;
+    // Native options count = trunc(float32(raw * 15)); plotting adds one stamp.
+    const scatterCount = Math.max(1, Math.min(16, Math.floor(Math.fround(Math.fround(shapeCountRaw) * 15)) + 1));
     const brush = {
       name,
       tip,
@@ -355,7 +373,7 @@
       blendMode: params.blendMode,
       _params: params,
       scatterOn: scatterPct > 0.01 || scatterCount > 1,
-      angleJitterDeg: rotationScatterPct,
+      angleJitterDeg: Math.max(0, Math.min(360, shapeScatterRaw * 180)),
       procreateRotationScatterPct: rotationScatterPct,
       procreateJitterPct: scatterPct,
       scatterPct: scatterPct,
@@ -579,11 +597,11 @@
       // Procreate 间距允许 >100%（印章笔样本 121%），不要钳到 100
       plotSpacing: Math.max(0, Math.min(10, (brush.spacingPct === undefined ? 10 : brush.spacingPct) / 100)),
       // PS 圆度 0% 是合法值（扁线），不要抬到 5%
-      shapeRoundness: Math.max(0, Math.min(1, (brush.roundness === undefined ? 100 : brush.roundness) / 100)),
+      shapeRoundness: roundnessArchiveParam(brush, {low:sizeParams.minSize, high:sizeParams.maxSize, slider:sizeParams.paintSize}),
       shapeAngle: ((brush.angle || 0) * Math.PI / 180),
-      shapeScatter: Math.max(0, Math.min(2, (brush.angleJitterDeg === undefined ? (brush.procreateRotationScatterPct || 0) : brush.angleJitterDeg) / 50)),
-      // shapeCount 在 Procreate 里是 ×16 的归一化值（0.625 = 10 个）
-      shapeCount: Math.max(0, Math.min(1, (brush.scatterCount || 0) / 16)),
+      shapeScatter: rotationArchiveParam(brush),
+      // Native value represents 0..15 additional stamps, plus the base stamp.
+      shapeCount: (Math.max(1, Math.min(16, Math.round(brush.scatterCount || 1))) - 1) / 15,
       shapeCountJitter: Math.max(0, Math.min(1, (brush.countJitterPct || 0) / 100)),
       plotJitter: Math.max(0, Math.min(10, (brush.scatterOn ? (brush.scatterPct || 0) : 0) / 10)),
       plotSmoothing: Math.max(0, Math.min(1, brush.smoothingStrength === undefined ? 0 : brush.smoothingStrength)),
@@ -607,7 +625,7 @@
       dynamicsTiltShapeRoundness: Math.max(0, Math.min(1, Math.max(brush.tiltRoundnessDyn || 0, brush.dynamicsControlRoundness === 3 ? (brush.roundnessJitterPct || 0) / 100 : 0))),
       dynamicsSpeedSize: Math.max(0, Math.min(1, brush.speedSizeDyn || 0)),
       dynamicsSpeedOpacity: Math.max(0, Math.min(1, brush.speedOpacityDyn || 0)),
-      minOpacity: brush.minOpacityRatio === undefined ? 0 : Math.max(0, Math.min(1, brush.minOpacityRatio)),
+      minOpacity: brush.pressureOpacity ? (brush.opacity === undefined ? 1 : Math.max(0, Math.min(1, brush.opacity))) * (brush.minOpacityRatio === undefined ? 0 : Math.max(0, Math.min(1, brush.minOpacityRatio))) : 0,
       grainDepth: brush.hasTexture ? Math.max(0, Math.min(1, brush.textureDepth === undefined ? (brush.grainStrength === undefined ? 0.6 : brush.grainStrength) : brush.textureDepth)) : 0,
       grainBlendMode: brush.grainBlendMode === undefined ? (brush.hasTexture ? 0 : 1) : brush.grainBlendMode,
       textureInverted: !!brush.textureInverted,
@@ -684,7 +702,15 @@
     Object.keys(mapping).forEach(function(key){if(brush[key]!==before[key])mapping[key].forEach(k=>{changes[k]=params[k];});});
     // Native slider and bounds are coupled. Never patch normalized slider units
     // with pixels / 400 while leaving bounds from the source archive behind.
-    if(changes.paintSize!==undefined || changes.minSize!==undefined)Object.assign(changes,sizeArchiveParams(brush));
+    if(changes.paintSize!==undefined || changes.minSize!==undefined){
+      Object.assign(changes,sizeArchiveParams(brush));
+      changes.shapeRoundness=params.shapeRoundness;
+    } else if(changes.shapeRoundness!==undefined) {
+      changes.shapeRoundness=roundnessArchiveParam(brush,nativeSizeRange(plist.unarchive(brush._rawArchive)));
+    }
+    if(changes.maxOpacity!==undefined || changes.minOpacity!==undefined) {
+      Object.assign(changes,{paintOpacity:params.paintOpacity,maxOpacity:params.maxOpacity,minOpacity:params.minOpacity});
+    }
     if(extraChanges)Object.assign(changes,extraChanges);
     return bplist.patchKeyedArchive(brush._rawArchive,changes);
   }

@@ -790,7 +790,7 @@
       smoothingStrength: brush.smoothingStrength,
       angle: brush.angle,
       // ABR jitter is percent of a full circle; BRU stores the +/- degree range.
-      angleJitterDeg: brush.source === 'abr' && brush.angleJitterDeg !== undefined ? Math.max(0, Math.min(180, brush.angleJitterDeg * 1.8)) : brush.angleJitterDeg,
+      angleJitterDeg: brush.source === 'abr' && brush.angleJitterDeg !== undefined ? Math.max(0, Math.min(180, brush.angleJitterDeg * 1.8)) : (brush.source === 'procreate' ? Math.max(0, Math.min(180, brush.angleJitterDeg || 0)) : brush.angleJitterDeg),
       // Native UI calibration: 0 off, 1 direction, 2 initial, 3 pressure, 4 stylus side rotation.
       // Procreate/Krita/MyPaint 等来源没有「跟随笔迹方向」这个控制：之前留 undefined 会落到写入端默认值 1
       // （笔迹方向），把角度随机（Procreate 的 Shape Scatter）在视觉上吞掉——同一支包浆从 .abr 进来是
@@ -1134,7 +1134,7 @@
         // Procreate tilt amount by its equivalent minimum, never by random jitter.
         minSizeRatio: !pressureSizeOn(brush) && brush.tiltSizeDyn > 0 ? Math.min(brush.minSizeRatio === undefined ? 1 : brush.minSizeRatio, 1 - Math.min(1, brush.tiltSizeDyn)) : brush.minSizeRatio,
         minOpacityRatio: !brush.pressureOpacity && brush.tiltOpacityDyn > 0 ? Math.min(brush.minOpacityRatio === undefined ? 1 : brush.minOpacityRatio, 1 - Math.min(1, brush.tiltOpacityDyn)) : brush.minOpacityRatio,
-        angleJitterDeg: brush.angleJitterDeg || 0,
+        angleJitterDeg: brush.source === 'procreate' ? Math.max(0, Math.min(100, (brush.angleJitterDeg || 0) / 1.8)) : (brush.angleJitterDeg || 0),
         sizeJitterPct: brush.sizeJitterPct || 0,
         flowJitterPct: brush.flowJitterPct || 0,
         countJitterPct: brush.countJitterPct || 0,
@@ -2166,6 +2166,15 @@ Write-Host 'restart MediBang Paint Pro'
        (target === 'myb' && brush._rawMyb && rawBrushUnchanged(brush, opts)));
     if (rawCache) rawCache.set(brush, raw);
     if (raw) return '原样保留';
+    if (brush.source === 'procreate' && target !== 'brush' && target !== 'brushset') {
+      if (key === 'opacity') return '近似（原生上下限插值；压力流量与叠色渲染未完全映射' + (target === 'bru' && opts.bruDensity === 'auto' ? '；已开启浓度归一' : '') + '）';
+      if (key === 'spacingPct') return '近似（保留间距滑块；原生采样步长含最小偏移，实际点距待标定）';
+      if (key === 'scatterPct' && brush.scatterPct > 0) return '近似（原生径向采样；位置散布幅度仍待目标引擎标定）';
+      if (key === 'angleJitterDeg') return '近似（原生弧度范围已换算；目标角度上限与随机分布不同）';
+      if (key === 'countJitterPct' && brush.countJitterPct > 0) return '近似（原生随机额外数量后加基础笔尖；目标数量分布不同）';
+    }
+    if (key === 'opacity' && (target === 'brush' || target === 'brushset') && brush.opacity < 0.01) return '近似（Procreate原生不透明度计算最低1%，不能视为完全透明）';
+    if (key === 'roundness' && (target === 'brush' || target === 'brushset') && pressureSizeOn(brush) && brush.roundness < (brush.minSizeRatio || 0) * 100) return '近似（Procreate尺寸下限限制最小圆度，无法完全压扁）';
     if (key === 'sizePx' && (target === 'brush' || target === 'brushset')) {
       const adjusted = withExportSettings(brush, opts);
       const spacing = Math.max(0, Number(adjusted.spacingPct === undefined ? 10 : adjusted.spacingPct) || 0) / 100;
