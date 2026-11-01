@@ -1318,7 +1318,8 @@
         _descItem('flipY', 'bool', _descBool(!!it.brushFlipY)),
         _descItem('sampledData', 'TEXT', _descText(p.uuid))
       ].concat(it.hardness === undefined ? [] : [
-        _descItem('Hrdn', 'UntF', _descUntF('#Prc', Math.round(Math.max(0, Math.min(1, it.hardness)) * 100)))
+        // // PS 描述符没有 Hrdn 字段：写了之后 PS 报「文件格式无效」（用户样本 29 支证实参照文件无此项）
+        // _descItem('Hrdn', 'UntF', _descUntF('#Prc', Math.round(Math.max(0, Math.min(1, it.hardness)) * 100)))
       ]));
       // Preset item set/order copied from real Photoshop exports: PS silently falls back
       // to a computed brush when dualBrush / brushGroup / useColorDynamics ... are missing.
