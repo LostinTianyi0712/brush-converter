@@ -1242,9 +1242,7 @@
 
     setProgress(0.99, opts.packOut === false ? '正在保存文件…' : '正在准备输出文件…');
     await sleep(10);
-    const onlyAux = outFiles.length > 0 && outFiles.every(function (f) {
-      return /^(安装\/|转换报告\.txt$|参数对比\.html$|纹理图案_|优动漫导入说明\.txt$|优动漫SUT导入说明\.txt$|优动漫MTD导入说明\.txt$|.*_优动漫导入说明\.txt$|.*_参数\.txt$)/.test(f.name);
-    });
+    const onlyAux = outFiles.length > 0 && outFiles.every(function (f) { return isAuxOutFile(f.name); });
     if (!outFiles.length) {
       // 没有任何真实输出：区分「真的失败」与「被合理跳过/未勾选」，并把已收集的
       // warnings 当作原因展示，而不是笼统的「未知错误」（#257）。
@@ -1277,13 +1275,13 @@
       // 默认（整包）模式：只有一个笔刷文件时直接输出该文件本身（.abr/.brushset/.bru…），
       // 不再套一层 ZIP 壳，导入软件前不用先解压；随附的导入说明等小文件一起直接输出。
       // 只有多个笔刷文件（如全部格式/单独文件模式/多输入合并）才打包 ZIP。
-      const isAuxOut = function (f) {
-        return /^(安装\/|转换报告\.txt$|参数对比\.html$|纹理图案_|优动漫导入说明\.txt$|.*_优动漫导入说明\.txt$|优动漫SUT导入说明\.txt$|优动漫MTD导入说明\.txt$|.*_参数\.txt$)/.test(f.name);
-      };
-      const brushOut = outFiles.filter(function (f) { return !isAuxOut(f); });
+      const brushOut = outFiles.filter(function (f) { return !isAuxOutFile(f.name); });
       const mobileWeb = !window.BrushNative && !window.BrushDesktop && window.BCSaver &&
         window.BCSaver.isMobileBrowser && window.BCSaver.isMobileBrowser();
       if (brushOut.length === 1 && !onlyAux && !mobileWeb) {
+        payload = outFiles.slice();
+      } else if (exportWithoutZip(outFiles, onlyAux, mobileWeb, totalOut)) {
+        // 输出全是 .brushset：这是 Procreate 能直接导入的「画笔集」，再套一层 ZIP 只会让用户多解压一步
         payload = outFiles.slice();
       } else {
       const ts = new Date();
@@ -1675,7 +1673,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.7.17';
+  const APP_VERSION = '2.7.18';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -1922,16 +1920,32 @@
       }
     }
     if (full && full.dataset && full.dataset.label) {
-      if (installed && state.shapeLibPackKey === 'full') {
+      if (installed) {
+        // 不管装的是哪一档，216MB 那份都先别让点：重复下 216MB 既费流量又容易塞满手机
         full.disabled = true;
-        full.textContent = '高清图库已安装';
-        full.title = '已经在用原图高清图库，无需再下载';
+        full.textContent = state.shapeLibPackKey === 'full' ? '高清图库已安装' : '高清图库包（先删除当前图库）';
+        full.title = state.shapeLibPackKey === 'full'
+          ? '已经在用原图高清图库，无需再下载'
+          : '已经装了图库（' + state.shapeLib.size + ' 张）。想换 216MB 高清版，先点下面「删除已下载的图库」，再点这里下载';
       } else {
         full.disabled = false;
         full.textContent = full.dataset.label;
         full.title = '高清图库约 216MB，手机空间紧张时用上面的 32MB 版';
       }
     }
+  }
+  /* 辅助文件（安装说明、报告、纹理 .pat、参数文本…）：它们不是笔刷本体，导出决策要看它们脸色 */
+  function isAuxOutFile(name) {
+    return /^(安装\/|转换报告\.txt$|参数对比\.html$|纹理图案_|优动漫导入说明\.txt$|优动漫SUT导入说明\.txt$|优动漫MTD导入说明\.txt$|.*_优动漫导入说明\.txt$|.*_参数\.txt$)/.test(String(name || ''));
+  }
+  /* 输出全是 .brushset 时直接给文件，不套 ZIP。手机浏览器例外（多文件逐个下载体验差），
+     体积过大时也例外（回到分卷 ZIP）。 */
+  function exportWithoutZip(outFiles, onlyAux, mobileWeb, totalOut) {
+    if (onlyAux || mobileWeb) return false;
+    if (Number(totalOut) > 200 * 1024 * 1024) return false;
+    const brush = (outFiles || []).filter(function (f) { return !isAuxOutFile(f.name); });
+    if (!brush.length) return false;
+    return brush.every(function (f) { return /\.brushset$/i.test(f.name); });
   }
   function updateShapeLibText() {
     syncShapeLibDownloadButtons();
