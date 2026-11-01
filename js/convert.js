@@ -1105,8 +1105,16 @@
       //  · 需要重建描述符（其他格式来源）→ 把纹理烘焙进笔尖（PS 不会从 ABR 导入图案，写图案引用会变空）
       const willUseRaw = keepRaw && !!brush._rawPreset;
       const textureMode = opts.textureMode === 'pattern';
-      const usePsTexture = !!brush.hasTexture && (textureMode || willUseRaw);
-      const patternRef = (usePsTexture && ((opts.patternRefs && opts.patternRefs.get(textureKey(brush))) || opts.patternRef)) || null;
+      const patternRef = (brush.hasTexture && (textureMode || willUseRaw) &&
+        ((opts.patternRefs && opts.patternRefs.get(textureKey(brush))) || opts.patternRef)) || null;
+      // A new brush can only enable an independent texture with a real PAT
+      // reference. Native presets may still retain their original reference.
+      const usePsTexture = !!brush.hasTexture && (willUseRaw || (textureMode && !!patternRef));
+      // Native presets otherwise pass through with their old Txtr ID, even
+      // though the companion PAT owns a new ID. Patch just the binding fields.
+      if (willUseRaw && patternRef) {
+        ['Txtr', 'useTexture'].forEach(p => paths.add(p));
+      }
       /* 引用了已烘入反转的 PAT 时 InvT 必须是 false；而 raw 源的原值本来就是 true，
          不把它列进 rawPatchPaths 的话 desc.patchDescriptor 根本不会改这个字段（#260）。 */
       const effectiveTextureInverted = patternRef && patternRef.inversionBaked ? false : !!brush.textureInverted;

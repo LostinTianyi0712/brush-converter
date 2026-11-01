@@ -805,7 +805,7 @@
     const goScatter = $('#optGoScatter') ? $('#optGoScatter').value : 'auto';
     const grainBake = $('#optGrainBake') ? $('#optGrainBake').value !== 'off' : true;
     const fidelity = $('#optFidelity') ? $('#optFidelity').value !== 'off' : true;
-    const textureMode = $('#optTextureMode') ? $('#optTextureMode').value : 'bake';
+    const textureMode = $('#optTextureMode') ? $('#optTextureMode').value : 'pattern';
     const bruTexAsset = $('#optBruTex') ? $('#optBruTex').value : 'off';
     const bruDensity = $('#optBruDensity') ? $('#optBruDensity').value : 'off';
     const scatterScale = $('#optScatterScale') && $('#optScatterScale').value !== 'auto' ? Number($('#optScatterScale').value) / 100 : undefined;
@@ -928,7 +928,7 @@
           if (opts.textureMode === 'pattern') commonPatRefs = pat.refs;
           outFiles.push({ name: 'PS纹理图案合集.pat', data: pat.bytes });
           warnings.push('已将 ' + pat.count + ' 张真实纹理合并为一个 PAT，与 ABR 放在同一导出包或保存目录中；' +
-            (opts.textureMode === 'pattern' ? '先在 PS 图案面板导入 PAT，再导入 ABR，纹理可调' : '笔刷仍按烘焙模式输出，PAT 可按需导入 PS 图案面板备用'));
+            (opts.textureMode === 'pattern' ? '已按图案 ID 自动关联；先在 PS 图案面板导入 PAT，再导入 ABR，无需逐支选择纹理' : '笔刷仍按烘焙模式输出，PAT 可按需导入 PS 图案面板备用'));
         }
         if (missingTextures) warnings.push(missingTextures + ' 支笔刷缺少原纹理图片，未收入本次 PAT 合集');
       } catch (e) { warnings.push('纹理合集生成失败：' + e.message); }
@@ -981,7 +981,7 @@
         noTextureBake: opts.grainBake === false,
         patternRefs: commonPatRefs,
         fidelity: opts.fidelity === false ? false : undefined,
-        textureMode: opts.textureMode === 'pattern' ? 'pattern' : undefined,
+        textureMode: (opts.target === 'abr' || opts.target === 'all') && opts.textureMode === 'pattern' ? 'pattern' : undefined,
         bruTexAsset: opts.bruTexAsset && opts.bruTexAsset !== 'off' ? opts.bruTexAsset : undefined,
         bruDensity: opts.bruDensity === 'off' ? 'off' : undefined
       };
@@ -1116,9 +1116,11 @@
               // 源就是 .abr 且整包导出时：原样透传，100% 保留文件夹分组 / 动态 / 计算画笔
               const isAbrSource = /^abr$/i.test(rec.kind || '') || /\.abr$/i.test(rec.name || '');
               const allSelected = rec.brushes && list.length === rec.brushes.length;
+              const rebindTextures = opts.textureMode === 'pattern' && commonPatRefs &&
+                list.some(function (b) { return b.hasTexture && commonPatRefs.has(BC.convert.textureKey(b)); });
               const unchangedSettings=opts.sizeScale===1 && !(opts.spacingOverride>0) && opts.pressureMode==='auto' && opts.fidelity!==false;
               const unchangedBrushes=list.every(function(b){return b._rawBrushState && b._rawBrushState===BC.util.brushFingerprint(b);});
-              if (isAbrSource && allSelected && unchangedSettings && unchangedBrushes) {
+              if (isAbrSource && allSelected && unchangedSettings && unchangedBrushes && !rebindTextures) {
                 // 整包 ABR→ABR 等于复制文件，没必要产出；只有筛选子集/合并才需要重新打包
                 warnings.push((rec.name || 'ABR') + '：源文件已经是 .abr 且整包导出，跳过（如需筛选/拆分，请只勾选部分笔刷）');
               } else {
@@ -1670,7 +1672,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.7.13';
+  const APP_VERSION = '2.7.16';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
