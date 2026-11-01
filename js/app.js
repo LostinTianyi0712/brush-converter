@@ -1694,7 +1694,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.7.11';
+  const APP_VERSION = '2.7.12';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -1923,7 +1923,37 @@
      Procreate 内置笔刷的 Shape 图不随 .brushset 导出，包里只有资源名（bundledShapePath）。
      用户可以从自己的 Procreate 安装/备份里整理出这些图，打包成 ZIP 或直接选文件夹，
      导入时按文件名补回真图，避免退化成合成圆头。 */
+  /* 图库已导入 → 下载按钮灰掉写「图库已安装」，别再让用户怀疑没生效又下一遍 32MB。
+     换包/删包统一走下面的「删除已下载的图库」；已经装了精简档时仍可升到高清档。 */
+  function syncShapeLibDownloadButtons() {
+    const lite = document.getElementById('btnShapeLibDownload');
+    const full = document.getElementById('btnShapeLibDownloadFull');
+    const installed = !!(state.shapeLib && state.shapeLib.size);
+    if (lite && lite.dataset && lite.dataset.label) {
+      if (installed) {
+        lite.disabled = true;
+        lite.textContent = '图库已安装';
+        lite.title = '图库已经导入（' + state.shapeLib.size + ' 张），不用再下载；要换或删见下面的「删除已下载的图库」';
+      } else {
+        lite.disabled = false;
+        lite.textContent = lite.dataset.label;
+        lite.title = '';
+      }
+    }
+    if (full && full.dataset && full.dataset.label) {
+      if (installed && state.shapeLibPackKey === 'full') {
+        full.disabled = true;
+        full.textContent = '高清图库已安装';
+        full.title = '已经在用原图高清图库，无需再下载';
+      } else {
+        full.disabled = false;
+        full.textContent = full.dataset.label;
+        full.title = '高清图库约 216MB，手机空间紧张时用上面的 32MB 版';
+      }
+    }
+  }
   function updateShapeLibText() {
+    syncShapeLibDownloadButtons();
     const el = $('#shapeLibText');
     if (!el) return;
     if (state.shapeLib && state.shapeLib.size) {
@@ -1949,19 +1979,35 @@
      桌面版启动时去程序目录找这个 zip（主进程读文件 → IPC 传字节），找不到就等用户手动选。
      内存策略见 loadShapeLibrary：只留原始字节，core 用到才解码。 */
   let bundledLoading = null;
-  function shapeLibFromZipBytes(bytes) {
+  /* 桌面版用户主动点过「删除图库」：记住这个选择，别下次启动又背地里下 32MB */
+  function shapeLibUserCleared() {
+    try { return localStorage.getItem('shapeLibUserCleared') === '1'; } catch (e) { return false; }
+  }
+  function setShapeLibUserCleared(v) {
+    try {
+      if (v) localStorage.setItem('shapeLibUserCleared', '1');
+      else localStorage.removeItem('shapeLibUserCleared');
+    } catch (e) { /* 没有 localStorage：按「没删过」处理 */ }
+  }
+  async function shapeLibFromZipBytes(bytes, onProgress) {
     const map = new Map();
     let index = null;
     const entries = BC.zip.read(new Uint8Array(bytes));
-    for (const e of entries) {
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
       const base = String(e.name || '').split(/[\\/]/).pop().toLowerCase();
       if (base === 'index.json') {
         try { index = JSON.parse(BC.util.utf8Decode(e.data())); } catch (err) { index = null; }
-        continue;
+      } else if (/\.(png|jpe?g)$/i.test(base)) {
+        map.set(base, e.data());
       }
-      if (!/\.(png|jpe?g)$/i.test(base)) continue;
-      map.set(base, e.data());
+      // 一口气解完 292 张会把界面钉住：每 8 张让出一帧（安卓低端机尤其明显）
+      if ((i & 7) === 7) {
+        if (onProgress) onProgress(i + 1, entries.length);
+        await sleep(0);
+      }
     }
+    if (onProgress) onProgress(entries.length, entries.length);
     return { map: map, index: index };
   }
   async function bundledShapeLibBytes(onProgress) {
@@ -1977,13 +2023,16 @@
       try { if (typeof native.shapeLibSource === 'function') source = String(native.shapeLibSource()); } catch (e) { /* ignore */ }
       if (total > 0) {
         const bytes = new Uint8Array(total);
-        const CHUNK = 3 * 1024 * 1024;
+        const CHUNK = 1024 * 1024; // 1MB 一块：atob/拷贝的单块耗时压到十几毫秒，界面才跟得上
         for (let off = 0; off < total; off += CHUNK) {
           const b64 = native.shapeLibChunk(off, Math.min(CHUNK, total - off));
           if (!b64) throw new Error('内置图库分块读取失败（offset ' + off + '）');
           const bin = atob(b64);
           const n = Math.min(bin.length, total - off);
           for (let i = 0; i < n; i++) bytes[off + i] = bin.charCodeAt(i);
+          if (onProgress) onProgress(off + n);
+          // 33MB 一口气读完会把主线程堵死（安卓导入图库卡顿的主因之一）：每块让出一帧
+          await sleep(0);
         }
         return { bytes: bytes, name: source === 'file' ? 'App 内已下载的图库包' : '应用内置图库包', path: source === 'file' ? 'files/shape-lib.zip' : 'assets/app/shape-lib.zip' };
       }
@@ -1994,6 +2043,10 @@
         const r = await desk.readShapeLib();
         if (r && r.ok) return { bytes: new Uint8Array(r.bytes), name: r.name || '', path: r.path || '' };
       } catch (e) { /* 程序目录没有图库包：下面走联网下载 */ }
+      // 用户点过「删除已下载的图库」：下次启动别再偷偷下 32MB，等他主动点下载/导入
+      if (shapeLibUserCleared()) {
+        throw new Error('图库已删除：要用时点「下载图库包（32MB）」重新安装，或手动选图库文件');
+      }
     }
     if (typeof fetch === 'function') {
       // 网页版：同源 shape-lib.zip；安卓/桌面（file:// 壳）：本地取不到时改从站点/镜像拉
@@ -2012,6 +2065,10 @@
       try {
         if (opts && opts.onStart) opts.onStart();
         const got = await bundledShapeLibBytes(function (n) {
+          if (!downloadTick && shapeLibDlBusy && progressButton) {
+            // 原生下载已结束、正在读包：照样给个会动的数，别让人以为卡死
+            progressButton.textContent = '正在读取图库 ' + (n / 1048576).toFixed(1) + 'MB…';
+          }
           if (!downloadTick && !shapeLibDlBusy && progressButton) {
             shapeLibDlBusy = true;
             progressButton.disabled = true;
@@ -2023,7 +2080,10 @@
           if (shapeDlTick === downloadTick) shapeDlProgressStop();
           progressButton.textContent = '正在导入图库…';
         }
-        const parsed = shapeLibFromZipBytes(got.bytes);
+        // 解包里 292 张图是安卓导入卡顿的大头：分片让出主线程，顺便把张数报在按钮上
+        const parsed = await shapeLibFromZipBytes(got.bytes, function (done, all) {
+          if (progressButton && all) progressButton.textContent = '正在导入图库 ' + done + '/' + all + '…';
+        });
         const map = parsed.map;
         if (!map.size) throw new Error('内置图库为空');
         const idx = parsed.index || {};
@@ -2058,6 +2118,7 @@
           progressButton.disabled = false;
           progressButton.textContent = loaded ? '图库已加载' : '下载失败，点这里重试';
           shapeLibDlBusy = false;
+          syncShapeLibDownloadButtons(); // 已安装：让「图库已安装」灰态盖住临时文案
         }
         bundledLoading = null;
       }
@@ -2174,7 +2235,15 @@
       try {
         if (/\.zip$/i.test(f.name)) {
           const entries = BC.zip.read(new Uint8Array(await f.arrayBuffer()));
-          for (const e of entries) await addOne(e.name, e.data());
+          for (let i = 0; i < entries.length; i++) {
+            await addOne(entries[i].name, entries[i].data());
+            // 安卓：整包解压会把界面钉住 → 每 16 张让出一帧并报进度
+            if ((i & 15) === 15) {
+              setProgress(0.15 + 0.5 * (i / (entries.length || 1)), '正在读取图库 ' + map.size + ' 张…');
+              await sleep(0);
+            }
+          }
+          setProgress(null);
         } else {
           await addOne(f.name, new Uint8Array(await f.arrayBuffer()));
         }
@@ -2186,7 +2255,9 @@
     state.shapeLib = map;
     state.shapeLibBuiltIn = false; // 用户自己选的图库优先于内置（通常是原始高分辨率图）
     state.shapeLibLabel = libLabel || '自选图库';
+    setShapeLibUserCleared(false); // 又装上了：恢复启动自动加载
     updateShapeLibText();
+    refreshShapeLibStoreUI(); // 桌面：手动导入后也要显示「图库已装载」和删除按钮
     const fixed = await reparseWithShapeLib(forceReparse);
     toast('图库已加载 ' + map.size + ' 张' + (fixed ? '；已给现有笔刷补回 ' + fixed + ' 支真图笔尖'
       : (forceReparse ? '；现有笔刷的笔尖已按新图库重建' : '；缺 shape 的笔刷重新导入后会补回真图')), 12000);
@@ -2372,7 +2443,21 @@
     const clear = document.getElementById('btnShapeLibClear');
     if (!box) return;
     const info = nativeShapeLibInfo();
-    if (!info) { box.hidden = true; if (clear) clear.hidden = true; return; }
+    if (!info) {
+      // 桌面版没有原生信息接口：图库在程序目录（下载或手动放进去的），有就显示一行 + 删除按钮
+      const desk = window.BrushDesktop;
+      if (desk && state.shapeLib && state.shapeLib.size) {
+        box.hidden = false;
+        box.textContent = '图库已装载：' + state.shapeLib.size + ' 张' +
+          (state.shapeLibBytes ? '（' + (state.shapeLibBytes / 1048576).toFixed(1) + 'MB）' : '') +
+          '，存在程序目录，卸载软件时一起删除。';
+        if (clear) clear.hidden = false;
+      } else {
+        box.hidden = true;
+        if (clear) clear.hidden = true;
+      }
+      return;
+    }
     const mb = function (b) { return (b / 1048576).toFixed(1) + 'MB'; };
     // 诊断：区分「文件不在了」和「文件在但读不了」——清后台后要不要重下就靠这行判断
     const diag = [];
@@ -2452,6 +2537,7 @@
         let bin = '';
         for (let i = 0; i < part.length; i++) bin += String.fromCharCode(part[i]);
         if (!n.shapeLibSaveChunk(btoa(bin))) { n.shapeLibSaveAbort(); throw new Error('写入失败'); }
+        await sleep(0); // 落盘也分片让出，别边下载边卡界面
       }
       const res = String(n.shapeLibSaveEnd() || '');
       if (res.indexOf('ok:') !== 0) throw new Error(res.slice(6) || '保存失败');
@@ -2769,6 +2855,8 @@
       await loadShapeLibrary([file], pack.label, isUpgrade);
       state.shapeLibPackKey = pack.key;
       btn.textContent = pack.doneText;
+      syncShapeLibDownloadButtons();
+      refreshShapeLibStoreUI(); // 下完让「图库已装载」与删除按钮立即可见
       render(); // 刷新所有卡片：缺图提示里的下载按钮随图库就位一并消失
     } catch (e) {
       const msg = e && e.message ? e.message : String(e);
@@ -2781,6 +2869,7 @@
     } finally {
       shapeDlProgressStop();
       shapeLibDlBusy = false;
+      syncShapeLibDownloadButtons(); // 下完/失败都把按钮状态摆正（已安装就灰掉）
     }
   }
 
@@ -2872,9 +2961,20 @@
       if (clearBtn) {
         clearBtn.addEventListener('click', async function () {
           const n = window.BrushNative;
-          if (!n || typeof n.shapeLibDownloadClear !== 'function') return;
+          const desk = window.BrushDesktop;
+          const canNative = !!(n && typeof n.shapeLibDownloadClear === 'function');
+          const canDesk = !!(desk && typeof desk.clearShapeLib === 'function');
+          if (!canNative && !canDesk) return;
           try {
-            const ok = Boolean(n.shapeLibDownloadClear());
+            let ok = false;
+            if (canNative) ok = Boolean(n.shapeLibDownloadClear());
+            if (canDesk) {
+              const r = await desk.clearShapeLib();
+              if (r && r.ok) ok = true;
+              else throw new Error((r && r.errors && r.errors[0]) || (r && r.error) || '删除失败');
+              // 记住这次是用户主动删的：下次启动不要再自动下载
+              setShapeLibUserCleared(true);
+            }
             // App 数据里的缓存（可能是原图 216MB）也要删，不然「释放空间」是假的
             const cacheCleared = await ShapeLibStore.clear();
             if (ok || cacheCleared) {
@@ -2889,18 +2989,20 @@
                 b.disabled = false;
                 if (b.dataset && b.dataset.label) b.textContent = b.dataset.label;
               });
-              // 删完不能就这么空着：安装包里还带 512px 精简图库，回落到内置那份
+              // 安卓安装包里还带 512px 精简图库：删完回落到内置那份；桌面没有内置包，删完就是空着
               let fellBack = 0;
-              try {
-                const r = await loadBundledShapeLib();
-                fellBack = r && r.ok ? (r.count || 0) : 0;
-              } catch (e) { /* 内置也没有就真的空着 */ }
+              if (canNative) {
+                try {
+                  const r = await loadBundledShapeLib();
+                  fellBack = r && r.ok ? (r.count || 0) : 0;
+                } catch (e) { /* 内置也没有就真的空着 */ }
+              }
               updateShapeLibText();
               refreshShapeLibStoreUI();
               render();
               toast(fellBack > 0
                 ? '已删除下载的图库和缓存（占用的空间已释放），已自动换回安装包内置的 512px 精简图库（' + fellBack + ' 张），现在就能用'
-                : '已删除图库副本和缓存，下次要用再下', 6000);
+                : '已删除图库和缓存（占用的空间已释放），下次要用再下载或导入', 6000);
             } else toast('删除失败：可能没有存储权限', 5000);
           } catch (e) { toast('删除失败：' + ((e && e.message) || e), 5000); }
         });
