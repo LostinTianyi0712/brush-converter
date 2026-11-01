@@ -514,12 +514,14 @@
 
   function sanitizeName(name, index) {
     // #48（WorkBuddy 第106轮）：补充控制字符（\x00-\x1f）与零宽/双向控制字符（U+200B-F、U+202A-E、U+FEFF）
-    let n = (name || '').replace(/[\\/:*?"<>|\x00-\x1f\x7f\u200b-\u200f\u202a-\u202e\ufeff]/g, ' ').replace(/\s+/g, ' ').trim();
+    // NFD（macOS 解压）先归一化，避免同名被当成两份
+    let n = (name || '').normalize('NFC').replace(/[\\/:*?"<>|\x00-\x1f\x7f\u200b-\u200f\u202a-\u202e\ufeff]/g, ' ').replace(/\s+/g, ' ').trim();
     // Windows 不允许文件名以点/空格结尾（"a." 会被系统截断或创建失败）
     n = n.replace(/[. ]+$/, '');
     if (!n) n = 'brush_' + String(index + 1).padStart(3, '0');
     if (n.length > 60) n = n.slice(0, 60).replace(/[. ]+$/, '').trim();
     // Windows 保留设备名：CON/PRN/AUX/NUL/COM1-9/LPT1-9，带扩展名同样不可用
+    // 截断后可能又变回保留名（CONSOLE… → CON），这里再查一次
     if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(n)) n = '_' + n;
     return n;
   }
@@ -2552,14 +2554,14 @@ Write-Host 'restart MediBang Paint Pro'
       const base = sanitizeName(b.name, i);
       let n = base;
       let k = 2;
-      while (seen.has(n.toLowerCase())) {
+      while (seen.has(n.normalize('NFC').toLowerCase())) {
         const suf = ' (' + k + ')';
         k++;
         n = (base.length + suf.length > 60)
           ? base.slice(0, 60 - suf.length).replace(/[. ]+$/, '') + suf
           : base + suf;
       }
-      seen.set(n.toLowerCase(), 1);
+      seen.set(n.normalize('NFC').toLowerCase(), 1);
       return n;
     });
   }

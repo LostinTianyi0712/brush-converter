@@ -1693,7 +1693,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.6.33';
+  const APP_VERSION = '2.6.34';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -1995,9 +1995,8 @@
       } catch (e) { /* 程序目录没有图库包：下面走联网下载 */ }
     }
     if (typeof fetch === 'function') {
-      // 网页版：同源 shape-lib.zip；安卓/桌面（file:// 壳）：本地取不到时改从站点拉
-      const urls = ['shape-lib.zip'];
-      if (window.BrushNative || window.BrushDesktop) urls.push(SITE_BASE + 'shape-lib.zip');
+      // 网页版：同源 shape-lib.zip；安卓/桌面（file:// 壳）：本地取不到时改从站点/镜像拉
+      const urls = shapeLibSourceUrls('shape-lib.zip');
       let lastErr = null;
       for (const u of urls) {
         try {
@@ -2295,11 +2294,23 @@
   /* 原生壳（安卓 file:///android_asset、Electron file://）相对路径都取不到站点资源，
      统一用站点绝对地址；网页版仍用同源相对路径（可离线缓存）。 */
   const SITE_BASE = 'https://lostintianyi0712.github.io/brush-converter/';
-  function shapeLibUrl(name) {
+  /* 国内直连 GitHub 实测很慢（0.1~2MB/s 大幅波动，raw/jsDelivr 直接连不上）：
+     附上 gh 加速镜像（代理 raw.githubusercontent.com，带 CORS *、支持 Range 断点续传），
+     下载时多源竞速，哪个快用哪个；镜像挂了也不影响直连兜底。 */
+  const SITE_RAW_BASE = 'https://raw.githubusercontent.com/LostinTianyi0712/brush-converter/main/';
+  const SITE_MIRRORS = ['https://gh-proxy.com/', 'https://ghfast.top/'];
+  function shapeLibSourceUrls(name) {
+    if (/^(https?:)?\/\//.test(name)) return [name];
     const enc = encodeURI(name);
-    if (/^(https?:)?\/\//.test(name)) return name;
-    return (window.BrushNative || window.BrushDesktop) ? SITE_BASE + enc : enc;
+    const list = [];
+    if (!(window.BrushNative || window.BrushDesktop)) list.push(enc); // 网页版同源：可吃离线缓存
+    list.push(SITE_BASE + enc);
+    for (let i = 0; i < SITE_MIRRORS.length; i++) list.push(SITE_MIRRORS[i] + SITE_RAW_BASE + enc);
+    return list;
   }
+  /* 原生壳传参格式：同一卷的多个候选源用 ';' 连接（卷与卷之间仍是 '|'），
+     安卓原生按 ';' 逐源测速/换源重试 */
+  function shapeLibUrl(name) { return shapeLibSourceUrls(name).join(';'); }
   let shapeLibDlBusy = false;
   /* 图库到底存在哪、占多大（安卓原生）：用户问「下载后图库去哪了」，界面直接读原生字段展示 */
   function nativeShapeLibInfo() {
@@ -2437,6 +2448,145 @@
     }
   }
 
+  /* 多源竞速下载：并发请求所有候选地址，先开一个观察窗口（2.5s）比较各源到手的字节，
+     之后只留最快的源继续读，其余掐掉；领先源卡死（10s 读不出一个字节）、报错或
+     提前结束时，把已收字节入库，用 Range 到其余源上重开一轮竞速，直到凑齐总长。
+     返回完整 Blob。 */
+  async function raceDownloadBlob(urls, onProgress) {
+    urls = (urls || []).filter(Boolean);
+    if (!urls.length) throw new Error('没有可用的下载地址');
+    let remaining = urls.slice();
+    let chunks = [];      // 已确认字节（观察期 + 各轮领先源读到的数据）
+    let chunksGot = 0;    // chunks 里的字节数（换源续传的起点）
+    let expectTotal = 0;  // 按响应 Content-Length/Content-Range 算出的文件总长（0 = 未知）
+    const EVAL_MS = 2500, EVAL_GRACE_MS = 3000, STALL_MS = 10000;
+
+    function resLen(res) {
+      const h = res.headers;
+      if (!h || !h.get) return 0;
+      if (res.status === 206) {
+        const cr = h.get('content-range');
+        if (cr) { const t = Number(String(cr).split('/')[1]); if (t > 0) return t; }
+        return chunksGot + (Number(h.get('content-length')) || 0); // 206 无 content-range：CL 是剩余量
+      }
+      return Number(h.get('content-length')) || 0;
+    }
+
+    async function round() {
+      const headers = chunksGot > 0 ? { Range: 'bytes=' + chunksGot + '-' } : {};
+      const opened = await Promise.all(remaining.map(function (u) {
+        return fetch(u, { cache: 'default', headers: headers })
+          .then(function (res) {
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            if (chunksGot > 0 && res.status !== 206) throw new Error('no-range'); // 续传被忽略，这源不能接
+            return { url: u, reader: res.body && res.body.getReader ? res.body.getReader() : null, len: resLen(res) };
+          })
+          .catch(function () { return null; });
+      }));
+      const live = opened.filter(Boolean);
+      if (!live.length) throw new Error('所有下载源都不可用');
+      // 老浏览器没有流式 body：退回普通整包下载（无进度）
+      if (!live[0].reader) {
+        let lastErr = null;
+        for (const x of live) {
+          try {
+            const res = await fetch(x.url, { cache: 'default' });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return new Blob([await res.arrayBuffer()]);
+          } catch (e) { lastErr = e; }
+        }
+        throw (lastErr || new Error('所有下载源都不可用'));
+      }
+      for (const x of live) { if (x.len > 0) { expectTotal = x.len; break; } }
+      // 观察窗口：所有源并发各读一段，比较字节量，选最快的；
+      // 读过程不设每读定时器（不误杀健康的慢源）。窗口到点后对还在途的 read
+      // 限时宽限（并行等）：宽限内落地的源连接干净、交给主循环接着读；
+      // 仍不返回的源判挂死（skip）：连接掐掉、本轮不再参选——它 reader 上还有
+      // 在途 read，此时接管会错位丢数据，只能等下一轮带 Range 换源重试。
+      const st = live.map(function (x) { return { reader: x.reader, url: x.url, got: 0, chunks: [], done: false, err: null, skip: false }; });
+      const t0 = Date.now();
+      const pending = []; // 每源在途 read 的 promise（宽限判定用）
+      function step(s, i) {
+        if (s.done || s.err || s.skip) return Promise.resolve();
+        const p = s.reader.read().then(function (r) {
+          pending[i] = null;
+          if (s.skip) return; // 判挂死后才迟到的数据：放弃（连接已掐）
+          if (r.done) { s.done = true; return; }
+          s.chunks.push(r.value);
+          s.got += r.value.length;
+          if (Date.now() - t0 < EVAL_MS) return step(s, i); // 窗口内继续读
+        }, function (e) {
+          pending[i] = null;
+          if (!s.skip) s.err = e || true;
+        });
+        pending[i] = p;
+        return p;
+      }
+      await Promise.race([
+        Promise.all(st.map(function (s, i) { return step(s, i); })),
+        new Promise(function (res) { setTimeout(res, EVAL_MS); }) // 窗口到点
+      ]);
+      // 窗口结束：对仍在途的 read 并行限时宽限（settled 标记保证先落地的源
+      // 不会被 3 秒后仍然到点的超时回调误杀——race 的输家回调照样会执行）
+      await Promise.all(st.map(function (s, i) {
+        if (s.done || s.err || s.skip || !pending[i]) return null;
+        let settled = false;
+        return Promise.race([
+          pending[i].then(function () { settled = true; }),
+          new Promise(function (res) { setTimeout(res, EVAL_GRACE_MS); }).then(function () {
+            if (settled || s.done || s.err || s.skip) return;
+            s.skip = true; // 宽限期内没落地：read 挂死
+            try { s.reader.cancel(); } catch (e) { /* ignore */ }
+          })
+        ]);
+      }));
+      let best = -1;
+      for (let i = 0; i < st.length; i++) {
+        if (st[i].skip) continue; // 挂死源：reader 上还有在途 read，接管会错位丢数据
+        if (st[i].err && st[i].got === 0) continue; // 一字节没到手就报错的源不值得留
+        if (best < 0 || st[i].got > st[best].got) best = i;
+      }
+      if (best < 0) throw new Error('所有下载源都不可用');
+      const leader = st[best];
+      const others = st.filter(function (_, i) { return i !== best; }).map(function (s) { return s.url; });
+      chunks = chunks.concat(leader.chunks);
+      chunksGot += leader.got;
+      onProgress && onProgress(chunksGot);
+      function settle(failErr, knownDone) {
+        if (expectTotal && chunksGot >= expectTotal) return new Blob(chunks);
+        if (!expectTotal && knownDone) return new Blob(chunks); // 服务器没报总长：正常读到结尾按完成处理
+        if (others.length) { remaining = others; return round(); }
+        if (failErr) throw (failErr instanceof Error ? failErr : new Error(String(failErr)));
+        throw new Error('下载不完整：' + chunksGot + (expectTotal ? '/' + expectTotal : '') + '，所有源都已用尽');
+      }
+      if (leader.done || leader.err) return settle(leader.err || undefined, leader.done);
+      // 主循环：读领先源；卡死/出错就带着已收字节换源续传
+      const reader = leader.reader;
+      for (;;) {
+        const readP = reader.read();
+        const r = await Promise.race([
+          readP.catch(function (e) { return { __err: e || true }; }),
+          new Promise(function (res) { setTimeout(function () { res(null); }, STALL_MS); })
+        ]);
+        if (r === null) { // 卡死：掐掉，换源续传
+          try { reader.cancel(); } catch (e) { /* ignore */ }
+          if (!others.length) throw new Error('下载中断：所有源都无响应');
+          remaining = others;
+          return round();
+        }
+        if (r.__err) {
+          try { reader.cancel(); } catch (e) { /* ignore */ }
+          return settle(r.__err);
+        }
+        if (r.done) return settle(undefined, true);
+        chunks.push(r.value);
+        chunksGot += r.value.length;
+        onProgress && onProgress(chunksGot);
+      }
+    }
+    return round();
+  }
+
   async function downloadShapeLibPack(btn, pack) {
     pack = pack || SHAPE_LIB_PACKS.lite;
     if (shapeLibDlBusy) return;
@@ -2483,41 +2633,20 @@
       }
       let blob;
       if (pack.parts.length === 1) {
-        const resp = await fetch(shapeLibUrl(pack.parts[0]));
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        const total = Number(resp.headers.get('content-length')) || totalBytes;
-        if (resp.body && resp.body.getReader) {
-          // 流式读，按 MB 显示进度（几十 MB 也要几秒，别让用户干等）
-          const reader = resp.body.getReader();
-          const chunks = [];
-          let got = 0;
-          for (;;) {
-            const r = await reader.read();
-            if (r.done) break;
-            chunks.push(r.value);
-            got += r.value.length;
-            btn.textContent = '下载中 ' + Math.round(got / 1048576) + '/' + Math.round(total / 1048576) + 'MB…';
-          }
-          blob = new Blob(chunks);
-        } else {
-          blob = await resp.blob();
-        }
+        // 多源竞速：网页版同源 + GitHub Pages 直连 + 加速镜像，自动用最快的
+        blob = await raceDownloadBlob(shapeLibSourceUrls(pack.parts[0]), function (n) {
+          btn.textContent = '下载中 ' + Math.round(n / 1048576) + '/' + Math.round(totalBytes / 1048576) + 'MB…';
+        });
       } else {
-        // 多卷包：依次下载，跨卷累计进度，最后在浏览器里合并成一个 zip
+        // 多卷包：逐卷竞速下载，跨卷累计进度，最后在浏览器里合并成一个 zip
         const chunks = [];
         let got = 0;
         for (const part of pack.parts) {
-          const resp = await fetch(shapeLibUrl(part));
-          if (!resp.ok) throw new Error(part + ' HTTP ' + resp.status);
-          if (!(resp.body && resp.body.getReader)) throw new Error('浏览器不支持流式下载，请改用手动选择图库文件');
-          const reader = resp.body.getReader();
-          for (;;) {
-            const r = await reader.read();
-            if (r.done) break;
-            chunks.push(r.value);
-            got += r.value.length;
-            btn.textContent = '下载中 ' + Math.round(got / 1048576) + '/' + Math.round(totalBytes / 1048576) + 'MB…';
-          }
+          const partBlob = await raceDownloadBlob(shapeLibSourceUrls(part), function (n) {
+            btn.textContent = '下载中 ' + Math.round((got + n) / 1048576) + '/' + Math.round(totalBytes / 1048576) + 'MB…';
+          });
+          chunks.push(new Uint8Array(await partBlob.arrayBuffer()));
+          got += partBlob.size;
         }
         blob = new Blob(chunks);
       }
