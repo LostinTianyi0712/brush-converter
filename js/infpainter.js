@@ -86,7 +86,7 @@
     const spacingPct = clamp(spacing || 10, 1, 1000);
     const opacityRaw = num(stroke, ['paint-opacity'], 1);
     const blendOpacity = num(stroke, ['blend-opacity'], 1);
-    const opacity = clamp((opacityRaw > 0 ? opacityRaw : 1) * (blendOpacity > 0 ? Math.max(0.1, blendOpacity) : 1), 0.02, 1);
+    const opacity = clamp(opacityRaw * (blendOpacity > 0 ? Math.max(0.1, blendOpacity) : 1), 0, 1);
     const softness = clamp(num(head, ['softness'], 0), 0, 1);
     const hardness = 1 - softness;
     const angleRad = num(head, ['angle'], 0);

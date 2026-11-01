@@ -274,6 +274,7 @@
         pressureOpacity: !!opDyn,
         minOpacityRatio: opDyn ? 0.3 : 1,
         source: 'krita',
+        eraser: !!(params.EraserMode && /^(true|1)$/i.test(params.EraserMode.text.trim())),
         paintop: paintop ? paintop[1] : ''
       }],
       warnings: warnings
@@ -660,6 +661,7 @@
         files.push({ name: 'brushes/' + tipName, data: tipBytes });
         manifest.push({ path: 'brushes/' + tipName, type: 'brushes', md5: util.md5(tipBytes) });
         let xml = brush._rawXml;
+        if (brush.eraser !== undefined) xml = setParam(xml, 'EraserMode', brush.eraser ? 'true' : 'false');
         // Apply only explicit export overrides; retain other native XML fields.
         const scaleOverride=Number.isFinite(opts.sizeScale) && opts.sizeScale>0 && opts.sizeScale!==1;
         const spacingOverride=Number.isFinite(opts.spacingOverride) && opts.spacingOverride>0;

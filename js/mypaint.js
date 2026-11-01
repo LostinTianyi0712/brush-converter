@@ -20,7 +20,7 @@
 
   function num(settings, key, fallback) {
     const item = settings && settings[key];
-    if (!item) return fallback;
+    if (item === undefined || item === null) return fallback;
     const v = typeof item === 'number' ? item : (item && typeof item.base_value === 'number' ? item.base_value : NaN);
     return isFinite(v) ? v : fallback;
   }
@@ -109,8 +109,8 @@
     const parentName = parentRaw.replace(/^brushconv\//, '');
     const name = (/^brushconv\//.test(parentRaw) ? parentName : (fileName || parentName || 'mypaint'))
       .replace(/\.[^.]+$/, '');
-    if (smudge > 0.2) warnings.push('该 MyPaint 笔刷含涂抹/混色(smudge=' + smudge.toFixed(2) + ')，转换为普通笔刷时只保留基础形状');
-    if (eraser > 0.5) warnings.push('该 MyPaint 笔刷是橡皮(eraser)，导入后需自行切换为橡皮模式');
+    if (smudge > 0) warnings.push('MyPaint 混色比例已读取；跨引擎混色效果仍需验证');
+    if (eraser > 0) warnings.push('MyPaint 橡皮模式已读取；不支持该模式的目标需手动切换橡皮工具');
     if(num(settings,'dabs_per_second',0)>0)warnings.push('该 MyPaint 笔刷含按时间喷点，静态间距只按基础/实际半径采样密度估算');
     const result = {
       brushes: [{
@@ -127,6 +127,10 @@
         minSizeRatio: minSizeRatio,
         pressureOpacity: opacityVaries,
         minOpacityRatio: minOpacityRatio,
+        smudgeOn: smudge > 0,
+        smudgeAmount: clamp(smudge, 0, 1),
+        eraser: eraser > 0,
+        eraserAmount: eraser > 0 ? clamp(eraser, 0, 1) : undefined,
         _rawMyb: bytes,
         source: 'mypaint'
       }],
@@ -167,7 +171,7 @@
       direction_filter: setting(2.0),
       elliptical_dab_angle: setting(brush.angle === undefined ? 90 : brush.angle),
       elliptical_dab_ratio: setting(100 / Math.max(10, Math.min(100, brush.roundness === undefined ? 100 : brush.roundness))),
-      eraser: setting(0.0),
+      eraser: setting(brush.eraser ? clamp(brush.eraserAmount === undefined ? 1 : brush.eraserAmount, 0, 1) : 0),
       hardness: setting(hardness),
       lock_alpha: setting(0.0),
       offset_by_random: setting(brush.scatterOn ? Math.max(0, Math.min(1, (brush.scatterPct || 0) / 100)) : 0.0),
@@ -181,7 +185,7 @@
       restore_color: setting(0.0),
       slow_tracking: setting(0.0),
       slow_tracking_per_dab: setting(0.0),
-      smudge: setting(brush.smudgeOn ? Math.max(0.05, Math.min(1, brush.smudgeAmount === undefined ? 0.4 : brush.smudgeAmount)) : 0.0),
+      smudge: setting(brush.smudgeOn ? Math.max(0, Math.min(1, brush.smudgeAmount === undefined ? 0.4 : brush.smudgeAmount)) : 0.0),
       smudge_length: setting(0.5),
       smudge_radius_log: setting(0.0),
       speed1_gamma: setting(1.0),
