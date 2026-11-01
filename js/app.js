@@ -909,55 +909,31 @@
         BC.convert.tipSourceHint(BC.convert.tipSourceAudit(auditList)).forEach(function (m) { warnings.push(m); });
       }
     } catch (e) { /* 提示失败不影响转换 */ }
-    // ABR 目标：把源笔刷的真实纹理导出为 PNG，用户可在 PS「编辑→定义图案」后手动指定（可调纹理）
+    // ABR 目标：真实纹理统一合并为一个 PAT，与笔刷同包/同目录，不散出 PNG。
+    // 烘焙模式仅附纹理备用；图案模式才把同一 PAT 的引用传给 ABR。
+    let commonPatRefs = null;
     if (opts.target === 'abr' || opts.target === 'all') {
       try {
-        const seenTex = {};
-        const textureNames = new Set();
-        let texIndex = 0;
-        for (const rec of records) {
-          const list = rec.brushes || [];
-          for (const b of list) {
-            if (!b || b.enabled === false || !b.hasTexture) continue;
-            const tex = BC.convert.makeTexturePng(b);
-            if (!tex) continue;
-            const key = tex.w + 'x' + tex.h + ':' + BC.util.md5(tex.bytes);
-            if (seenTex[key]) continue;
-            seenTex[key] = 1;
-            texIndex++;
-            const texBase = BC.convert.sanitizeName(b.name, texIndex - 1).slice(0, 54) + '_纹理';
-            let texName = texBase, suffix = 2;
-            while (textureNames.has(texName.toLowerCase())) texName = texBase + ' (' + suffix++ + ')';
-            textureNames.add(texName.toLowerCase());
-            outFiles.push({ name: texName + '.png', data: tex.bytes });
-          }
-        }
-        if (texIndex) warnings.push('已导出 ' + texIndex + ' 张纹理 PNG：在 PS 里「编辑→定义图案」后可手动指定给画笔纹理（可调深度/缩放）');
-      } catch (e) { warnings.push('纹理导出失败：' + e.message); }
-    }
-    let commonPat = null;
-    // 图案文件模式：所有带纹理笔刷的纹理去重后打成**一个**多图案 .pat，
-    // ABR 里每支笔刷引用各自纹理对应的图案 id
-    let commonPatRefs = null;
-    if (opts.textureMode === 'pattern' && (opts.target === 'abr' || opts.target === 'all')) {
-      try {
         const texBrushes = [];
+        let missingTextures = 0;
         for (const rec of records) {
-          for (const b of rec.brushes) {
-            if (b && b.enabled !== false && b.hasTexture) texBrushes.push(b);
+          for (const b of (rec.brushes || [])) {
+            if (!b || b.enabled === false || !b.hasTexture) continue;
+            if (BC.convert.textureGray(b)) texBrushes.push(b);
+            else missingTextures++;
           }
         }
-        if (!texBrushes.length) {
-          warnings.push('本次没有带纹理的笔刷，未生成 .pat（普通笔刷只需 .abr）');
-        } else {
+        if (texBrushes.length) {
           const pat = BC.convert.makePatternFile(texBrushes, { size: 256 });
-          commonPatRefs = pat.refs;
-          outFiles.push({ name: '纹理图案_导入PS图案面板.pat', data: pat.bytes });
-          warnings.push('已生成含 ' + pat.count + ' 张纹理的 .pat：先在 PS 图案面板导入它，再导入 ABR，纹理才可调');
+          if (opts.textureMode === 'pattern') commonPatRefs = pat.refs;
+          outFiles.push({ name: 'PS纹理图案合集.pat', data: pat.bytes });
+          warnings.push('已将 ' + pat.count + ' 张真实纹理合并为一个 PAT，与 ABR 放在同一导出包或保存目录中；' +
+            (opts.textureMode === 'pattern' ? '先在 PS 图案面板导入 PAT，再导入 ABR，纹理可调' : '笔刷仍按烘焙模式输出，PAT 可按需导入 PS 图案面板备用'));
         }
-      } catch (e) { warnings.push('图案生成失败：' + e.message); }
+        if (missingTextures) warnings.push(missingTextures + ' 支笔刷缺少原纹理图片，未收入本次 PAT 合集');
+      } catch (e) { warnings.push('纹理合集生成失败：' + e.message); }
     }
-    // 纹理丢失提示：ABR 源保留纹理引用但本次没带 .pat 时，目标 PS 没有同名图案就会没纹理
+    // 原样保留的 ABR 仍引用原图案；附备用 PAT 不会静默替换源引用。
     if ((opts.target === 'abr' || opts.target === 'all') && opts.textureMode !== 'pattern') {
       let refCount = 0;
       for (const rec of records) {
@@ -965,7 +941,7 @@
           if (b && b.enabled !== false && b.hasTexture && (b.source === 'abr' || b._rawPreset)) refCount++;
         }
       }
-      if (refCount > 0) warnings.push('ABR 里保留了 ' + refCount + ' 支笔刷的纹理引用：目标 Photoshop 需要先有同名图案，否则纹理不显示（高级设置改「纹理处理=图案文件」可自动附带 .pat）');
+      if (refCount > 0) warnings.push('ABR 里保留了 ' + refCount + ' 支笔刷的原纹理引用；如目标 PS 缺少原图案，可改「纹理处理=图案文件」，让笔刷引用本次 PAT 合集后重新导出');
     }
     try {
       if (opts.compareReport !== false && BC.convert.buildCompareHtml) {
@@ -1694,7 +1670,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.7.12';
+  const APP_VERSION = '2.7.13';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
