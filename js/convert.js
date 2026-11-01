@@ -29,6 +29,29 @@
     return brush.pressureSize === undefined ? !!brush.pressure : !!brush.pressureSize;
   }
 
+  /* 锥度→PS渐隐（Fade）近似：ABR 没有锥度字段，用「渐隐」（控制码 1 + fStp 步数）
+     模拟收笔时尺寸/不透明度衰减。ABR 每个笔尖属性只能挂一个控制源，
+     笔压/倾斜已占用时不覆盖（优先保压感）。 */
+  function abrTaperFade(brush) {
+    if (!brush || !brush.taperOn) return { applied: false };
+    const srcCtlSize = brush.dynamicsControlSize == null ? (pressureSizeOn(brush) ? 2 : (brush.tiltSizeDyn > 0 ? 3 : 0)) : brush.dynamicsControlSize;
+    const srcCtlOpacity = brush.dynamicsControlOpacity == null ? (brush.pressureOpacity ? 2 : (brush.tiltOpacityDyn > 0 ? 3 : 0)) : brush.dynamicsControlOpacity;
+    const taperSize = Math.max(0, Math.min(1, brush.taperSize === undefined ? 0.5 : brush.taperSize));
+    const taperOpacity = Math.max(0, Math.min(1, brush.taperOpacity === undefined ? 0.5 : brush.taperOpacity));
+    const out = { applied: false };
+    if (!srcCtlSize && taperSize > 0.001) {
+      out.sizeCtl = 1;
+      out.sizeSteps = Math.round(24 + 96 * taperSize);
+      out.applied = true;
+    }
+    if (!srcCtlOpacity && taperOpacity > 0.001) {
+      out.opacityCtl = 1;
+      out.opacitySteps = Math.round(24 + 96 * taperOpacity);
+      out.applied = true;
+    }
+    return out;
+  }
+
   function rawBrushUnchanged(brush, opts) {
     opts = opts || {};
     if (opts.fidelity === false || opts.forceRebuild || !brush._rawBrushState ||
@@ -715,7 +738,7 @@
     const pngBytes = png.encode(w, h, brush.source === 'bru' ? rgba : png.toMaskRgba(rgba));
     const sizeScale = opts.sizeScale || 1;
     let sizePx = (brush.sizePx || 100) * sizeScale;
-    if (!isFinite(sizePx) || sizePx < 1) sizePx = Math.max(4, Math.max(w, h));
+    if (!isFinite(sizePx) || sizePx <= 0) sizePx = Math.max(4, Math.max(w, h));
     sizePx = Math.max(1, Math.min(3000, Math.round(sizePx * 100) / 100));
     let spacingPct = opts.spacingOverride > 0 ? opts.spacingOverride : (brush.spacingPct === undefined ? 10 : brush.spacingPct);
     spacingPct = Math.max(0.1, Math.min(1000, spacingPct));
@@ -725,7 +748,7 @@
     // 而 Procreate 原样张是中灰的半透明颇粒（目标覆盖 ~0.6）。
     // 实测同一支笔刷：不透明度 22% → 亮度 144.1、hf 9.01、颇孔 4.2%。
     // 所以这里按「目标覆盖度」反算每个笔尖应有的 alpha，再折成不透明度。
-    const densityMode = opts.bruDensity === 'off' ? 'off' : (opts.bruDensity === undefined ? 'auto' : opts.bruDensity);
+    const densityMode = opts.bruDensity === 'auto' ? 'auto' : 'off';
     let densityOpacity = null, densityInfo = null;
     if (brush.source !== 'bru' && densityMode !== 'off') {
       const target = Math.max(0.2, Math.min(1, Number(opts.bruDensityTarget) || 0.6));
@@ -778,8 +801,8 @@
       flowJitterPct: brush.flowJitterPct,
       countJitterPct: brush.countJitterPct,
       scatterOn: brush.scatterOn,
-      // 画世界的散布刻度比 Procreate/PS 小：默认按 15% 缩放（界面高级设置可调）
-      scatterPct: brush.scatterPct === undefined ? undefined : Math.min(1000, brush.scatterPct * (brush.source === 'bru' ? 1 : (opts.scatterScale === undefined ? 0.15 : opts.scatterScale))),
+      // PS沿用已有15%校准；Procreate等来源不套用该系数，用户明确选择时才覆盖。
+      scatterPct: brush.scatterPct === undefined ? undefined : Math.min(1000, brush.scatterPct * (brush.source === 'bru' ? 1 : (opts.scatterScale === undefined ? (brush.source === 'abr' ? 0.15 : 1) : opts.scatterScale))),
       scatterBothAxes: brush.scatterBothAxes,
       scatterCount: brush.scatterCount,
       // App 内置纹理库资源 id（f6）：只在目标不是原生 BRU 且调用方/源笔刷指定了 id 时才写。
@@ -1080,6 +1103,7 @@
         rgba = new Uint8Array(rgba);
         bakeTextureIntoRGBA(rgba, w, h, brush, brush.textureDepth === undefined ? (brush.grainStrength === undefined ? 0.35 : brush.grainStrength) : brush.textureDepth);
       }
+      const fade = abrTaperFade(brush); // 锥度→渐隐（无压感占用时），报告状态与写出共用同一判定
       items.push({
         name: name, w: w, h: h, gray: abr.maskFromRGBA(rgba),
         sizePx: brush.sizePx, spacingPct: brush.spacingPct,
@@ -1089,14 +1113,19 @@
         brushFlipY: !!brush.flipY,
         pressureSize: pressureSizeOn(brush),
         pressureOpacity: !!brush.pressureOpacity,
-        dynamicsControlSize: brush.dynamicsControlSize == null ? (pressureSizeOn(brush) ? 2 : (brush.tiltSizeDyn > 0 ? 3 : 0)) : brush.dynamicsControlSize,
-        dynamicsControlOpacity: brush.dynamicsControlOpacity == null ? (brush.pressureOpacity ? 2 : (brush.tiltOpacityDyn > 0 ? 3 : 0)) : brush.dynamicsControlOpacity,
+        dynamicsControlSize: fade.sizeCtl !== undefined ? fade.sizeCtl : (brush.dynamicsControlSize == null ? (pressureSizeOn(brush) ? 2 : (brush.tiltSizeDyn > 0 ? 3 : 0)) : brush.dynamicsControlSize),
+        dynamicsControlOpacity: fade.opacityCtl !== undefined ? fade.opacityCtl : (brush.dynamicsControlOpacity == null ? (brush.pressureOpacity ? 2 : (brush.tiltOpacityDyn > 0 ? 3 : 0)) : brush.dynamicsControlOpacity),
         dynamicsControlAngle: brush.dynamicsControlAngle === undefined ? (brush.tiltAngleDyn > 0 ? 3 : undefined) : brush.dynamicsControlAngle,
         dynamicsControlRoundness: brush.dynamicsControlRoundness === undefined ? (brush.tiltRoundnessDyn > 0 ? 3 : undefined) : brush.dynamicsControlRoundness,
         dynamicsControlScatter: brush.dynamicsControlScatter,
         dynamicsControlCount: brush.dynamicsControlCount,
         dynamicsControlFlow: brush.dynamicsControlFlow,
-        dynamicsFadeSteps: brush.dynamicsFadeSteps,
+        dynamicsFadeSteps: (fade.sizeSteps !== undefined || fade.opacitySteps !== undefined)
+          ? Object.assign({}, brush.dynamicsFadeSteps,
+              fade.sizeSteps !== undefined ? { size: fade.sizeSteps } : null,
+              fade.opacitySteps !== undefined ? { opacity: fade.opacitySteps } : null)
+          : brush.dynamicsFadeSteps,
+        smoothingStrength: brush.smoothingStrength,
         minRoundnessRatio: brush.minRoundnessRatio,
         opacityJitterPct: brush.opacityJitterPct,
         roundnessJitterPct: brush.roundnessJitterPct,
@@ -2139,6 +2168,9 @@ Write-Host 'restart MediBang Paint Pro'
     if (raw) return '原样保留';
     if (key === 'eraser' && target === 'kbundle' && brush.eraserAmount > 0 && brush.eraserAmount < 1) return '近似（连续橡皮强度映射为橡皮开关）';
     if (key === 'smudgeOn' && target === 'kbundle') return '未完整写入（当前重建使用像素画笔，未建立专用混色引擎）';
+    if (key === 'sizePx' && target === 'bru' && brush.source === 'procreate') return '近似（Procreate尺寸仍为经验换算，画世界至少1px；原生尺寸待校准）';
+    if (key === 'opacity' && target === 'bru' && brush.source !== 'bru' && opts.bruDensity === 'auto') return '近似（已开启浓度归一，可能调整整体不透明度）';
+    if (key === 'scatterPct' && target === 'bru' && brush.source === 'procreate' && brush.scatterPct === 0 && brush.scatterCount > 1) return '参数映射（源位置散布为0，开关用于笔尖数量；旋转散布另写旋转随机）';
     if (key === 'scatterPct' && brush.scatterOn === false) return '未启用';
     if (key === 'angleJitterDeg' && target === 'bru' && brush.source === 'abr') {
       const unsupported = [1,3,4,7,8].indexOf(brush.dynamicsControlAngle) >= 0;
@@ -2161,7 +2193,15 @@ Write-Host 'restart MediBang Paint Pro'
       (((target==='brush'||target==='brushset')&&brush._rawArchive) || (target==='abr'&&opts.preserveRaw!==false&&brush._rawPreset)))return '原生参数局部更新（保留未知字段）';
     if (target === 'kbundle' && key === 'roundness' && !brush._rawXml && brush.tip && brush.roundness !== undefined && brush.roundness !== 100) return '未完整写入（PNG采样笔尖圆度未独立映射）';
     if (target === 'myb' && (key === 'dualOn' || key === 'textureDepth')) return '丢失（MyPaint当前仅输出参数化笔尖）';
-    if (target === 'abr' && ['taperOn','smudgeOn','smoothingStrength'].indexOf(key) >= 0) return '丢失（当前转换路径未映射）';
+    if (target === 'abr' && key === 'smudgeOn') return '丢失（当前转换路径未映射）';
+    if (target === 'abr' && key === 'taperOn') {
+      if (!brush.taperOn) return '未启用';
+      return abrTaperFade(brush).applied ? '近似（锥度按 PS 渐隐模拟收笔，笔触待验证）' : '丢失（笔压/倾斜已占用控制源，渐隐无法叠加）';
+    }
+    if (target === 'abr' && key === 'smoothingStrength') {
+      if (!brush.smoothingStrength) return '未启用';
+      return '参数映射（PS 原生平滑，CSP 是否读取待验证）';
+    }
     if ((target === 'brush' || target === 'brushset') && key === 'flowPct') return '丢失（流量尚无独立映射）';
     if ((target === 'brush' || target === 'brushset') && key === 'hardness') return '近似（由笔尖图像表现硬度）';
     if (key === 'dualOn') {
@@ -2200,7 +2240,7 @@ Write-Host 'restart MediBang Paint Pro'
     if (!supported) return '丢失（当前转换路径未映射）';
     if (key === 'scatterPct' && target === 'bru' && brush.source !== 'bru') {
       if (brush.scatterPct === 0) return '参数映射（位置散布强度为0，缩放不改变数值）';
-      return '近似（散布×' + (opts.scatterScale === undefined ? 0.15 : opts.scatterScale) + '）';
+      return '近似（位置散布×' + (opts.scatterScale === undefined ? (brush.source === 'abr' ? 0.15 : 1) : opts.scatterScale) + '，目标刻度待验证）';
     }
     return '参数映射（笔触待验证）';
   }

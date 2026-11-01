@@ -155,9 +155,10 @@
           <div class="opt">
             <label>散布换算系数（× 源值）</label>
             <select id="optScatterScale">
+              <option value="auto" selected>按来源（Procreate等比例，PS使用校准系数）</option>
               <option value="5">5%（更小）</option>
               <option value="10">10%（很小）</option>
-              <option value="15" selected>15%（推荐）</option>
+              <option value="15">15%</option>
               <option value="20">20%</option>
               <option value="30">30%</option>
               <option value="50">50%</option>
@@ -234,8 +235,8 @@
           <div class="opt">
             <label>画世界笔迹浓度</label>
             <select id="optBruDensity">
-              <option value="auto" selected>自动归一（推荐，接近原版半透明笔迹）</option>
-              <option value="off">保持原样（不透明度不缩放，旧行为）</option>
+              <option value="off" selected>保持原不透明度（默认）</option>
+              <option value="auto">实验浓度归一（会调整不透明度）</option>
             </select>
           </div>
           <div class="opt">

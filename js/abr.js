@@ -466,6 +466,7 @@
         spacingPct: spacing === undefined ? 25 : spacing,
         flowPct: toolRatio('flow'),
         opacity: toolRatio('Opct'),
+        smoothingStrength: toolRatio('Smoo'),
         angle: angle || 0,
         roundness: roundness === undefined ? (bristleRoundness !== undefined ? bristleRoundness : 100) : roundness,
         hardness: hardnessRaw === undefined ? (bristle && bristle.stiffness !== undefined ? Math.max(0, Math.min(1, bristle.stiffness)) : undefined) : Math.max(0, Math.min(1, hardnessRaw / 100)),
@@ -1452,12 +1453,29 @@
       // Explicit 100% also matters: otherwise selecting this preset inherits
       // the user's previous tool flow/opacity in Photoshop.
       {
-        presetItems.push(_descItem('toolOptions', 'Objc', _descObjc('', 'PbTl', [
+        // 平滑：Procreate streamline → PS「平滑」百分比。真实 PS 导出（个人用.abr 实测）
+        // 的 toolOptions 结构 = brushPreset + flow + Smoo(long %) + Md(enum) + Opct(long %)，
+        // 平滑 >0 再补新版详细块（smoothing bool + smoothingValue doub + catchup 等开关）。
+        const smoothPct = Math.round(Math.max(0, Math.min(1, it.smoothingStrength === undefined ? 0 : it.smoothingStrength)) * 100);
+        const toolItems = [
           _descItem('brushPreset', 'bool', _descBool(true)),
           // 'flow' is a four-letter stringID, not a legacy charID.
           _descItem('flow', 'long', new Uint8Array([0, 0, 0, flowPct100]), true),
+          _descItem('Smoo', 'long', new Uint8Array([0, 0, 0, smoothPct])),
+          _descItem('Md  ', 'enum', _descEnum('BlnM', 'Nrml')),
           _descItem('Opct', 'long', new Uint8Array([0, 0, 0, opct100]))
-        ])));
+        ];
+        if (smoothPct > 0) {
+          toolItems.push(
+            _descItem('smoothing', 'bool', _descBool(true)),
+            _descItem('smoothingValue', 'doub', _doube(smoothPct)),
+            _descItem('smoothingRadiusMode', 'bool', _descBool(false)),
+            _descItem('smoothingCatchup', 'bool', _descBool(true)),
+            _descItem('smoothingCatchupAtEnd', 'bool', _descBool(false)),
+            _descItem('smoothingZoomCompensation', 'bool', _descBool(true))
+          );
+        }
+        presetItems.push(_descItem('toolOptions', 'Objc', _descObjc('', 'PbTl', toolItems)));
       }
       /* PS 每个笔刷预设都会写这一组标准项；以前我们只在「启用纹理/散布」时才写，
          纯笔刷就缺 Txtr/TxtC/textureDepth/prVr/… → 画世界 Pro 的 BrushSectionParser

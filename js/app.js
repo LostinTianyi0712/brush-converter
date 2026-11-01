@@ -806,8 +806,8 @@
     const fidelity = $('#optFidelity') ? $('#optFidelity').value !== 'off' : true;
     const textureMode = $('#optTextureMode') ? $('#optTextureMode').value : 'bake';
     const bruTexAsset = $('#optBruTex') ? $('#optBruTex').value : 'off';
-    const bruDensity = $('#optBruDensity') ? $('#optBruDensity').value : 'auto';
-    const scatterScale = $('#optScatterScale') ? Number($('#optScatterScale').value) / 100 : 0.15;
+    const bruDensity = $('#optBruDensity') ? $('#optBruDensity').value : 'off';
+    const scatterScale = $('#optScatterScale') && $('#optScatterScale').value !== 'auto' ? Number($('#optScatterScale').value) / 100 : undefined;
     const autoBatch = $('#optAutoBatch') ? $('#optAutoBatch').value !== '0' : true;
     const dualBake = $('#optDualBake') ? $('#optDualBake').value !== '0' : true;
     const dualCompanion = $('#optDualCompanion') ? $('#optDualCompanion').value !== '0' : false;
@@ -1693,7 +1693,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.7.1';
+  const APP_VERSION = '2.7.3';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
