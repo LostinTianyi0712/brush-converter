@@ -23,6 +23,32 @@
     return v;
   }
 
+  // 5.3.8 (50521) native lerpAndClampSize + particleQuad: radius is
+  // 128 * lerp(min,max,slider); the nominal tip side/diameter is 2 * radius.
+  // Default shape rotation cancels the quad's pi/4 basis. AA padding is not size.
+  function nativeSizeRange(params) {
+    const limit = 1 + 15 * Math.max(0, Math.min(1, toRatio(params.plotSpacing, 0) / 0.02));
+    return {
+      low: Math.max(0, Math.min(limit, toRatio(params.minSize, 0.05))),
+      high: Math.max(0, Math.min(limit, toRatio(params.maxSize, 1))),
+      slider: Math.max(0, toRatio(params.paintSize, 0.25))
+    };
+  }
+  function nativeSizeDiameter(range, factor) {
+    const radius = Math.min(range.high * 128, Math.max(range.low,
+      128 * (range.low + (range.high - range.low) * range.slider * factor)));
+    return Math.max(0, radius * 2);
+  }
+  function sizeArchiveParams(brush) {
+    const spacing = Math.max(0, Math.min(10, (brush.spacingPct === undefined ? 10 : brush.spacingPct) / 100));
+    const limit = 1 + 15 * Math.min(1, spacing / 0.02);
+    const size = typeof brush.sizePx === 'number' && isFinite(brush.sizePx) && brush.sizePx > 0 ? brush.sizePx : 100;
+    const high = Math.min(limit, Math.max(0.2, size) / 256);
+    const pressure = brush.pressureSize === undefined ? brush.pressure : brush.pressureSize;
+    const ratio = Math.max(0, Math.min(1, brush.minSizeRatio === undefined ? 0.05 : brush.minSizeRatio));
+    return {paintSize: 1, maxSize: high, minSize: pressure ? high * ratio : 0};
+  }
+
   function luminanceToTip(im, inverted) {
     // Procreate shape: white = opaque, black = transparent (luminance as coverage)
     // shapeInverted（笔刷工作室 → 形状 → 反转）翻转明暗，透明底仍保持透明
@@ -171,20 +197,18 @@
       if (fromLib) { grainRgba = fromLib; grainFromLibrary = true; }
     }
     const tipSource = tipFromShape ? (shapeFromLibrary ? 'library' : 'shape') : (tipFromGrain ? 'grain' : 'none');
-    const maxSize = toRatio(params.maxSize, 1);
-    const minSize = toRatio(params.minSize, 0.05);
+    const sizeRange = nativeSizeRange(params);
     const pressSize = toRatio(params.dynamicsPressureSize, 0);
     const pressOpacity = toRatio(params.dynamicsPressureOpacity, 0);
     const maxOpacity = toRatio(params.maxOpacity, 1);
     const paintOpacity = toRatio(params.paintOpacity, 1);
     const minOpacity = toRatio(params.minOpacity, 0);
     const spacing = toRatio(params.plotSpacing, 0);
-    // paintSize 是当前笔刷大小（×400≈像素），之前用 maxSize*120 会放大约 3~5 倍
-    let sizePx = Math.round((Number(params.paintSize) > 0 ? Number(params.paintSize) : maxSize * 0.25) * 400);
-    if (!isFinite(sizePx) || sizePx <= 0) sizePx = 40;
-    sizePx = Math.max(0.2, Math.min(3000, sizePx));
+    const fullSize = nativeSizeDiameter(sizeRange, 1);
+    const sizePx = Math.max(0.2, Math.min(4096, Math.round(fullSize)));
     const opacity = Math.max(0, Math.min(1, paintOpacity * maxOpacity));
-    const minSizeRatio = pressSize > 0.05 ? Math.max(0, Math.min(1, minSize)) : 1;
+    const minSizeRatio = pressSize > 0.05 && fullSize > 0 ? Math.max(0, Math.min(1,
+      nativeSizeDiameter(sizeRange, 1 - Math.min(1, pressSize)) / fullSize)) : 1;
     const minOpacityRatio = pressOpacity > 0.05 ? Math.max(0, Math.min(1, minOpacity)) : 1;
     const nv = function (k, d) { const raw = params[k]; if (raw === null || raw === undefined || raw === '') return d === undefined ? 0 : d; const v = Number(raw); return isFinite(v) ? v : (d === undefined ? 0 : d); };
     // Procreate 的 shapeAngle 存的是弧度（真实样本 -1.5708 = -90°）
@@ -542,13 +566,13 @@
 
   function archiveParams(brush, opts) {
     const D = defaultsApi.defaults();
+    const sizeParams = sizeArchiveParams(brush);
     const params = Object.assign(D, {
       version: 2,
       plotSpacingVersion: 1,
-      // paintSize 是当前大小（×400≈像素），maxSize 是上限；往返尺寸才一致
-      paintSize: Math.max(0.0005, Math.min(4, (brush.sizePx || 100) / 400)),
-      maxSize: Math.max(0.02, Math.min(16, ((brush.sizePx || 100) / 400) * 1.6)),
-      minSize: Math.max(0, Math.min(1, brush.minSizeRatio === undefined ? 0.05 : brush.minSizeRatio)),
+      paintSize: sizeParams.paintSize,
+      maxSize: sizeParams.maxSize,
+      minSize: sizeParams.minSize,
       maxOpacity: Math.max(0, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity)),
       minOpacity: 0,
       paintOpacity: 1,
@@ -658,7 +682,9 @@
       colorJitterVal:['dynamicsJitterLightness']};
     Object.keys(nativeFields).forEach(key=>{mapping[key]=[nativeFields[key]];});
     Object.keys(mapping).forEach(function(key){if(brush[key]!==before[key])mapping[key].forEach(k=>{changes[k]=params[k];});});
-    if(changes.paintSize!==undefined){const old=plist.unarchive(brush._rawArchive);if(old.maxSize<changes.paintSize)changes.maxSize=changes.paintSize;}
+    // Native slider and bounds are coupled. Never patch normalized slider units
+    // with pixels / 400 while leaving bounds from the source archive behind.
+    if(changes.paintSize!==undefined || changes.minSize!==undefined)Object.assign(changes,sizeArchiveParams(brush));
     if(extraChanges)Object.assign(changes,extraChanges);
     return bplist.patchKeyedArchive(brush._rawArchive,changes);
   }

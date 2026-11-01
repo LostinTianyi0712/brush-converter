@@ -2166,9 +2166,15 @@ Write-Host 'restart MediBang Paint Pro'
        (target === 'myb' && brush._rawMyb && rawBrushUnchanged(brush, opts)));
     if (rawCache) rawCache.set(brush, raw);
     if (raw) return '原样保留';
+    if (key === 'sizePx' && (target === 'brush' || target === 'brushset')) {
+      const adjusted = withExportSettings(brush, opts);
+      const spacing = Math.max(0, Number(adjusted.spacingPct === undefined ? 10 : adjusted.spacingPct) || 0) / 100;
+      const limit = 256 * (1 + 15 * Math.min(1, spacing / 0.02));
+      if (adjusted.sizePx > limit) return '近似（超过Procreate当前间距下的尺寸上限，已缩小至上限）';
+    }
     if (key === 'eraser' && target === 'kbundle' && brush.eraserAmount > 0 && brush.eraserAmount < 1) return '近似（连续橡皮强度映射为橡皮开关）';
     if (key === 'smudgeOn' && target === 'kbundle') return '未完整写入（当前重建使用像素画笔，未建立专用混色引擎）';
-    if (key === 'sizePx' && target === 'bru' && brush.source === 'procreate') return '近似（Procreate尺寸仍为经验换算，画世界至少1px；原生尺寸待校准）';
+    if (key === 'sizePx' && target === 'bru' && brush.source === 'procreate') return '近似（按Procreate 5.3.8原生尺寸公式换算；画世界至少1px，倾斜/缩放及实际笔迹待真机复核）';
     if (key === 'opacity' && target === 'bru' && brush.source !== 'bru' && opts.bruDensity === 'auto') return '近似（已开启浓度归一，可能调整整体不透明度）';
     if (key === 'scatterPct' && target === 'bru' && brush.source === 'procreate' && brush.scatterPct === 0 && brush.scatterCount > 1) return '参数映射（源位置散布为0，开关用于笔尖数量；旋转散布另写旋转随机）';
     if (key === 'scatterPct' && brush.scatterOn === false) return '未启用';
