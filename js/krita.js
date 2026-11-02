@@ -57,6 +57,13 @@
     }
   }
 
+  function bytesToB64(bytes) {
+    if (isNode) return Buffer.from(bytes).toString('base64');
+    const parts = [];
+    for (let i = 0; i < bytes.length; i += 8192) parts.push(String.fromCharCode.apply(null, bytes.subarray(i, i + 8192)));
+    return btoa(parts.join(''));
+  }
+
   /* Collect <param name="..." type="...">value</param> entries (flat text scan). */
   function collectParams(xml) {
     const params = {};
@@ -195,6 +202,29 @@
     const sizeDyn = pressureEnabled('PressureSize','SizeUseCurve','SizeSensor');
     const opDyn = pressureEnabled('PressureOpacity','OpacityUseCurve','OpacitySensor');
 
+    const textureOn = !!(params['Texture/Pattern/Enabled'] && /^(true|1)$/i.test(params['Texture/Pattern/Enabled'].text));
+    const textureInvert = !!(params['Texture/Pattern/Invert'] && /^(true|1)$/i.test(params['Texture/Pattern/Invert'].text));
+    const strength = params['Texture/Strength/Value'], textureScale = params['Texture/Pattern/Scale'];
+    let grain = null;
+    if (textureOn) {
+      const embedded = params['Texture/Pattern/Pattern'], filename = params['Texture/Pattern/PatternFileName'];
+      const candidates = [];
+      if (embedded) {
+        const outer = b64ToBytes(embedded.text);
+        if (outer) candidates.push(b64ToBytes(util.utf8Decode(outer)));
+      }
+      if (filename && resourceMap) candidates.push(resourceMap['patterns/' + filename.text] || resourceMap[filename.text]);
+      for (const bytes of candidates) {
+        if (!bytes || !png.isPng(bytes)) continue;
+        try { const img = png.decode(bytes); grain = { w: img.width, h: img.height, rgba: img.rgba }; break; }
+        catch (e) { /* try the paired resource */ }
+      }
+      if (!grain) warnings.push('Krita纹理已启用但缺少可解码原图，跨格式不能恢复该纹理');
+      const brightness = params['Texture/Pattern/Brightness'], contrast = params['Texture/Pattern/Contrast'];
+      if ((brightness && brightness.value !== 0) || (contrast && contrast.value !== 1))
+        warnings.push('Krita纹理亮度/对比度采用原生刻度，跨格式暂不映射其调色效果');
+    }
+
     // brush tip: embedded brush resource (Krita 4/5), else preview image
     let tip = null;
     const resRe = /<resource\b([^>]*)>([\s\S]*?)<\/resource>/g;
@@ -268,6 +298,11 @@
         hardness: hardness,
         angle: angle,
         roundness: roundnessPct,
+        hasTexture: textureOn,
+        textureDepth: strength && isFinite(strength.value) ? clamp(strength.value, 0, 1) : 0.5,
+        textureScale: textureScale && isFinite(textureScale.value) ? textureScale.value : 1,
+        textureInverted: textureInvert,
+        _grainRgba: grain,
         pressure: !!(sizeDyn || opDyn),
         pressureSize: !!sizeDyn,
         minSizeRatio: sizeDyn ? 0.2 : 1,
@@ -354,7 +389,7 @@
   function writeKpp(brush) {
     const name = esc(brush.name || 'brush');
     const diameter = Math.max(1, Math.min(4000, brush.sizePx || 40));
-    const spacing = Math.max(0.01, Math.min(5, (brush.spacingPct || 10) / 100));
+    const spacing = Math.max(0.01, Math.min(5, (brush.spacingPct === undefined ? 10 : brush.spacingPct) / 100));
     const opacity = Math.max(0, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity));
     const hardness = Math.max(0, Math.min(1, brush.hardness === undefined ? 1 : brush.hardness));
     const angleRad = (isFinite(brush.angle) ? brush.angle : 0) * Math.PI / 180;
@@ -368,7 +403,7 @@
     const curve = '<![CDATA[<!DOCTYPE params> <params id="pressure"> <curve>0,0;1,1;</curve> </params> ]]>';
 
     const brushDef = '<Brush spacing="' + num(spacing, 0.1) + '" autoSpacingCoeff="1" angle="' + angleRad.toFixed(6) +
-      '" BrushVersion="2" type="auto_brush" density="1" useAutoSpacing="1" randomness="0"> ' +
+      '" BrushVersion="2" type="auto_brush" density="1" useAutoSpacing="0" randomness="0"> ' +
       '<MaskGenerator ratio="' + num(ratio, 1) + '" antialiasEdges="1" spikes="2" vfade="' + num(hardness, 1) +
       '" diameter="' + num(diameter, 40) + '" id="default" hfade="' + num(hardness, 1) + '" type="circle"/> </Brush> ';
 
@@ -427,7 +462,7 @@
   /* Preset XML using a procedural circle/ellipse mask (no external resource). */
   function circlePresetXml(brush) {
     const diameter = Math.max(1, Math.min(4000, brush.sizePx || 40));
-    const spacing = Math.max(0.01, Math.min(5, (brush.spacingPct || 10) / 100));
+    const spacing = Math.max(0.01, Math.min(5, (brush.spacingPct === undefined ? 10 : brush.spacingPct) / 100));
     const opacity = Math.max(0, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity));
     const hardness = Math.max(0, Math.min(1, brush.hardness === undefined ? 1 : brush.hardness));
     const angleRad = ((isFinite(brush.angle) ? brush.angle : 0) * Math.PI / 180).toFixed(6);
@@ -438,7 +473,7 @@
     const cdata = function (s) { return '<![CDATA[' + s + ']]>'; };
     const curve = '<![CDATA[<!DOCTYPE params> <params id="pressure"> <curve>0,0;1,1;</curve> </params> ]]>';
     const brushDef = '<Brush spacing="' + spacing.toFixed(4) + '" autoSpacingCoeff="1" angle="' + angleRad +
-      '" BrushVersion="2" type="auto_brush" density="1" useAutoSpacing="1" randomness="0"> ' +
+      '" BrushVersion="2" type="auto_brush" density="1" useAutoSpacing="0" randomness="0"> ' +
       '<MaskGenerator ratio="' + ratio.toFixed(3) + '" antialiasEdges="1" spikes="2" vfade="' + hardness.toFixed(3) +
       '" diameter="' + diameter.toFixed(3) + '" id="default" hfade="' + hardness.toFixed(3) + '" type="circle"/> </Brush> ';
     const params = [
@@ -471,7 +506,7 @@
 
   /* Preset XML for a bundle preset that references an image-brush resource. */
   function bundlePresetXml(brush, gbrName) {
-    const spacing = Math.max(0.005, Math.min(5, (brush.spacingPct || 10) / 100));
+    const spacing = Math.max(0.005, Math.min(5, (brush.spacingPct === undefined ? 10 : brush.spacingPct) / 100));
     const opacity = Math.max(0, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity));
     const angleRad = ((isFinite(brush.angle) ? brush.angle : 0) * Math.PI / 180).toFixed(6);
     const pressureSize = !!brush.pressureSize;
@@ -557,18 +592,18 @@
     return xml;
   }
 
-  function setParam(xml, name, value) {
+  function setParam(xml, name, value, type) {
     const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const re = new RegExp('<param\\b[^>]*name="' + esc + '"[^>]*>[\\s\\S]*?</param>');
-    const repl = '<param type="string" name="' + name + '"><![CDATA[' + value + ']]></param>';
+    const repl = '<param type="' + (type || 'string') + '" name="' + name + '"><![CDATA[' + value + ']]></param>';
     if (re.test(xml)) return xml.replace(re, repl);
     return xml.replace('</Preset>', repl + '</Preset>');
   }
 
   /* Clone a real Krita png_brush preset and swap tip file / scale / spacing / opacity. */
-  function pngPresetXml(brush, tipName, tipWidth, tipHeight, patternName) {
+  function pngPresetXml(brush, tipName, tipWidth, tipHeight, patternName, patternBytes) {
     const tpl = loadPresetTemplate();
-    const spacing = Math.max(0.005, Math.min(5, (brush.spacingPct || 10) / 100));
+    const spacing = Math.max(0.005, Math.min(5, (brush.spacingPct === undefined ? 10 : brush.spacingPct) / 100));
     const opacity = Math.max(0, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity));
     const angleRad = ((isFinite(brush.angle) ? brush.angle : 0) * Math.PI / 180).toFixed(6);
     const tipSide = Math.max(1, tipWidth || 200, tipHeight || tipWidth || 200);
@@ -596,31 +631,34 @@
       xml = setParam(xml, 'Scatter/Y', brush.scatterBothAxes === false ? '0' : '1');
       if ((brush.scatterCount || 1) > 1) xml = setParam(xml, 'Scatter/Count', String(Math.round(brush.scatterCount)));
     }
+    xml = setParam(xml, 'Texture/Pattern/Enabled', patternName ? 'true' : 'false');
     if (patternName) {
-      xml = setParam(xml, 'Texture/Pattern/Enabled', 'true');
-      xml = setParam(xml, 'Texture/Pattern/FileName', patternName);
+      // Native Krita KPP stores a base64 image inside a serialized QByteArray
+      // (another base64 layer), plus a QByteArray containing the base64 MD5.
+      const digest = Uint8Array.from(util.md5(patternBytes).match(/../g), function (h) { return parseInt(h, 16); });
+      xml = setParam(xml, 'Texture/Pattern/Name', patternName.replace(/\.png$/i, ''));
+      xml = setParam(xml, 'Texture/Pattern/PatternFileName', patternName);
+      xml = setParam(xml, 'Texture/Pattern/Pattern', bytesToB64(util.utf8Encode(bytesToB64(patternBytes))), 'bytearray');
+      xml = setParam(xml, 'Texture/Pattern/PatternMD5', bytesToB64(util.utf8Encode(bytesToB64(digest))), 'bytearray');
       xml = setParam(xml, 'Texture/Pattern/Scale', (brush.textureScale === undefined ? 1 : brush.textureScale).toFixed(3));
-      xml = setParam(xml, 'Texture/Pattern/Depth', (brush.textureDepth === undefined ? 0.5 : brush.textureDepth).toFixed(3));
-      xml = setParam(xml, 'Texture/Pattern/Brightness', String(Math.round(brush.textureBrightness === undefined ? 51 : brush.textureBrightness)));
-      xml = setParam(xml, 'Texture/Pattern/Contrast', String(Math.round(brush.textureContrast === undefined ? 100 : brush.textureContrast)));
+      xml = setParam(xml, 'Texture/Strength/Value', Math.max(0, Math.min(1, brush.textureDepth === undefined ? 0.5 : brush.textureDepth)).toFixed(3));
+      xml = setParam(xml, 'Texture/Strength/UseCurve', 'false');
+      // The original image already includes explicit inversion. Native tone
+      // controls have a different range; retain neutral settings until calibrated.
+      xml = setParam(xml, 'Texture/Pattern/Invert', 'false');
+      xml = setParam(xml, 'Texture/Pattern/Brightness', '0');
+      xml = setParam(xml, 'Texture/Pattern/Contrast', '1');
     }
     return asciiEntities(xml);
   }
 
-  function makePatternPng(seed, size) {
-    const n = size || 512;
-    const rgba = new Uint8Array(n * n * 4);
-    for (let y = 0; y < n; y++) {
-      for (let x = 0; x < n; x++) {
-        let h = (x * 374761393 + y * 668265263 + seed * 2147483647) ^ 0x5bf03635;
-        h = (h ^ (h >> 13)) * 1274126177; h = h ^ (h >> 16);
-        const nz = ((h >>> 0) % 1000) / 999;
-        const v = Math.round(255 * (0.55 + 0.45 * nz));
-        const o = (y * n + x) * 4;
-        rgba[o] = v; rgba[o + 1] = v; rgba[o + 2] = v; rgba[o + 3] = 255;
-      }
+  function makePatternPng(texture) {
+    const rgba = new Uint8Array(texture.w * texture.h * 4);
+    for (let i = 0; i < texture.w * texture.h; i++) {
+      const v = texture.gray[i], o = i * 4;
+      rgba[o] = v; rgba[o + 1] = v; rgba[o + 2] = v; rgba[o + 3] = 255;
     }
-    return png.encode(n, n, rgba);
+    return png.encode(texture.w, texture.h, rgba);
   }
 
   function presetPreviewPng(tip) {
@@ -634,6 +672,7 @@
     const list = brushList || [];
     const files = [];
     const manifest = [];
+    const warnings = [];
     const seen = {};
     let bundleIndex = 0;
     function unique(base, ext) {
@@ -662,6 +701,7 @@
         manifest.push({ path: 'brushes/' + tipName, type: 'brushes', md5: util.md5(tipBytes) });
         let xml = brush._rawXml;
         if (brush.eraser !== undefined) xml = setParam(xml, 'EraserMode', brush.eraser ? 'true' : 'false');
+        if (opts.noTextureBake === true) xml = setParam(xml, 'Texture/Pattern/Enabled', 'false');
         // Apply only explicit export overrides; retain other native XML fields.
         const scaleOverride=Number.isFinite(opts.sizeScale) && opts.sizeScale>0 && opts.sizeScale!==1;
         const spacingOverride=Number.isFinite(opts.spacingOverride) && opts.spacingOverride>0;
@@ -708,16 +748,19 @@
         const tipBytes = pngTipPng(tip);
         files.push({ name: 'brushes/' + tipName, data: tipBytes });
         manifest.push({ path: 'brushes/' + tipName, type: 'brushes', md5: util.md5(tipBytes) });
-        let patternName = null;
-        if (brush.hasTexture && opts.noTextureBake !== true) {
+        let patternName = null, patBytes = null;
+        if (brush.hasTexture && opts.noTextureBake !== true && brush._kritaPattern) {
           patternName = asciiBase + '_tex.png';
-          const patBytes = makePatternPng(bundleIndex + 17);
+          patBytes = makePatternPng(brush._kritaPattern);
           files.push({ name: 'patterns/' + patternName, data: patBytes });
           manifest.push({ path: 'patterns/' + patternName, type: 'patterns', md5: util.md5(patBytes) });
+        } else if (brush.hasTexture && opts.noTextureBake !== true) {
+          warnings.push((brush.name || '未命名') + '：缺少纹理原图，Krita重建时禁用纹理');
         }
-        xml = pngPresetXml(brush, tipName, tip.w, tip.h, patternName);
+        xml = pngPresetXml(brush, tipName, tip.w, tip.h, patternName, patBytes);
       } else {
         xml = circlePresetXml(brush);
+        if (brush.hasTexture && opts.noTextureBake !== true) warnings.push((brush.name || '未命名') + '：Krita过程笔尖分支未附加纹理图');
       }
       const kppName = asciiBase + '.kpp';
       const kppBytes = png.injectText(presetPreviewPng(brush.tip), { version: '2.2', preset: xml });
@@ -745,7 +788,7 @@
     ];
     const all = head.concat(files);
     const bytes = zip.write(all);
-    return { bytes: bytes, count: list.length, files: all.length };
+    return { bytes: bytes, count: list.length, files: all.length, warnings: warnings };
   }
 
   const api = { isKpp, parseKpp, writeKpp, writeBundle };

@@ -182,7 +182,7 @@
         tip: null,
         sizePx: Math.round(size),
         spacingPct: 10,
-        opacity: isFinite(depth) ? Math.max(0.01, Math.min(1, depth / 100)) : 1,
+        opacity: isFinite(depth) ? Math.max(0, Math.min(1, depth / 100)) : 1,
         minSizeRatio: isFinite(szmin) ? Math.max(0, Math.min(1, szmin / 100)) : 0,
         minOpacityRatio: Number(r.dpmin) ? Math.max(0, Math.min(1, Number(r.dpmin) / 100)) : 0,
         pressureSize: r.f_prs2sz === '1',
@@ -235,8 +235,12 @@
         const img=decodeImage(imageEntry.data());if(!img)continue;
         const b=parseBrushIni(entry.data(),entry.name).brushes[0],meta=toolNames.get(key.replace(/^.*\//,''));
         if(meta){
-          for(const field of ['name','sizePx','opacity','minSizeRatio','minOpacityRatio','pressureSize','pressureOpacity','hardness','smudgeOn','smudgeAmount','wetEdgesOn','wetEdgesAmount','smoothingStrength'])
-            if(meta[field]!==undefined)b[field]=meta[field];
+          const record=meta._sai2tool;
+          const fields={name:['name'],sizePx:['brsize','brsizesc'],opacity:['depth'],minSizeRatio:['szmin'],minOpacityRatio:['dpmin'],
+            pressureSize:['f_prs2sz'],pressureOpacity:['f_prs2dp'],hardness:['edgehdns'],smudgeOn:['blend'],smudgeAmount:['blend'],
+            wetEdgesOn:['water'],wetEdgesAmount:['water'],smoothingStrength:['smooth']};
+          for(const field of Object.keys(fields))
+            if(fields[field].some(key=>record[key]!==undefined && String(record[key]).trim()!==''))b[field]=meta[field];
         }
         b.tip=img;brushes.push(b);
       }

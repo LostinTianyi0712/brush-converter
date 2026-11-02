@@ -2266,6 +2266,13 @@ Write-Host 'restart MediBang Paint Pro'
       if (adjusted.sizePx > limit) return '近似（超过Procreate当前间距下的尺寸上限，已缩小至上限）';
     }
     if (key === 'eraser' && target === 'kbundle' && brush.eraserAmount > 0 && brush.eraserAmount < 1) return '近似（连续橡皮强度映射为橡皮开关）';
+    if (key === 'opacity' && target === 'sai2' && brush.opacity < 0.01) return '近似（当前SAI2写端浓度下限1%，不能视为完全透明）';
+    if (key === 'spacingPct' && ['kbundle','sai2','gbr','gih'].indexOf(target) >= 0 && !(target === 'kbundle' && brush._rawXml && opts.fidelity !== false && !opts.forceRebuild)) {
+      const spacing = opts.spacingOverride > 0 ? opts.spacingOverride : brush.spacingPct;
+      const min = target === 'kbundle' ? (brush.tip ? 0.5 : 1) : 1;
+      const max = target === 'kbundle' ? 500 : 1000;
+      if (spacing < min || spacing > max) return '近似（间距超出当前写端范围，已限制为' + min + '–' + max + '%）';
+    }
     if (key === 'smudgeOn' && target === 'kbundle') return '未完整写入（当前重建使用像素画笔，未建立专用混色引擎）';
     if (key === 'sizePx' && target === 'bru' && brush.source === 'procreate') return '近似（按Procreate 5.3.8原生尺寸公式换算；画世界至少1px，倾斜/缩放及实际笔迹待真机复核）';
     if (key === 'opacity' && target === 'bru' && brush.source !== 'bru' && opts.bruDensity === 'auto') return '近似（已开启浓度归一，可能调整整体不透明度）';
@@ -2313,6 +2320,13 @@ Write-Host 'restart MediBang Paint Pro'
     if (key === 'textureDepth') {
       if (!brush.hasTexture) return '未启用';
       const pixels = brush._rawGrain || brush._grainRgba || brush._patternPixels;
+      if (target === 'kbundle') {
+        if (opts.noTextureBake === true) return '未写出（已关闭纹理输出）';
+        if (!brush._rawXml || opts.forceRebuild || opts.fidelity === false) {
+          if (!brush.tip) return '未写出（当前过程笔尖分支未附加纹理图）';
+          return textureGray(brush) ? '近似（原纹理灰度图已打包；亮度/对比度和目标纹理引擎待标定）' : '未写出（缺少原纹理图，禁用纹理）';
+        }
+      }
       if (target === 'abr') {
         if (opts.textureMode === 'pattern') {
           return textureGray(brush) ? '参数映射（图案引用，需配套图案验证）' : '未写出（缺少原纹理图，无法生成图案）';
@@ -2657,7 +2671,8 @@ Write-Host 'restart MediBang Paint Pro'
   /** Brush list -> Krita resource bundle (.bundle) with GBR tips + presets. */
   function makeKritaBundle(brushList, opts) {
     const list = (brushList || []).map(function (source) {
-      const b = withExportSettings(source, opts);
+      const b = Object.assign({}, withExportSettings(source, opts));
+      b._kritaPattern = b.hasTexture && !(opts && opts.noTextureBake === true) ? textureGray(b) : null;
       if (!(b.dualOn && b.dualTip)) return b;
       const tip = bakedTipFor(b, opts);
       return Object.assign({}, b, { tip: { w: tip.w, h: tip.h, rgba: tip.rgba } });

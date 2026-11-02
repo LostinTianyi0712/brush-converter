@@ -1081,6 +1081,7 @@
             } else if (fmt === 'kbundle') {
               const made = BC.convert.makeKritaBundle(list, commonOpts(rec));
               outFiles.push({ name: uniqueFile(base + '_krita', '.bundle'), data: made.bytes });
+              if (made.warnings && made.warnings.length) warnings.push(...made.warnings);
             } else if (fmt === 'gih') {
               const made = BC.convert.makeGih(list, commonOpts(rec));
               outFiles.push({ name: uniqueFile(base, '.gih'), data: made.bytes });
@@ -1714,7 +1715,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.8.3';
+  const APP_VERSION = '2.8.4';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
