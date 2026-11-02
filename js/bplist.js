@@ -9,8 +9,10 @@
   function encodeInt(n) {
     const sizes = [1, 2, 4];
     for (const size of sizes) {
-      const min = -Math.pow(2, size * 8 - 1), max = Math.pow(2, size * 8 - 1) - 1;
-      if (n >= min && n <= max) {
+      const max = Math.pow(2, size * 8 - 1) - 1;
+      // Binary plist integers shorter than 8 bytes are unsigned. Negative
+      // integers must use the signed 64-bit representation.
+      if (n >= 0 && n <= max) {
         const out = new Uint8Array(1 + size);
         out[0] = 0x10 | (Math.log2(size) | 0);
         const dv = new DataView(out.buffer);
@@ -22,7 +24,9 @@
     }
     const out = new Uint8Array(9);
     out[0] = 0x13;
-    new DataView(out.buffer).setFloat64(1, n, false);
+    const dv = new DataView(out.buffer);
+    dv.setInt32(1, Math.floor(n / 0x100000000), false);
+    dv.setUint32(5, n >>> 0, false);
     return out;
   }
 
@@ -127,55 +131,77 @@
    * className / classChain: archived class identity (e.g. "SilicaBrush")
    */
   function writeKeyedArchive(rootDict, className, classChain) {
-    // 值可以是标量、字符串、Uint8Array（NSData）、{__data:[...]}（JSON 里的 data）、
-    // 数组和普通对象（归档成 NSArray / NSDictionary）。Procreate 的曲线与颜色就是嵌套结构。
+    // NSKeyedArchiver separates primitive encodeFloat/Bool/Integer fields
+    // (inline values) from encodeObject fields (UIDs). Class descriptors are
+    // ordinary plist dictionaries, not archived application objects.
     const objects = [];
     const archived = [];
+    const classes = new Map();
+    function add(obj) { objects.push(obj); return objects.length - 1; }
     function pushArchived(obj) {
-      objects.push(obj);
-      const i = objects.length - 1;
+      const i = add(obj);
       archived.push(i);
       return i;
     }
     function refSlot(targetIdx) {
       const ordinal = archived.indexOf(targetIdx);
       if (ordinal < 0) throw new Error('archive 引用目标未归档');
-      objects.push(new Uid(ordinal));
-      return objects.length - 1;
+      return add(new Uid(ordinal));
     }
     function dataBytes(v) {
       if (v instanceof Uint8Array) return v;
       if (Array.isArray(v)) return new Uint8Array(v);
       throw new Error('__data 需要字节数组');
     }
-    function allocValue(v) {
+    function classRef(name, chain) {
+      if (!classes.has(name)) {
+        const fields = [
+          [add('$classname'), add(name)],
+          [add('$classes'), add({__array: chain.map(add)})]
+        ];
+        classes.set(name, pushArchived({__dict: fields}));
+      }
+      return refSlot(classes.get(name));
+    }
+    function allocValue(v, key) {
       if (v && typeof v === 'object' && v.__data !== undefined) return pushArchived(dataBytes(v.__data));
       if (v instanceof Uint8Array) return pushArchived(v);
       if (v instanceof Uid) return pushArchived(v);
-      if (v === null || v === undefined) return pushArchived('$null');
+      if (v === null || v === undefined || v === '$null') return archived[0];
       if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'string') return pushArchived(v);
-      if (Array.isArray(v)) {
-        const refs = v.map(function (item) { return refSlot(allocValue(item)); });
-        return pushArchived({ __array: refs });
-      }
-      if (typeof v === 'object') {
+      if (Array.isArray(v) || typeof v === 'object') {
         const entries = [];
-        for (const k of Object.keys(v)) {
-          const keyIdx = pushArchived(k);
-          entries.push([keyIdx, refSlot(allocValue(v[k]))]);
+        let name, chain;
+        if (Array.isArray(v) || Object.prototype.hasOwnProperty.call(v, 'NS.objects')) {
+          name = key === 'points' ? 'NSMutableArray' : 'NSArray';
+          chain = name === 'NSMutableArray' ? [name, 'NSArray', 'NSObject'] : [name, 'NSObject'];
+          const values = Array.isArray(v) ? v : v['NS.objects'];
+          entries.push([add('NS.objects'), add({__array: values.map(x => refSlot(allocValue(x)))})]);
+        } else {
+          if (key === '$root') { name = className; chain = classChain; }
+          else if (Object.prototype.hasOwnProperty.call(v, 'NS.time')) name = 'NSDate';
+          else if (Object.prototype.hasOwnProperty.call(v, 'points')) name = 'ValkyrieMagnitudinalCurve';
+          else if (key && key.endsWith('RollParameters')) name = 'ValkyrieBrushRollParameters';
+          else name = 'NSDictionary';
+          chain = chain || [name, 'NSObject'];
+          if (name === 'NSDictionary') {
+            const keys = Object.keys(v).filter(k => k !== '__class');
+            entries.push([add('NS.keys'), add({__array: keys.map(k => refSlot(allocValue(k)))})]);
+            entries.push([add('NS.objects'), add({__array: keys.map(k => refSlot(allocValue(v[k], k)))})]);
+          } else for (const k of Object.keys(v)) {
+            if (k === '__class') continue;
+            const value = v[k];
+            const primitive = typeof value === 'number' || typeof value === 'boolean';
+            entries.push([add(k), primitive ? add(value) : refSlot(allocValue(value, k))]);
+          }
         }
+        entries.push([add('$class'), classRef(name, chain)]);
         return pushArchived({ __dict: entries });
       }
       throw new Error('bplist 不支持的值类型: ' + typeof v);
     }
     pushArchived('$null'); // index 0：NSKeyedArchiver 的 nil 占位
-    const classIdx = allocValue({ $classname: className, $classes: classChain });
-    const entries = [];
-    for (const k of Object.keys(rootDict)) {
-      entries.push([pushArchived(k), refSlot(allocValue(rootDict[k]))]);
-    }
-    entries.push([pushArchived('$class'), refSlot(classIdx)]);
-    const rootIdx = pushArchived({ __dict: entries });
+    const rootIdx = allocValue(rootDict, '$root');
     // 顶层 NSKeyedArchiver 结构（这些是普通 plist 对象，不是归档对象）
     const rootKey = objects.push('root') - 1;
     const uidRoot = objects.push(new Uid(archived.indexOf(rootIdx))) - 1;

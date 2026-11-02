@@ -13,9 +13,10 @@
     return v;
   }
   function readSint(b, o, n) {
-    let v = 0;
+    // Short binary-plist integers are unsigned; only the 8-byte form is
+    // signed. Accumulate the sign first so -1 does not round to 2^64 and 0.
+    let v = n === 8 && (b[o] & 0x80) ? -1 : 0;
     for (let i = 0; i < n; i++) v = v * 256 + b[o + i];
-    if (b[o] & 0x80) v -= Math.pow(256, n);
     return v;
   }
 
