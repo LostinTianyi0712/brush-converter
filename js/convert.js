@@ -1008,10 +1008,13 @@
       seen[key] = 1;
       list.push({ key: key, t: t, name: (b.textureName || 'brushconv-texture'), brushName: b.name });
     }
+    // 文件名按用户要求回到「笔刷组名-纹理」：一张真实纹理一个 .pat，同组第二张起加 #2
+    const groupFileBase = sanitizeName(String(opts.groupName || '').trim() || '纹理图案', 0) + '-纹理';
+    const patFiles = [];
     if (!list.length) {
       const made = patMod.buildGrainPat({ size: opts.size || 256, seed: opts.seed || 11 });
       return { bytes: made.bytes, count: 1, refs: new Map(), ref: { id: made.id, name: made.name }, width: made.width, height: made.height,
-        files: [{ name: '纹理图案', bytes: made.bytes }] };
+        files: [{ name: groupFileBase, bytes: made.bytes }] };
     }
     const records = [];
     const refs = new Map();
@@ -1024,6 +1027,9 @@
       const p = patMod.buildPattern(nm, item.t.w, item.t.h, [item.t.gray, item.t.gray, item.t.gray], undefined, true);
       records.push(p);
       refs.set(item.key, { id: p.id, name: p.name, inversionBaked: true });
+      // 单图案 PAT：ID 与合集里同一张纹理完全一致，ABR 引用不受拆分影响
+      patFiles.push({ name: patFiles.length ? groupFileBase + ' #' + (patFiles.length + 1) : groupFileBase,
+        bytes: patMod.buildPat([p]) });
     }
     const bytes = patMod.buildPat(records);
     // 自检：用内置 .pat 读取器回读，确认图案数量/尺寸与预期一致（不需要真实 PS）
@@ -1049,7 +1055,7 @@
         selfCheck.names = back.map(function (x) { return x.name; });
       }
     } catch (e) { selfCheck.ok = false; selfCheck.error = e.message; }
-    return { bytes: bytes, count: records.length, refs: refs, ref: records[0] ? { id: records[0].id, name: records[0].name, inversionBaked: true } : null, width: list[0].t.w, height: list[0].t.h, selfCheck: selfCheck, files: [{name:'PS纹理图案合集', bytes:bytes}] };
+    return { bytes: bytes, count: records.length, refs: refs, ref: records[0] ? { id: records[0].id, name: records[0].name, inversionBaked: true } : null, width: list[0].t.w, height: list[0].t.h, selfCheck: selfCheck, files: patFiles };
   }
 
   // Batch outputs share one PAT. Preserve pixels, names and IDs, since

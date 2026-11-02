@@ -910,29 +910,45 @@
         BC.convert.tipSourceHint(BC.convert.tipSourceAudit(auditList)).forEach(function (m) { warnings.push(m); });
       }
     } catch (e) { /* 提示失败不影响转换 */ }
-    // ABR 目标：真实纹理统一合并为一个 PAT，与笔刷同包/同目录，不散出 PNG。
-    // 烘焙模式仅附纹理备用；图案模式才把同一 PAT 的引用传给 ABR。
+    // ABR 目标：真实纹理按「来源笔刷组」各出一批 PAT，命名「组名-纹理.pat」（同组多张加 #2），
+    // 与笔刷同包/同目录，不散出 PNG。烘焙模式仅附纹理备用；图案模式才把 PAT 的引用传给 ABR。
     let commonPatRefs = null;
     if (opts.target === 'abr' || opts.target === 'all') {
       try {
-        const texBrushes = [];
+        const groups = new Map(); // 组名 -> 本组里还没出过 PAT 的纹理笔刷
+        const seenTexture = new Set();
         let missingTextures = 0;
         for (const rec of records) {
+          const base = rec.baseName || String(rec.name || '').replace(/\.[^.]+$/, '') || '笔刷组';
+          const gname = BC.convert.sanitizeName((opts.prefix || '') + base, 0);
           for (const b of (rec.brushes || [])) {
             if (!b || b.enabled === false || !b.hasTexture) continue;
-            if (BC.convert.textureGray(b)) texBrushes.push(b);
-            else missingTextures++;
+            const t = BC.convert.textureGray(b);
+            if (!t) { missingTextures++; continue; }
+            // 同一张纹理只出一个 PAT：按内容去重，归属它第一次出现的组
+            const key = t.w + 'x' + t.h + ':' + BC.util.md5(t.gray);
+            if (seenTexture.has(key)) continue;
+            seenTexture.add(key);
+            if (!groups.has(gname)) groups.set(gname, []);
+            groups.get(gname).push(b);
           }
         }
-        if (texBrushes.length) {
-          const pat = BC.convert.makePatternFile(texBrushes, { size: 256 });
-          if (opts.textureMode === 'pattern') commonPatRefs = pat.refs;
-          outFiles.push({ name: 'PS纹理图案合集.pat', data: pat.bytes });
-          warnings.push('已将 ' + pat.count + ' 张真实纹理合并为一个 PAT，与笔刷放在同一导出包或保存目录中；' +
-            (opts.textureMode === 'pattern' ? '已按图案 ID 自动关联；先在 PS 图案面板导入此 PAT，再导入笔刷，无需逐支选择纹理' : '笔刷仍按烘焙模式输出，PAT 可按需导入 PS 图案面板备用'));
+        let patCount = 0, patFileCount = 0;
+        for (const [gname, list] of groups) {
+          const pat = BC.convert.makePatternFile(list, { size: 256, groupName: gname });
+          if (opts.textureMode === 'pattern') {
+            if (!commonPatRefs) commonPatRefs = new Map();
+            pat.refs.forEach(function (v, k) { commonPatRefs.set(k, v); });
+          }
+          for (const f of (pat.files || [])) { outFiles.push({ name: f.name + '.pat', data: f.bytes }); patFileCount++; }
+          patCount += pat.count;
         }
-        if (missingTextures) warnings.push(missingTextures + ' 支笔刷缺少原纹理图片，未收入本次 PAT 合集');
-      } catch (e) { warnings.push('纹理合集生成失败：' + e.message); }
+        if (patFileCount) {
+          warnings.push('已将 ' + patCount + ' 张真实纹理导出为 ' + patFileCount + ' 个 PAT（按「笔刷组名-纹理」命名），与笔刷放在同一导出包或保存目录中；' +
+            (opts.textureMode === 'pattern' ? '已按图案 ID 自动关联；先在 PS 图案面板导入这些 PAT，再导入笔刷，无需逐支选择纹理' : '笔刷仍按烘焙模式输出，PAT 可按需导入 PS 图案面板备用'));
+        }
+        if (missingTextures) warnings.push(missingTextures + ' 支笔刷缺少原纹理图片，未收入本次 PAT');
+      } catch (e) { warnings.push('纹理 PAT 生成失败：' + e.message); }
     }
     // 原样保留的 ABR 仍引用原图案；附备用 PAT 不会静默替换源引用。
     if ((opts.target === 'abr' || opts.target === 'all') && opts.textureMode !== 'pattern') {
@@ -1398,12 +1414,18 @@
     }
     const all = [];
     sink.forEach(function (r) { r.payload.forEach(function (f) { all.push(f); }); });
-    const pats = all.filter(f => /\.pat$/i.test(f.name));
-    if (pats.length > 1) {
-      const merged = BC.convert.mergePatternFiles(pats.map(f => f.data));
-      for (let i=all.length-1;i>=0;i--) if (/\.pat$/i.test(all[i].name)) all.splice(i,1);
-      all.unshift({name:'PS纹理图案合集.pat',data:merged.bytes});
+    // 分批时每个组各有一批「组名-纹理.pat」：先按内容去掉完全重复的，其它保留（ABR 里的图案 ID 不会失效）
+    const patKeys = new Set();
+    for (let i = all.length - 1; i >= 0; i--) {
+      if (!/\.pat$/i.test(all[i].name)) continue;
+      const key = BC.util.md5(all[i].data);
+      if (patKeys.has(key)) { all.splice(i, 1); continue; }
+      patKeys.add(key);
     }
+    all.sort(function (a, b) {
+      const ap = /\.pat$/i.test(a.name) ? 0 : 1, bp = /\.pat$/i.test(b.name) ? 0 : 1;
+      return ap - bp;
+    });
     // 同名 ZIP 加序号
     const seen = new Map();
     all.forEach(function (f) {
@@ -1679,7 +1701,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.8.0';
+  const APP_VERSION = '2.8.1';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
