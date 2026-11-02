@@ -181,7 +181,7 @@
           if (key === '$root') { name = className; chain = classChain; }
           else if (Object.prototype.hasOwnProperty.call(v, 'NS.time')) name = 'NSDate';
           else if (Object.prototype.hasOwnProperty.call(v, 'points')) name = 'ValkyrieMagnitudinalCurve';
-          else if (key && key.endsWith('RollParameters')) name = 'ValkyrieBrushRollParameters';
+          else if (key && /Roll.*Parameters$/.test(key)) name = 'ValkyrieBrushRollParameters';
           else name = 'NSDictionary';
           chain = chain || [name, 'NSObject'];
           if (name === 'NSDictionary') {
