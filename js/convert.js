@@ -113,7 +113,7 @@
       try { zentries = zip.read(bytes); } catch (e) { /* ignore */ }
       if (zentries) {
         if (zentries.some(e => /^brush2\.ini$/i.test(e.name.replace(/^.*\//, '')))) return 'mbini_set';
-        if (zentries.some(e => /(^|\/)(brushform|brushtex|papertex|scatter|bristle)\.conf$/i.test(e.name))) return 'sai2pack';
+        if (sai2read.isSai2Pack(bytes,zentries)) return 'sai2pack';
         if (zentries.some(e => /^paintoppresets\/[^/]+\.kpp$/i.test(e.name))) return 'kbundle';
         if (lower.endsWith('.mtd')) return 'mtd'; // 优动漫绘画助手素材包（zip 壳），须先于 Painter 库判定
         if (painterlib && safe(function () { return painterlib.isLibraryZip(bytes); })) return 'painter';
@@ -1735,7 +1735,7 @@
     if (brush._rawKind === 'gbr' && brush._rawFile && rawBrushUnchanged(brush, opts)) {
       return { bytes: new Uint8Array(brush._rawFile), count: 1, passthrough: true };
     }
-    const b2 = withTipRGBA(withSizeAndSpacing(brush, opts), opts, { bake: true, fit: true });
+    const b2 = withTipRGBA(withSizeAndSpacing(brush, opts), opts, { transform: true, fit: true });
     const w = b2.tip.w, h = b2.tip.h;
     const gray = new Uint8Array(w * h);
     for (let k = 0; k < w * h; k++) gray[k] = b2.tip.rgba[k * 4 + 3];
@@ -1774,7 +1774,7 @@
         brushList.every(function (b, i) { return b._rawKind === 'gih' && b._rawGroup === rawGroup && b._rawGroupIndex === i && rawBrushUnchanged(b, opts); })) {
       return { bytes: new Uint8Array(rawGroup.bytes), count: brushList.length, passthrough: true };
     }
-    const list = brushList.map(function (b) { return withTipRGBA(withSizeAndSpacing(b, opts), opts, {fit:true}); });
+    const list = brushList.map(function (b) { return withTipRGBA(withSizeAndSpacing(b, opts), opts, {transform:true,fit:true}); });
     const name = (opts.name && String(opts.name).trim()) || (rawGroup && rawGroup.name) ||
       (list.length ? String(list[0].name || '').trim() : '') || 'brushconv';
     return { bytes: gimp.writeGih(list, name), count: list.length };
@@ -1818,6 +1818,8 @@
     if (flags.dual !== false && opts.dualBake !== false && brush.dualOn && brush.dualTip && (brush.dualTip.rgba || brush.dualTip.data)) {
       tip = bakeDualTip(tip, brush);
     }
+    // Bitmap-only GIMP cells have no static angle/roundness/flip fields.
+    if (flags.transform) tip = bakeTipTransform(tip, brush);
     let w = tip.w, h = tip.h, rgba = tip.rgba;
     if (flags.bake) {
       const round = Math.max(5, Math.min(100, brush.roundness === undefined ? 100 : brush.roundness)) / 100;
@@ -1847,7 +1849,7 @@
 
   /** One brush -> Infinite Painter .prbr */
   function makePrbr(brush, opts) {
-    const b2 = withTipRGBA(brush, opts, { bake: true, fit: true });
+    const b2 = withTipRGBA(withExportSettings(brush, opts), opts, { bake: true, fit: true });
     return { bytes: infpainter.writePrbr(b2), count: 1 };
   }
 
@@ -1856,7 +1858,7 @@
     const list = Array.isArray(brushList) ? brushList : [brushList];
     const chunks = [];
     for (const b of list) {
-      const b2 = withTipRGBA(b, opts, { bake: true, fit: true });
+      const b2 = withTipRGBA(withExportSettings(b, opts), opts, { bake: true, fit: true });
       chunks.push({ name: (sanitizeName(b2.name || 'material', 0)) + '.mdp', data: medibang.writeMdp(b2) });
     }
     if (chunks.length === 1) return { bytes: chunks[0].data, count: 1 };

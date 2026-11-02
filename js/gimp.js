@@ -151,7 +151,7 @@
     const w = tip.w, h = tip.h;
     if (tip.data.length !== w * h) throw new Error('笔尖数据尺寸不符');
     const name = cstr(Array.from(brush.name || 'brush').slice(0, 120).join(''));
-    const spacing = Math.max(1, Math.min(1000, Math.round(brush.spacingPct || 10)));
+    const spacing = Math.max(1, Math.min(1000, Math.round(brush.spacingPct === undefined ? 10 : brush.spacingPct)));
     const headerSize = BASE + name.length;
     const head = util.concat([
       be32(headerSize),
@@ -210,7 +210,7 @@
     let w = 1, h = 1;
     for (const t of tips) { w = Math.max(w, t.w); h = Math.max(h, t.h); }
     const n = brushes.length;
-    const spacing = Math.max(1, Math.min(1000, Math.round(brushes[0].spacingPct || 10)));
+    const spacing = Math.max(1, Math.min(1000, Math.round(brushes[0].spacingPct === undefined ? 10 : brushes[0].spacingPct)));
     const LF = new Uint8Array([0x0a]);
     const line1 = util.utf8Encode(String(pipeName || 'brushconv'));
     const line2 = util.utf8Encode(
@@ -220,7 +220,7 @@
     const parts = [line1, LF, line2, LF];
     for (let i = 0; i < n; i++) {
       const data = padGray(tips[i], w, h);
-      const cellSpacing = Math.max(1, Math.min(1000, Math.round(brushes[i].spacingPct || 10)));
+      const cellSpacing = Math.max(1, Math.min(1000, Math.round(brushes[i].spacingPct === undefined ? 10 : brushes[i].spacingPct)));
       parts.push(buildGbrGray(brushes[i].name, w, h, cellSpacing, data));
     }
     return util.concat(parts);

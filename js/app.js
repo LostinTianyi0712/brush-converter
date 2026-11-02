@@ -1422,6 +1422,19 @@
       if (patKeys.has(key)) { all.splice(i, 1); continue; }
       patKeys.add(key);
     }
+    // Different batches of the same source group have fresh pattern IDs, so
+    // byte dedup alone cannot produce the one-PAT-per-group output contract.
+    const groupPats = new Map(), mergedAway = new Set();
+    for (const f of all) if (/\.pat$/i.test(f.name)) {
+      const key = f.name.toLowerCase();
+      if (!groupPats.has(key)) groupPats.set(key, []);
+      groupPats.get(key).push(f);
+    }
+    for (const files of groupPats.values()) if (files.length > 1) {
+      files[0].data = BC.convert.mergePatternFiles(files.map(f => f.data)).bytes;
+      files.slice(1).forEach(f => mergedAway.add(f));
+    }
+    for (let i=all.length-1;i>=0;i--) if (mergedAway.has(all[i])) all.splice(i,1);
     all.sort(function (a, b) {
       const ap = /\.pat$/i.test(a.name) ? 0 : 1, bp = /\.pat$/i.test(b.name) ? 0 : 1;
       return ap - bp;
@@ -1701,7 +1714,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.8.2';
+  const APP_VERSION = '2.8.3';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;

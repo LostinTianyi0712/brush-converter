@@ -80,11 +80,14 @@
     return null;
   }
 
-  function isSai2Pack(bytes) {
+  function isSai2Pack(bytes, knownEntries) {
     if (!zip.isZip(bytes)) return false;
     let entries;
-    try { entries = zip.read(bytes); } catch (e) { return false; }
-    return entries.some(function (e) { return /(^|\/)(brushform|brushtex|papertex|scatter|bristle|blotmap)\.conf$/i.test(e.name); });
+    try { entries = knownEntries || zip.read(bytes); } catch (e) { return false; }
+    if(entries.some(e => /(^|\/)(brushform|brushtex|papertex|scatter|bristle|blotmap)\.conf$/i.test(e.name)))return true;
+    const names=new Set(entries.filter(e=>!e.dir).map(e=>e.name.replace(/\\/g,'/').toLowerCase()));
+    return entries.some(e=>!e.dir&&/\.ini$/i.test(e.name)&&
+      ['.bmp','.png'].some(ext=>names.has(e.name.replace(/\\/g,'/').replace(/\.ini$/i,ext).toLowerCase()))&&isBrushIni(e.data()));
   }
 
   function isBrushIni(bytes) {
@@ -109,23 +112,24 @@
 
   function parseBrushIni(bytes, fileName) {
     const p = parseIniParams(util.utf8Decode(bytes));
-    const density = p.Density === undefined ? 100 : Math.max(1, Math.min(100, p.Density));
+    const density = p.Opacity === undefined ? (p.Density === undefined ? 100 : p.Density) : p.Opacity;
     const angle = p.Angle === undefined ? 0 : p.Angle;
     const base = String(fileName || 'sai2-brush').replace(/\.ini$/i, '').replace(/^.*[\\/]/, '');
     return {
       brushes: [{
         name: base.replace(/__/g, ' '),
         tip: null,
-        sizePx: 40,
-        spacingPct: 10,
-        opacity: density / 100,
+        sizePx: p.ShapeSize === undefined ? 40 : Math.max(1, Math.min(5000, p.ShapeSize)),
+        spacingPct: p.Spacing === undefined ? 10 : Math.max(0, Math.min(1000, p.Spacing)),
+        opacity: Math.max(0, Math.min(1, density / 100)),
         minSizeRatio: 0,
         minOpacityRatio: 0,
         pressureSize: true,
         pressureOpacity: false,
         hardness: p.EdgeHardness === undefined ? 1 : Math.max(0, Math.min(1, p.EdgeHardness / 100)),
         angle: angle,
-        roundness: 100,
+        roundness: typeof p.WxHRatio==='string' && /^\d+(\.\d+)?:\d+(\.\d+)?$/.test(p.WxHRatio) && Number(p.WxHRatio.split(':')[1])>0
+          ? Math.max(0,Math.min(100,100*Number(p.WxHRatio.split(':')[0])/Number(p.WxHRatio.split(':')[1]))) : 100,
         source: 'sai2',
         _sai2ini: p
       }],
@@ -183,7 +187,7 @@
         minOpacityRatio: Number(r.dpmin) ? Math.max(0, Math.min(1, Number(r.dpmin) / 100)) : 0,
         pressureSize: r.f_prs2sz === '1',
         pressureOpacity: r.f_prs2dp === '1',
-        hardness: Number(r.edgehdns) ? Math.max(0, Math.min(1, Number(r.edgehdns) / 100)) : 1,
+        hardness: r.edgehdns !== undefined && isFinite(Number(r.edgehdns)) ? Math.max(0, Math.min(1, Number(r.edgehdns) / 100)) : 1,
         angle: 0,
         roundness: 100,
         smudgeOn: Number(r.blend) > 0,
@@ -207,10 +211,36 @@
       const data = e.data();
       files[e.name] = data;
       files[e.name.replace(/^.*\//, '')] = data;
-      const m = e.name.match(/(^|\/)(brushform|brushtex|papertex|scatter|bristle)\.conf$/i);
+      const m = e.name.match(/(^|\/)(brushform|brushtex|papertex|scatter|bristle|blotmap)\.conf$/i);
       if (m) confs[m[2].toLowerCase()] = data;
     }
     const brushes = [];
+    // Scatter export ZIPs contain a paired INI/image, not a conf library.
+    // Keep the image and toolnrm settings together instead of expanding them
+    // into unrelated placeholders and discarding the bitmap as an unknown file.
+    if(!Object.keys(confs).length){
+      const paths=new Map(entries.filter(e=>!e.dir).map(e=>[e.name.replace(/\\/g,'/').toLowerCase(),e]));
+      const toolEntry=entries.find(e=>/(^|\/)toolnrm$/i.test(e.name));
+      const tools=toolEntry?parseToolnrm(toolEntry.data()).brushes:[];
+      const toolNames=new Map(),usedNames=new Set();
+      for(const tool of tools){
+        const base=String(tool.name||'brush').replace(/[\\/:*?"<>|]/g,'_').slice(0,60)||'brush';
+        let name=base,k=2;while(usedNames.has(name.toLowerCase()))name=base+'_'+k++;
+        usedNames.add(name.toLowerCase());toolNames.set(name.toLowerCase(),tool);
+      }
+      for(const entry of entries){
+        if(entry.dir||!/\.ini$/i.test(entry.name)||!isBrushIni(entry.data()))continue;
+        const key=entry.name.replace(/\\/g,'/').replace(/\.ini$/i,'').toLowerCase();
+        const imageEntry=paths.get(key+'.bmp')||paths.get(key+'.png');if(!imageEntry)continue;
+        const img=decodeImage(imageEntry.data());if(!img)continue;
+        const b=parseBrushIni(entry.data(),entry.name).brushes[0],meta=toolNames.get(key.replace(/^.*\//,''));
+        if(meta){
+          for(const field of ['name','sizePx','opacity','minSizeRatio','minOpacityRatio','pressureSize','pressureOpacity','hardness','smudgeOn','smudgeAmount','wetEdgesOn','wetEdgesAmount','smoothingStrength'])
+            if(meta[field]!==undefined)b[field]=meta[field];
+        }
+        b.tip=img;brushes.push(b);
+      }
+    }
     for (const cat of Object.keys(confs)) {
       const text = util.utf8Decode(confs[cat]);
       for (const line of text.split(/\r?\n/)) {
