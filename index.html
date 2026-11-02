@@ -45,7 +45,7 @@
       <div class="dz-inner">
         <div class="dz-icon">＋</div>
         <p class="dz-title">拖入笔刷文件，或点击选择</p>
-        <p class="dz-sub">整包笔刷默认打成 <b>1 个文件</b>，整套保留<br>参数化 ABR 没有采样笔尖时自动补画笔尖；Procreate 缺 Shape 图同理</p>
+        <p class="dz-sub">整套笔刷保留；少于 <b>4 个输出文件</b>直接保存<br>支持 Photoshop ABR / 工具预设 TPL、Procreate 和画世界Pro</p>
         <!-- Do not restrict accept: iOS document pickers can gray out custom brush types. The parser validates selected files. -->
         <input id="fileInput" type="file" multiple hidden>
       </div>
@@ -60,6 +60,7 @@
         <select id="optTarget">
           <option value="bru" selected>画世界Pro .bru</option>
           <option value="abr">Photoshop .abr</option>
+          <option value="tpl">Photoshop 工具预设 .tpl</option>
           <option value="udongman">优动漫 CSP .abr（兼容）</option>
           <option value="udongman_sut">优动漫 CSP 原生 .sut（实验·笔尖为模板占位）</option>
           <option value="udongman_mtd">优动漫 .mtd 绘画助手包（实验·内含 .sut）</option>
@@ -124,7 +125,7 @@
           <div class="opt">
             <label>输出形式</label>
             <select id="optPack">
-              <option value="zip" selected>输出笔刷文件（多文件时自动打包 ZIP）</option>
+              <option value="zip" selected>自动打包（少于4个文件直接保存）</option>
               <option value="files">直接输出文件（选目录）</option>
             </select>
           </div>
@@ -298,7 +299,7 @@
 </main>
 
 <footer class="footer">
-  <span>输出：.bru（画世界Pro）/ .abr（Photoshop）/ .brush/.brushset（Procreate）/ .gobrush/.gobrushes（天生会画）/ .bundle（Krita）/ .gbr/.gih（GIMP）/ .myb（MyPaint）/ .brushcategory（Painter）/ PNG 笔尖包；输入支持同格式 + ZIP。</span>
+  <span>输出：.bru（画世界Pro）/ .abr/.tpl（Photoshop）/ .brush/.brushset（Procreate）/ .gobrush/.gobrushes（天生会画）/ .bundle（Krita）/ .gbr/.gih（GIMP）/ .myb（MyPaint）/ .brushcategory（Painter）/ PNG 笔尖包；输入支持同格式 + ZIP。</span>
   <div class="footer-tools">
     <button id="btnLog" class="btn ghost" title="导出本次运行日志">导出日志</button>
     <span id="ver"></span>
@@ -351,6 +352,8 @@
 <script defer src="./js/pat.js"></script>
 <script defer src="./js/patRead.js"></script>
 <script defer src="./js/abr.js"></script>
+<script defer src="./js/tplTemplate.js"></script>
+<script defer src="./js/tpl.js"></script>
 <script defer src="./js/procreate.js"></script>
 <script defer src="./js/bru.js"></script>
 <script defer src="./js/convert.js"></script>

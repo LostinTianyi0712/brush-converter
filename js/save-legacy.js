@@ -118,7 +118,7 @@
     if (!(navigator.canShare && navigator.share) || typeof File !== 'function' || !files || !files.length) return null;
     var raw = files.map(function (f) { return prepareDownload(f).blob; });
     if (navigator.canShare({ files: raw })) return { files: raw, zipped: false };
-    if (files.length === 1 && /\.zip$/i.test(files[0].name)) return null;
+    if (files.length < 4) return null;
     if (!window.BC || !window.BC.zip || !window.BC.zip.write) return null;
     var zipped = new File([window.BC.zip.write(files)], '笔刷转换结果.zip', { type: 'application/zip' });
     return navigator.canShare({ files: [zipped] }) ? { files: [zipped], zipped: true } : null;
@@ -292,11 +292,11 @@
       }
       var hostile = downloadHostileName();
       if (hostile) {
-        return '已请求下载。没反应？点下面「下载ZIP」';
+        return '已请求下载。没反应？请在下方结果文件里逐个下载';
       }
       if (isWebKitIOS()) {
         return '已发起 ' + files.length + ' 个下载；苹果请到「文件」App →「下载」查看' +
-          (files.length > 1 ? '（Safari 一次只放行一个下载，建议用「整包一个文件」）' : '') +
+          (files.length > 1 ? '（如浏览器只放行一个，请在下方结果列表逐个下载）' : '') +
           '；若没有反应，请点右上「分享保存」存到「文件」';
       }
       return '已发起 ' + files.length + ' 个下载；手机浏览器若没反应，请点下方「结果文件」里的下载链接重试';

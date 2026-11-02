@@ -1599,7 +1599,7 @@
     return new Uint8Array(rec);
   }
 
-  const api = { isAbr, parse, parseAsync, writeAbr, writeAbrV6, buildPatternFile, splitPatternBlock, maskFromRGBA };
+  const api = { isAbr, parse, parseAsync, parseSampBlock, rleEncode, writeAbr, writeAbrV6, buildPatternFile, splitPatternBlock, maskFromRGBA };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { abr: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

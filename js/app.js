@@ -532,7 +532,7 @@
 
   /* ---------------- loading ---------------- */
   function kindLabel(kind) {
-    return { abr: 'Photoshop ABR', procreate: 'Procreate', bru: '画世界Pro BRU', zip: '压缩包' }[kind] || '未知';
+    return { abr: 'Photoshop ABR', tpl:'Photoshop TPL', procreate: 'Procreate', bru: '画世界Pro BRU', zip: '压缩包' }[kind] || '未知';
   }
 
   function makeRecord(name, bytes) {
@@ -757,7 +757,7 @@
         await sleep(0);
         if (!kind) {
           rec.parsing = false;
-          rec.error = '无法识别的文件格式（支持 .abr/.bru/.brush/.brushset/.sut/.mtd/.gobrush/.gbr/.gih/.myb/.kpp/.bundle/.brushcategory、toolnrm 等，或包含笔刷的 ZIP）';
+          rec.error = '无法识别的文件格式（支持 .abr/.tpl/.bru/.brush/.brushset/.sut/.mtd/.gobrush/.gbr/.gih/.myb/.kpp/.bundle/.brushcategory、toolnrm 等，或包含笔刷的 ZIP）';
           render();
           continue;
         }
@@ -842,6 +842,7 @@
     switch (target) {
       case 'bru': return '画世界笔刷';
       case 'abr': return 'Photoshop笔刷';
+      case 'tpl': return 'Photoshop工具预设';
       case 'udongman': return '优动漫笔刷';
       case 'gopaint_abr': return '天生会画ABR';
       case 'brushset': case 'brush': return 'Procreate笔刷';
@@ -926,12 +927,9 @@
         if (texBrushes.length) {
           const pat = BC.convert.makePatternFile(texBrushes, { size: 256 });
           if (opts.textureMode === 'pattern') commonPatRefs = pat.refs;
-          // 每张纹理一个 .pat，按「笔刷名-纹理.pat」命名（buildPat 按内容去重后同纹理只出一档）
-          for (const f of (pat.files || [{ name: 'PS纹理图案合集', bytes: pat.bytes }])) {
-            outFiles.push({ name: f.name + '.pat', data: f.bytes });
-          }
-          warnings.push('已将 ' + pat.count + ' 张真实纹理导出为 ' + (pat.files ? pat.files.length : 1) + ' 个 PAT（按「笔刷名-纹理」命名），与 ABR 放在同一导出包或保存目录中；' +
-            (opts.textureMode === 'pattern' ? '已按图案 ID 自动关联；在 PS 图案面板导入这些 PAT，再导入 ABR，无需逐支选择纹理' : '笔刷仍按烘焙模式输出，PAT 可按需导入 PS 图案面板备用'));
+          outFiles.push({ name: 'PS纹理图案合集.pat', data: pat.bytes });
+          warnings.push('已将 ' + pat.count + ' 张真实纹理合并为一个 PAT，与笔刷放在同一导出包或保存目录中；' +
+            (opts.textureMode === 'pattern' ? '已按图案 ID 自动关联；先在 PS 图案面板导入此 PAT，再导入笔刷，无需逐支选择纹理' : '笔刷仍按烘焙模式输出，PAT 可按需导入 PS 图案面板备用'));
         }
         if (missingTextures) warnings.push(missingTextures + ' 支笔刷缺少原纹理图片，未收入本次 PAT 合集');
       } catch (e) { warnings.push('纹理合集生成失败：' + e.message); }
@@ -956,7 +954,7 @@
         outFiles.push({ name: '参数对比.html', data: new TextEncoder().encode(cmpHtml) });
       }
     } catch (e) { /* 对比页失败不影响转换 */ }
-    const ALL_FORMATS = ['bru', 'abr', 'udongman', 'gopaint', 'gopaint_set', 'gopaint_abr', 'brushset', 'brush', 'gbr', 'gih',
+    const ALL_FORMATS = ['bru', 'abr', 'tpl', 'udongman', 'gopaint', 'gopaint_set', 'gopaint_abr', 'brushset', 'brush', 'gbr', 'gih',
       'myb', 'kbundle', 'sai2', 'png', 'painter', 'medibang', 'mbini'];
     const usedFileNames = new Set();
     let doneCount = 0;
@@ -984,7 +982,7 @@
         noTextureBake: opts.grainBake === false,
         patternRefs: commonPatRefs,
         fidelity: opts.fidelity === false ? false : undefined,
-        textureMode: (opts.target === 'abr' || opts.target === 'all') && opts.textureMode === 'pattern' ? 'pattern' : undefined,
+        textureMode: (opts.target === 'abr' || opts.target === 'all' || opts.target === 'tpl') ? opts.textureMode : undefined,
         bruTexAsset: opts.bruTexAsset && opts.bruTexAsset !== 'off' ? opts.bruTexAsset : undefined,
         bruDensity: opts.bruDensity === 'off' ? 'off' : undefined
       };
@@ -1115,6 +1113,10 @@
               outFiles.push({ name: uniqueFile(base, '.mtd'), data: made.bytes });
               outFiles.push({ name: uniqueFile(base + '_优动漫MTD导入说明', '.txt'), data: BC.util.utf8Encode(made.importGuide) });
               warnings.push(...made.warnings);
+            } else if (fmt === 'tpl') {
+              const made=BC.convert.makeTplPack(list,commonOpts(rec));
+              outFiles.push({name:uniqueFile(base,'.tpl'),data:made.bytes});
+              warnings.push(...made.warnings);
             } else if (fmt === 'abr') {
               // 源就是 .abr 且整包导出时：原样透传，100% 保留文件夹分组 / 动态 / 计算画笔
               const isAbrSource = /^abr$/i.test(rec.kind || '') || /\.abr$/i.test(rec.name || '');
@@ -1194,6 +1196,7 @@
               ? BC.convert.makeUdongmanMtdPack([b], co)
               : fmt === 'abr'
               ? BC.convert.makeAbrPack([b], co)
+              : fmt === 'tpl' ? BC.convert.makeTplPack([b],co)
               : fmt === 'gopaint' ? BC.convert.makeGoPaintBrush(b, co)
               : fmt === 'gopaint_abr' ? BC.convert.makeGoPaintAbr([b], co)
               : fmt === 'brush' ? BC.convert.makeProcreateBrush(b, co)
@@ -1210,6 +1213,7 @@
             const extOut = { painter: '.brushcategory', kbundle: '.bundle', sai2: '.zip', medibang: '.zip', mbini: '.zip',
               udongman: '.abr', udongman_sut: '.sut', udongman_mtd: '.mtd', gopaint: '.gobrush', gopaint_abr: '.abr', gopaint_set: '.gobrushes' }[fmt] || ('.' + fmt);
             outFiles.push({ name: folder + uniqueFile(base, extOut), data: made.bytes });
+            if (fmt==='tpl' && made.warnings) warnings.push(...made.warnings);
             if (fmt === 'udongman') {
               if (!outFiles.some(f => f.name === '优动漫导入说明.txt')) outFiles.push({ name: '优动漫导入说明.txt', data: BC.util.utf8Encode(made.importGuide) });
               made.warnings.forEach(w => { if (warnings.indexOf(w) < 0) warnings.push(w); });
@@ -1269,19 +1273,14 @@
     }
     // prepare output payload: zip mode -> one zip; files mode -> individual files
     let payload;
-    if (opts.packOut === false) {
+    if (opts.packOut === false || sink) {
       payload = outFiles;
     } else {
-      // 默认（整包）模式：只有一个笔刷文件时直接输出该文件本身（.abr/.brushset/.bru…），
-      // 不再套一层 ZIP 壳，导入软件前不用先解压；随附的导入说明等小文件一起直接输出。
-      // 只有多个笔刷文件（如全部格式/单独文件模式/多输入合并）才打包 ZIP。
-      const brushOut = outFiles.filter(function (f) { return !isAuxOutFile(f.name); });
+      // Count every output, including PAT and reports: 1–3 direct, 4+ ZIP.
       const mobileWeb = !window.BrushNative && !window.BrushDesktop && window.BCSaver &&
         window.BCSaver.isMobileBrowser && window.BCSaver.isMobileBrowser();
-      if (brushOut.length === 1 && !onlyAux && !mobileWeb) {
-        payload = outFiles.slice();
-      } else if (exportWithoutZip(outFiles, onlyAux, mobileWeb, totalOut)) {
-        // 输出全是 .brushset：这是 Procreate 能直接导入的「画笔集」，再套一层 ZIP 只会让用户多解压一步
+      if (exportWithoutZip(outFiles, onlyAux, mobileWeb, totalOut)) {
+        // All platforms: 1–3 actual output files save directly, including PAT/reports.
         payload = outFiles.slice();
       } else {
       const ts = new Date();
@@ -1399,6 +1398,12 @@
     }
     const all = [];
     sink.forEach(function (r) { r.payload.forEach(function (f) { all.push(f); }); });
+    const pats = all.filter(f => /\.pat$/i.test(f.name));
+    if (pats.length > 1) {
+      const merged = BC.convert.mergePatternFiles(pats.map(f => f.data));
+      for (let i=all.length-1;i>=0;i--) if (/\.pat$/i.test(all[i].name)) all.splice(i,1);
+      all.unshift({name:'PS纹理图案合集.pat',data:merged.bytes});
+    }
     // 同名 ZIP 加序号
     const seen = new Map();
     all.forEach(function (f) {
@@ -1418,6 +1423,7 @@
       failedCount += (r.failed || []).length;
       files += r.fileCount || 0;
     });
+    files = all.length;
     if (warns.length) toast(warns[0], 6000);
     state.converting = false;
     setProgress(null);
@@ -1427,7 +1433,7 @@
       let outAll = all;
       // 打包模式下多批结果合并：只有 1 个笔刷文件时直接输出该文件本身（与单批一致）；
       // 多个文件重新打成一个 ZIP，保持「打包」语义。
-      if (packOutMode && all.length > 1) {
+      if (packOutMode && all.length >= 4) {
         const ts = new Date();
         const pad = n => String(n).padStart(2, '0');
         const stamp = ts.getFullYear() + pad(ts.getMonth() + 1) + pad(ts.getDate()) + '_' + pad(ts.getHours()) + pad(ts.getMinutes());
@@ -1673,7 +1679,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.7.20';
+  const APP_VERSION = '2.8.0';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -1869,7 +1875,7 @@
     button.addEventListener('click', async function () {
       if (!lastSavedFiles || !lastSavedFiles.length) { toast('还没有可分享的转换结果'); return; }
       try {
-        if (!preparedShare) { toast('这个浏览器不支持分享，请点「下载ZIP」', 3000); return; }
+        if (!preparedShare) { toast('这个浏览器不支持分享，请点下方结果文件的「下载」', 3000); return; }
         await navigator.share({ files: preparedShare.files, title: '笔刷转换结果' });
         toast('已交给系统分享；请在接收应用或「文件」中确认是否保存', 7000);
       } catch (e) {
@@ -1941,11 +1947,7 @@
   /* 输出全是 .brushset 时直接给文件，不套 ZIP。手机浏览器例外（多文件逐个下载体验差），
      体积过大时也例外（回到分卷 ZIP）。 */
   function exportWithoutZip(outFiles, onlyAux, mobileWeb, totalOut) {
-    if (onlyAux || mobileWeb) return false;
-    if (Number(totalOut) > 200 * 1024 * 1024) return false;
-    const brush = (outFiles || []).filter(function (f) { return !isAuxOutFile(f.name); });
-    if (!brush.length) return false;
-    return brush.every(function (f) { return /\.brushset$/i.test(f.name); });
+    return !!outFiles && outFiles.length > 0 && outFiles.length < 4;
   }
   function updateShapeLibText() {
     syncShapeLibDownloadButtons();

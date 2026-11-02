@@ -7,6 +7,7 @@
   const png = isNode ? require('./png.js') : root.BC.png;
   const zip = isNode ? require('./zip.js') : root.BC.zip;
   const abr = isNode ? require('./abr.js') : root.BC.abr;
+  const tpl = isNode ? require('./tpl.js') : root.BC.tpl;
   const procreate = isNode ? require('./procreate.js') : root.BC.procreate;
   const bru = isNode ? require('./bru.js') : root.BC.bru;
   const gimp = isNode ? require('./gimp.js') : root.BC.gimp;
@@ -121,6 +122,7 @@
       }
       return null;
     }
+    if (tpl && safe(function(){return tpl.isTpl(bytes);})) return 'tpl';
     if (bytes && bytes.length > 10 && bytes[0] === 0x38 && bytes[1] === 0x42 && bytes[2] === 0x50 && bytes[3] === 0x54) return 'pat';
     if (abr && safe(function () { return abr.isAbr(bytes); })) return 'abr';
     if (krita && safe(function () { return krita.isKpp(bytes); })) return 'kpp';
@@ -129,6 +131,7 @@
     if (genericBrush && safe(function () { return genericBrush.isPainterXml(bytes); })) return 'painter';
     // extension fallbacks
     if (lower.endsWith('.abr')) return 'abr';
+    if (lower.endsWith('.tpl')) return 'tpl';
     if (lower.endsWith('.bru')) return 'bru';
     if (lower.endsWith('.brush') || lower.endsWith('.brushset')) return 'procreate';
     if (lower.endsWith('.kpp')) return 'kpp';
@@ -145,6 +148,7 @@
   function extLabel(kind) {
     return {
       abr: 'Photoshop ABR',
+      tpl: 'Photoshop 工具预设 TPL',
       procreate: 'Procreate 笔刷',
       bru: '画世界Pro BRU',
       kpp: 'Krita KPP',
@@ -276,7 +280,7 @@
 
   function parseFile(name, bytes, opts) {
     const kind = detect(name, bytes);
-    if (!kind) throw new Error('无法识别的文件格式（支持 .bru/.abr/.brush/.brushset/.gobrush/.gobrushes/.sut/.mtd/.kpp/.gbr/.gih/.myb/.brushcategory/.brushlibrary，或包含笔刷的 ZIP）');
+    if (!kind) throw new Error('无法识别的文件格式（支持 .bru/.abr/.tpl/.brush/.brushset/.gobrush/.gobrushes/.sut/.mtd/.kpp/.gbr/.gih/.myb/.brushcategory/.brushlibrary，或包含笔刷的 ZIP）');
     let result;
     if (kind === 'bru') {
       result = bru.parseBru(bytes);
@@ -303,6 +307,8 @@
         } catch (e) { return null; }
       });
       result = csp.parseDecryptedAssets(dec.json, tips, dec.name || name.replace(/\.params\.json$/i, ''));
+    } else if (kind === 'tpl') {
+      result = tpl.parse(bytes);
     } else if (kind === 'pat') {
       const patReader = isNode ? require('./patRead.js') : root.BC.patRead;
       const pats = patReader.readPat(bytes);
@@ -1009,15 +1015,6 @@
     }
     const records = [];
     const refs = new Map();
-    const usedNames = {};   // 文件名去重（同名笔刷的纹理也要各自成档）
-    const files = [];       // 按纹理拆分的单图案 .pat，命名「笔刷名-纹理」
-    function fileNameFor(base, i) {
-      let nm = String(base || ('纹理 ' + i)).replace(/[\\/:*?"<>|]/g, '_').trim().slice(0, 60) || ('纹理 ' + i);
-      nm += '-纹理';
-      if (usedNames[nm]) { usedNames[nm]++; nm += ' #' + usedNames[nm]; }
-      else usedNames[nm] = 1;
-      return nm;
-    }
     let i = 0;
     for (const item of list) {
       i++;
@@ -1027,7 +1024,6 @@
       const p = patMod.buildPattern(nm, item.t.w, item.t.h, [item.t.gray, item.t.gray, item.t.gray], undefined, true);
       records.push(p);
       refs.set(item.key, { id: p.id, name: p.name, inversionBaked: true });
-      files.push({ name: fileNameFor(base, i), bytes: patMod.buildPat([p]) });
     }
     const bytes = patMod.buildPat(records);
     // 自检：用内置 .pat 读取器回读，确认图案数量/尺寸与预期一致（不需要真实 PS）
@@ -1053,7 +1049,31 @@
         selfCheck.names = back.map(function (x) { return x.name; });
       }
     } catch (e) { selfCheck.ok = false; selfCheck.error = e.message; }
-    return { bytes: bytes, count: records.length, refs: refs, ref: records[0] ? { id: records[0].id, name: records[0].name, inversionBaked: true } : null, width: list[0].t.w, height: list[0].t.h, selfCheck: selfCheck, files: files };
+    return { bytes: bytes, count: records.length, refs: refs, ref: records[0] ? { id: records[0].id, name: records[0].name, inversionBaked: true } : null, width: list[0].t.w, height: list[0].t.h, selfCheck: selfCheck, files: [{name:'PS纹理图案合集', bytes:bytes}] };
+  }
+
+  // Batch outputs share one PAT. Preserve pixels, names and IDs, since
+  // the matching ABRs/TPLs have already been written with those references.
+  function mergePatternFiles(files) {
+    const records = [], ids = new Map();
+    const patMod = isNode ? require('./pat.js') : root.BC.pat;
+    const reader = isNode ? require('./patRead.js') : root.BC.patRead;
+    for (const bytes of files) {
+      if (util.ascii(bytes,0,4) !== '8BPT' || util.u16(bytes,4) !== 1) throw Error('无效的 PAT 合集');
+      const parts = reader.readPat(bytes);
+      if (parts.length !== util.u32(bytes,6)) throw Error('PAT 图案记录不完整');
+      for (const part of parts) {
+        if (!part.id || !part.width || !part.height || part.gray.length !== part.width*part.height) throw Error('PAT 图案记录不完整');
+        const key = part.width+'x'+part.height+':'+util.md5(part.gray);
+        if (ids.has(part.id)) {
+          if (ids.get(part.id) !== key) throw Error('PAT 图案 ID 冲突');
+          continue;
+        }
+        ids.set(part.id,key);
+        records.push(patMod.buildPattern(part.name,part.width,part.height,[part.gray,part.gray,part.gray],part.id,true));
+      }
+    }
+    return {bytes:patMod.buildPat(records), count:records.length};
   }
 
   function makeAbrPack(brushList, opts) {
@@ -1294,6 +1314,17 @@
     const bytes = abr.writeAbrV6(items, { groups: hasNamed ? groups : null, patternBlock: patternBlock, patternRecords: patternRecords });
     if (patternWarning && !opts._patternWarned) { opts._patternWarned = true; console.warn(patternWarning); }
     return { bytes: bytes, count: items.length, meta: items };
+  }
+
+  /** Supported import route documented by Udonman/CELSYS: ABR, not renamed SUT. */
+  function makeTplPack(brushList, opts) {
+    opts=opts||{};
+    const textured=brushList.filter(b=>b.hasTexture&&textureGray(b));
+    const pattern=opts.textureMode!=='bake'&&textured.length?makePatternFile(textured,{}):null;
+    const settings=Object.assign({},opts,{textureMode:opts.textureMode==='bake'?'bake':'pattern',patternRefs:pattern?pattern.refs:undefined,patternRef:undefined});
+    const made=makeAbrPack(brushList,settings);
+    return {bytes:tpl.fromAbr(made.bytes,brushList,pattern&&pattern.bytes),count:made.count,
+      warnings:['TPL 请从 Photoshop「工具预设」面板载入；跨软件的混色、擦除等工具行为需要在 PS 实际核对']};
   }
 
   /** Supported import route documented by Udonman/CELSYS: ABR, not renamed SUT. */
@@ -1609,7 +1640,7 @@
     }
 
     if (!files.length) {
-      warnings.push('压缩包里没有找到可识别的笔刷文件（支持 .abr/.bru/.brush/.brushset，或包含 .sut + _decrypted 的压缩包）');
+      warnings.push('压缩包里没有找到可识别的笔刷文件（支持 .abr/.tpl/.bru/.brush/.brushset，或包含 .sut + _decrypted 的压缩包）');
     } else if (skipped.length) {
       warnings.push('压缩包内 ' + skipped.length + ' 个不相关文件已忽略（' + skipped.slice(0, 3).join(', ') + '…）');
     }
@@ -2184,7 +2215,7 @@ Write-Host 'restart MediBang Paint Pro'
 
   /* ---------- 转换差异报告：每支笔刷在目标格式里保留了哪些、丢了哪些 ---------- */
   function reportTarget(target) {
-    return {udongman:'abr',udongman_sut:'sut',udongman_mtd:'mtd',gopaint:'gobrush',gopaint_set:'gobrush',gopaint_abr:'abr'}[target] || target;
+    return {tpl:'abr',udongman:'abr',udongman_sut:'sut',udongman_mtd:'mtd',gopaint:'gobrush',gopaint_set:'gobrush',gopaint_abr:'abr'}[target] || target;
   }
 
   function conversionStatus(brush, target, key, supported, opts, rawCache) {
@@ -2711,7 +2742,7 @@ Write-Host 'restart MediBang Paint Pro'
     });
   }
 
-  const api = { detect, parseFile, expandArchive, synthTip, makeBru, makeBruPack, makeBruDualPair, buildBruDualPairBrushes, makeAbrPack, makeUdongmanPack, makeUdongmanSutPack, makeUdongmanMtdPack, parseMtd, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, tipSourceAudit, tipSourceHint, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
+  const api = { detect, parseFile, expandArchive, synthTip, makeBru, makeBruPack, makeBruDualPair, buildBruDualPairBrushes, makeAbrPack, makeTplPack, makeUdongmanPack, makeUdongmanSutPack, makeUdongmanMtdPack, parseMtd, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, mergePatternFiles, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, tipSourceAudit, tipSourceHint, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { convert: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);
