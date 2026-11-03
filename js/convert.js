@@ -278,6 +278,26 @@
       .replace(/&amp;/g, '&');
   }
 
+  function restoreHsjTips(result) {
+    if (!result || !result.brushes) return 0;
+    const missing = result.brushes.filter(function (b) {
+      return b.source === 'bru' && !b.tip && /^ps[1-9][0-9]*$/.test(b.oldTexId || '');
+    });
+    if (!missing.length) return 0;
+    const lib = isNode ? require('./hsj-shapes.js') : root.BC.hsjShapes;
+    if (!lib) return 0;
+    let count = 0;
+    missing.forEach(function (b) {
+      const raw = lib.get(b.oldTexId);
+      if (!raw) return;
+      const image = png.decode(b64ToBytes(raw));
+      b.tip = { w: image.width, h: image.height, rgba: png.toMaskRgba(image.rgba) };
+      b._tipFromBuiltin = b.oldTexId;
+      count++;
+    });
+    return count;
+  }
+
   function parseFile(name, bytes, opts) {
     const kind = detect(name, bytes);
     if (!kind) throw new Error('无法识别的文件格式（支持 .bru/.abr/.tpl/.brush/.brushset/.gobrush/.gobrushes/.sut/.mtd/.kpp/.gbr/.gih/.myb/.brushcategory/.brushlibrary，或包含笔刷的 ZIP）');
@@ -285,6 +305,7 @@
     if (kind === 'bru') {
       result = bru.parseBru(bytes);
       result.brushes = result.brushes.map(b => Object.assign({}, b, { source: 'bru' }));
+      restoreHsjTips(result);
       // #23（WorkBuddy 第106轮）：BRU f115（旋转方式）→ PS 角度控制源逆映射。
       // 1=跟随笔迹方向(6)、2=初始方向(5)、3=笔压(2)；0=固定不映射。
       // BRU→BRU 写出仍直接用 bruRotationMode，不受影响。
@@ -797,7 +818,8 @@
       name: brush.name || '',
       bruShapeInverted: !!brush.bruShapeInverted,
       pkgId: brush.pkgId || opts.pkgId,
-      texId: util.md5(pngBytes).toUpperCase(),
+      texId: brush.source === 'bru' && brush._tipFromBuiltin === brush.oldTexId && opts.fidelity !== false && !opts.forceRebuild
+        ? brush.oldTexId : util.md5(pngBytes).toUpperCase(),
       sizePx,
       maxSizePx:Math.max(sizePx,brush._rawMaxWidth||500),
       spacingPct,
@@ -2262,6 +2284,16 @@ Write-Host 'restart MediBang Paint Pro'
         ((brush.dynamicsControlAngle && brush.dynamicsControlAngle!==6) || (brush.bruRotationMode && brush.bruRotationMode!==1))) return '未完整写入（当前Procreate重建只映射完整方向跟随，其余角度控制仍需适配）';
     if (key === 'opacity' && (target === 'brush' || target === 'brushset') && brush.opacity < 0.01) return '近似（Procreate原生不透明度计算最低1%，不能视为完全透明）';
     if (key === 'roundness' && (target === 'brush' || target === 'brushset') && pressureSizeOn(brush) && brush.roundness < (brush.minSizeRatio || 0) * 100) return '近似（Procreate尺寸下限限制最小圆度，无法完全压扁）';
+    if (key === 'sizePx' && ['gbr','gih','bru','sai2','myb'].indexOf(target) >= 0) {
+      const requested = withExportSettings(brush, opts).sizePx;
+      if (target === 'bru' && (requested < 1 || requested > 3000)) return '近似（当前BRU转换写端限制1–3000px，实际为' + Math.max(1, Math.min(3000, requested)) + 'px；未据写端常量推定原生上限）';
+      if (target === 'gbr' || target === 'gih') {
+        const limit = Math.max(1, Math.min(2048, opts.maxTipSize || 512));
+        const actual = Math.max(1, Math.min(limit, Math.round(requested)));
+        if (actual !== requested) return '近似（图像像素即尺寸，受笔尖最大边长' + limit + 'px及整数像素限制，当前单笔资源为' + actual + 'px；图像管还使用公共单元）';
+      }
+      if ((target === 'sai2' || target === 'myb') && requested < 1) return '近似（当前写端最小尺寸1px）';
+    }
     if (key === 'sizePx' && (target === 'brush' || target === 'brushset')) {
       const adjusted = withExportSettings(brush, opts);
       const spacing = Math.max(0, Number(adjusted.spacingPct === undefined ? 10 : adjusted.spacingPct) || 0) / 100;
@@ -2765,7 +2797,7 @@ Write-Host 'restart MediBang Paint Pro'
     });
   }
 
-  const api = { detect, parseFile, expandArchive, synthTip, makeBru, makeBruPack, makeBruDualPair, buildBruDualPairBrushes, makeAbrPack, makeTplPack, makeUdongmanPack, makeUdongmanSutPack, makeUdongmanMtdPack, parseMtd, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, mergePatternFiles, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, tipSourceAudit, tipSourceHint, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
+  const api = { detect, parseFile, restoreHsjTips, expandArchive, synthTip, makeBru, makeBruPack, makeBruDualPair, buildBruDualPairBrushes, makeAbrPack, makeTplPack, makeUdongmanPack, makeUdongmanSutPack, makeUdongmanMtdPack, parseMtd, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, mergePatternFiles, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, tipSourceAudit, tipSourceHint, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { convert: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

@@ -122,7 +122,8 @@
       hfade: attr(maskAttrs, 'hfade'),
       vfade: attr(maskAttrs, 'vfade'),
       filename: attr(attrs, 'filename') || attr(maskAttrs, 'filename'),
-      scale: attr(attrs, 'scale')
+      scale: attr(attrs, 'scale'),
+      version: attr(attrs, 'BrushVersion')
     };
   }
 
@@ -280,7 +281,9 @@
       } catch (e) { /* no tip */ }
     }
     if (tip && bd && /^(png|gbr)_brush$/.test(bd.type) && Number(bd.scale)>0) {
-      sizePx=clamp(Math.max(tip.w,tip.h)*Number(bd.scale),1,4000);
+      // Krita's predefined-brush factory doubles legacy version-1 scale.
+      const legacyScale = !bd.version || Number(bd.version) === 1 ? 2 : 1;
+      sizePx=Math.max(tip.w,tip.h)*Number(bd.scale)*legacyScale;
     }
     if (!bd) warnings.push('未找到 Krita 5 的 brush_definition，按旧版参数尽力解析');
     return {
@@ -607,8 +610,9 @@
     const opacity = Math.max(0, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity));
     const angleRad = ((isFinite(brush.angle) ? brush.angle : 0) * Math.PI / 180).toFixed(6);
     const tipSide = Math.max(1, tipWidth || 200, tipHeight || tipWidth || 200);
-    const scale = Math.max(0.01, Math.min(10, (brush.sizePx || 40) / tipSide));
-    const def = '<Brush type="png_brush" brushApplication="0" ColorAsMask="1" BrushVersion="2" filename="' + tipName + '" scale="' + scale.toFixed(6) +
+    const size = isFinite(brush.sizePx) && brush.sizePx > 0 ? brush.sizePx : 40;
+    const scale = size / tipSide;
+    const def = '<Brush type="png_brush" brushApplication="0" ColorAsMask="1" BrushVersion="2" filename="' + tipName + '" scale="' + scale +
       '" spacing="' + spacing.toFixed(4) + '" angle="' + angleRad + '" useAutoSpacing="0"/>';
     let xml = tpl.replace(/name="[^"]*"/, 'name="' + xmlEsc(brush.name || 'brush') + '"');
     xml = setParam(xml, 'brush_definition', def);

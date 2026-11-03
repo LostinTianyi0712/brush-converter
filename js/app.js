@@ -617,6 +617,29 @@
     return t;
   }
 
+  let hsjShapesLoading = null;
+  async function restoreHsjShapes(parsed) {
+    const needed = parsed && parsed.brushes && parsed.brushes.some(function (b) {
+      return b.source === 'bru' && !b.tip && /^ps(?:[1-9]|[1-9][0-9]|1[0-7][0-9]|18[0-4])$/.test(b.oldTexId || '');
+    });
+    if (!needed) return;
+    try {
+      if (!BC.hsjShapes) {
+        if (!hsjShapesLoading) hsjShapesLoading = new Promise(function (resolve, reject) {
+          const scripts = Array.prototype.slice.call(document.scripts || []);
+          const inJsDir = scripts.some(function (sc) { return /\/js\/app\.js(\?|$)/.test(sc.src || ''); });
+          const script = document.createElement('script');
+          script.src = inJsDir ? 'js/hsj-shapes.js' : '../core/hsj-shapes.js';
+          script.onload = resolve;
+          script.onerror = function () { script.remove(); hsjShapesLoading = null; reject(new Error('画世界内置笔尖资源加载失败')); };
+          document.head.appendChild(script);
+        });
+        await hsjShapesLoading;
+      }
+      BC.convert.restoreHsjTips(parsed);
+    } catch (e) { pushLog(String(e.message || e)); }
+  }
+
   async function parseRecord(rec, displayName, bytes, opts) {
     try {
       // 内置笔尖图库只存在于主线程内存里，Worker 拿不到；加载了图库就不走后台解析
@@ -632,6 +655,7 @@
           setProgress(0, '后台解析：' + displayName);
           const parsed = await parseViaWorker(displayName, bytes, opts);
           setProgress(null);
+          await restoreHsjShapes(parsed);
           adoptParsed(rec, bytes, parsed, displayName);
           return;
         } catch (e) {
@@ -646,9 +670,11 @@
           onProgress: function (p, text) { setProgress(p, text + '：' + displayName); }
         }));
         setProgress(null);
+        await restoreHsjShapes(parsed);
         adoptParsed(rec, bytes, parsed, displayName);
       } else {
         const parsed = BC.convert.parseFile(displayName, bytes, opts);
+        await restoreHsjShapes(parsed);
         adoptParsed(rec, bytes, parsed, displayName);
       }
     } catch (e) {
@@ -1722,7 +1748,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.8.5';
+  const APP_VERSION = '2.8.6';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2032,7 +2058,7 @@
   async function shapeLibFromZipBytes(bytes, onProgress) {
     const map = new Map();
     let index = null;
-    const entries = BC.zip.read(new Uint8Array(bytes));
+    const entries = BC.zip.read(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
     for (let i = 0; i < entries.length; i++) {
       const e = entries[i];
       const base = String(e.name || '').split(/[\\/]/).pop().toLowerCase();
@@ -2068,7 +2094,9 @@
           const b64 = native.shapeLibChunk(off, Math.min(CHUNK, total - off));
           if (!b64) throw new Error('内置图库分块读取失败（offset ' + off + '）');
           const bin = atob(b64);
-          const n = Math.min(bin.length, total - off);
+          const expected = Math.min(CHUNK, total - off);
+          if (bin.length !== expected) throw new Error('内置图库分块长度不完整（offset ' + off + '）');
+          const n = bin.length;
           for (let i = 0; i < n; i++) bytes[off + i] = bin.charCodeAt(i);
           if (onProgress) onProgress(off + n);
           // 33MB 一口气读完会把主线程堵死（安卓导入图库卡顿的主因之一）：每块让出一帧
@@ -2246,6 +2274,7 @@
     let undecoded = 0;
     const undecodedNames = [];
     let converted = 0;
+    let inputBytes = 0;
     /* 关键：不要整包解成 RGBA 常驻（292 张原图 = 1GB+ 会直接崩）。
        PNG 与 baseline JPEG 只存原始字节，core 用到时才同步解码；
        只有 progressive JPEG 必须在这解一次，解完烘成灰度 PNG 存起来（同样不常驻 RGBA）。 */
@@ -2274,7 +2303,10 @@
     for (const f of list) {
       try {
         if (/\.zip$/i.test(f.name)) {
-          const entries = BC.zip.read(new Uint8Array(await f.arrayBuffer()));
+          const raw = await f.arrayBuffer();
+          const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+          const entries = BC.zip.read(bytes);
+          inputBytes += bytes.byteLength;
           for (let i = 0; i < entries.length; i++) {
             await addOne(entries[i].name, entries[i].data());
             // 安卓：整包解压会把界面钉住 → 每 16 张让出一帧并报进度
@@ -2285,14 +2317,17 @@
           }
           setProgress(null);
         } else {
-          await addOne(f.name, new Uint8Array(await f.arrayBuffer()));
+          const imageBytes = new Uint8Array(await f.arrayBuffer());
+          await addOne(f.name, imageBytes);
+          inputBytes += imageBytes.byteLength;
         }
       } catch (e) { pushLog('图库读取失败 ' + f.name + '：' + e.message); }
     }
-    if (!map.size) { toast('图库里没有 PNG/JPG：请选择包含内置笔尖图的 ZIP 或文件夹', 8000); return; }
+    if (!map.size) { toast('图库里没有 PNG/JPG：请选择包含内置笔尖图的 ZIP 或文件夹', 8000); return false; }
     if (converted) pushLog('图库里有 ' + converted + ' 张 progressive JPEG 已用 canvas 解出并转存为灰度 PNG');
     if (undecoded) pushLog('图库有 ' + undecoded + ' 张解不开：' + undecodedNames.slice(0, 12).join(', '));
     state.shapeLib = map;
+    state.shapeLibBytes = inputBytes;
     state.shapeLibBuiltIn = false; // 用户自己选的图库优先于内置（通常是原始高分辨率图）
     state.shapeLibLabel = libLabel || '自选图库';
     setShapeLibUserCleared(false); // 又装上了：恢复启动自动加载
@@ -2301,6 +2336,13 @@
     const fixed = await reparseWithShapeLib(forceReparse);
     toast('图库已加载 ' + map.size + ' 张' + (fixed ? '；已给现有笔刷补回 ' + fixed + ' 支真图笔尖'
       : (forceReparse ? '；现有笔刷的笔尖已按新图库重建' : '；缺 shape 的笔刷重新导入后会补回真图')), 12000);
+    return true;
+  }
+
+  async function loadShapeLibraryBytes(bytes, label, forceReparse) {
+    // Reuse downloaded bytes directly instead of File -> arrayBuffer copies.
+    const loaded = await loadShapeLibrary([{ name: 'shape-library.zip', arrayBuffer: async function () { return bytes; } }], label, forceReparse);
+    if (!loaded) throw new Error('图库读取失败，未替换已有图库');
   }
 
   /* #282：图库是后加载的，用户不该为此重新导入一遍笔刷——
@@ -2373,6 +2415,7 @@
       } catch (e) { return null; }
     }
     async function put(bytes, key) {
+      if (!bytes || bytes.byteLength > 120 * 1048576) return false;
       try {
         const db = await open();
         await new Promise(function (resolve, reject) {
@@ -2538,7 +2581,7 @@
     const native = window.BrushNative;
     const list = Array.isArray(urls) ? urls : [urls];
     btn.textContent = '下载中 0/' + totalMB + 'MB…';
-    let lastT = Date.now(), lastGot = 0, speed = 0;
+    let lastT = Date.now(), lastGot = null, speed = 0;
     if (!resume) {
       const started = list.length > 1
         ? (typeof native.shapeLibDownloadMultiStart === 'function' && native.shapeLibDownloadMultiStart(list.join('|')))
@@ -2554,12 +2597,15 @@
       if (st === 'done') { btn.textContent = '下载完成，正在导入…'; return; }
       if (st.indexOf('error') === 0) throw new Error(st.slice(6) || '下载失败');
       const nowT = Date.now();
-      if (nowT - lastT >= 1500 && got > lastGot) {
-        speed = (got - lastGot) / ((nowT - lastT) / 1000);
+      if (lastGot === null) { lastGot = got; lastT = nowT; }
+      if (nowT - lastT >= 1500) {
+        speed = Math.max(0, got - lastGot) / ((nowT - lastT) / 1000);
         lastT = nowT; lastGot = got;
       }
-      const mbps = speed > 0 ? (speed / 1048576).toFixed(2) + 'MB/s' : '';
-      btn.textContent = '下载中 ' + Math.round(got / 1048576) + '/' + (total > 0 ? Math.round(total / 1048576) : totalMB) + 'MB' + (mbps ? ' · ' + mbps : '') + '…';
+      const mbps = (speed / 1048576).toFixed(2) + 'MB/s';
+      const displayTotal = total >= got && total > 0 ? total : totalMB * 1048576;
+      btn.textContent = '下载中 ' + Math.round(got / 1048576) +
+        (displayTotal >= got ? '/' + Math.round(displayTotal / 1048576) : '') + 'MB · ' + mbps + '…';
       if (Date.now() - started > 15 * 60 * 1000) throw new Error('下载超时');
     }
   }
@@ -2820,15 +2866,16 @@
           await nativeShapeLibDownload(pack.parts.map(shapeLibUrl), btn, pack.totalMB);
           btn.textContent = '正在导入图库…';
           const got = await bundledShapeLibBytes();
-          const nativeFile = new File([got.bytes], pack.zipName, { type: 'application/zip' });
           // 安卓也存一份到 IndexedDB：它也是 App 数据（卸载会删），但能当私有目录的安全网——
           // 万一某次更新后 files/ 里的图库读不到，启动时能立即从缓存恢复，不用重下 32MB。
           try {
-            const cachedNative = await ShapeLibStore.put(got.bytes, pack.key);
-            pushLog(cachedNative ? '图库同时存进 App 数据（' + got.bytes.length + 'B），更新后可直接恢复' : '图库缓存失败（不影响使用）');
+            if (got.bytes.length <= 120 * 1048576) {
+              const cachedNative = await ShapeLibStore.put(got.bytes, pack.key);
+              pushLog(cachedNative ? '图库同时存进 App 数据（' + got.bytes.length + 'B），更新后可直接恢复' : '图库缓存失败（不影响使用）');
+            }
           } catch (e) { /* 缓存失败不影响本次使用 */ }
           const upgrade = !!(state.shapeLib && state.shapeLibPackKey !== pack.key);
-          await loadShapeLibrary([nativeFile], pack.label, upgrade);
+          await loadShapeLibraryBytes(got.bytes, pack.label, upgrade);
           state.shapeLibPackKey = pack.key;
           btn.textContent = pack.doneText;
           toast('图库包已下载到 App 内（下次启动自动加载，卸载会一起删）', 5000);
@@ -2889,10 +2936,9 @@
           }
         } catch (e) { pushLog('图库包保存异常：' + ((e && e.message) || e)); }
       }
-      const file = new File([packBytes], pack.zipName, { type: 'application/zip' });
       // 精简→原图升级时已有笔刷不缺 tip，需要强制重建才能换上高清笔尖
       const isUpgrade = !!(state.shapeLib && state.shapeLibPackKey !== pack.key);
-      await loadShapeLibrary([file], pack.label, isUpgrade);
+      await loadShapeLibraryBytes(packBytes, pack.label, isUpgrade);
       state.shapeLibPackKey = pack.key;
       btn.textContent = pack.doneText;
       syncShapeLibDownloadButtons();
@@ -3094,19 +3140,20 @@
       let st = 'idle';
       try { st = String(n.shapeLibDownloadStatus() || 'idle|0|-1').split('|')[0]; } catch (e) { return; }
       if (st !== 'running' && st !== 'done') return;
-      const dlBtn = $('#btnShapeLibDownload');
+      const dlBtn = $('#btnShapeLibDownloadFull') || $('#btnShapeLibDownload');
       if (!dlBtn) return;
       dlBtn.hidden = false;
       shapeLibDlBusy = true;
       (async function () {
         try {
           dlBtn.disabled = true;
-          await nativeShapeLibDownload('', dlBtn, SHAPE_LIB_PACKS.lite.totalMB, true);
+          await nativeShapeLibDownload('', dlBtn, 0, true);
           dlBtn.textContent = '正在导入图库…';
           const got = await bundledShapeLibBytes();
-          await loadShapeLibrary([new File([got.bytes], SHAPE_LIB_PACKS.lite.zipName, { type: 'application/zip' })], SHAPE_LIB_PACKS.lite.label, false);
-          state.shapeLibPackKey = 'lite';
-          dlBtn.textContent = SHAPE_LIB_PACKS.lite.doneText;
+          const recoveredPack = got.bytes.length > 120 * 1048576 ? SHAPE_LIB_PACKS.full : SHAPE_LIB_PACKS.lite;
+          await loadShapeLibraryBytes(got.bytes, recoveredPack.label, false);
+          state.shapeLibPackKey = recoveredPack.key;
+          dlBtn.textContent = recoveredPack.doneText;
           toast('上次没下完的图库包已接上并完成（不用重新下载）', 5000);
           pushLog('启动时接管了未完成的图库下载：' + got.bytes.length + 'B');
         } catch (e) {
