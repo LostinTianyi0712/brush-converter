@@ -551,14 +551,17 @@
     return { w: cw, h: ch, rgba: cropped };
   }
 
-  function sanitizeName(name, index) {
+  function sanitizeName(name, index, preserveFileName) {
     // #48（WorkBuddy 第106轮）：补充控制字符（\x00-\x1f）与零宽/双向控制字符（U+200B-F、U+202A-E、U+FEFF）
     // NFD（macOS 解压）先归一化，避免同名被当成两份
-    let n = (name || '').normalize('NFC').replace(/[\\/:*?"<>|\x00-\x1f\x7f\u200b-\u200f\u202a-\u202e\ufeff]/g, ' ').replace(/\s+/g, ' ').trim();
+    let n = (name || '').normalize('NFC').replace(/[\\/:*?"<>|\x00-\x1f\x7f\u200b-\u200f\u202a-\u202e\ufeff]/g, ' ');
+    if (!preserveFileName) n = n.replace(/\s+/g, ' ');
+    n = n.trim();
     // Windows 不允许文件名以点/空格结尾（"a." 会被系统截断或创建失败）
     n = n.replace(/[. ]+$/, '');
     if (!n) n = 'brush_' + String(index + 1).padStart(3, '0');
-    if (n.length > 60) n = n.slice(0, 60).replace(/[. ]+$/, '').trim();
+    // Resource labels keep their format limits; external files keep source names.
+    if (!preserveFileName && n.length > 60) n = n.slice(0, 60).replace(/[. ]+$/, '').trim();
     // Windows 保留设备名：CON/PRN/AUX/NUL/COM1-9/LPT1-9，带扩展名同样不可用
     // 截断后可能又变回保留名（CONSOLE… → CON），这里再查一次
     if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(n)) n = '_' + n;
@@ -2646,11 +2649,11 @@ Write-Host 'restart MediBang Paint Pro'
     const used = new Map();
     brushList.forEach(function (b, i) {
       const made = makeTipPng(b, Object.assign({}, opts, { maxTipSize: Math.max(opts.maxTipSize || 512, 512) }));
-      let base = sanitizeName(b.name, i);
+      let base = sanitizeName(b.name, i, true);
       let name = base, k = 2;
       while (used.has(name.toLowerCase())) { name = base + ' (' + k + ')'; k++; }
       used.set(name.toLowerCase(), 1);
-      entries.push({ name: name + '_笔尖.png', data: made.bytes });
+      entries.push({ name: name + '.png', data: made.bytes });
     });
     const lines = [
       '笔尖/素材 PNG 导出（v2.4）',

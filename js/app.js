@@ -920,7 +920,7 @@
         let missingTextures = 0;
         for (const rec of records) {
           const base = rec.baseName || String(rec.name || '').replace(/\.[^.]+$/, '') || '笔刷组';
-          const gname = BC.convert.sanitizeName((opts.prefix || '') + base, 0);
+          const gname = BC.convert.sanitizeName((opts.prefix || '') + base, 0, true);
           for (const b of (rec.brushes || [])) {
             if (!b || b.enabled === false || !b.hasTexture) continue;
             const t = BC.convert.textureGray(b);
@@ -1036,8 +1036,8 @@
             const made = BC.convert.makeAbrPack(dualList, Object.assign({}, commonOpts(rec), { maxTipSize: opts.tipSize }));
             // 多个输入文件各带双笔刷时，固定文件名会在 ZIP 里产生重复条目；
             // 这里走 uniqueFile，并按前缀/分组命名，避免互相覆盖。
-            const compFolder = opts.groupBySource && rec.baseName ? BC.convert.sanitizeName(rec.baseName, 0) + '/' : '';
-            const compBase = compFolder + BC.convert.sanitizeName((opts.prefix || '') + '双笔刷_可直接导入画世界Pro3.0', 0);
+            const compFolder = opts.groupBySource && rec.baseName ? BC.convert.sanitizeName(rec.baseName, 0, true) + '/' : '';
+            const compBase = compFolder + BC.convert.sanitizeName((opts.prefix || '') + (rec.baseName || rec.name.replace(/\.[^.]+$/, '') || '笔刷集'), 0, true);
             outFiles.push({ name: uniqueFile(compBase, '.abr'), data: made.bytes });
             warnings.push('含 ' + dualList.length + ' 支双笔刷：已额外附带 .abr（画世界Pro 3.0 可直接导入，保留原生双重笔刷）');
           } catch (e) { warnings.push('双笔刷 ABR 附带失败：' + e.message); }
@@ -1057,7 +1057,7 @@
         setProgress(doneCount / totalBrushes, '正在打包 ' + (rec.baseName || rec.name) + '（' + list.length + ' 支）…');
         await sleep(0);
         const sourceName = rec.baseName || rec.name.replace(/\.[^.]+$/, '') || '笔刷集';
-        const base = BC.convert.sanitizeName(opts.prefix + sourceName, 0);
+        const base = BC.convert.sanitizeName(opts.prefix + sourceName, 0, true);
         for (const fmt of targets) {
           try {
             if (fmt === 'brushset') {
@@ -1071,16 +1071,16 @@
                   : fmt === 'gbr' ? BC.convert.makeGbr(b, co)
                   : fmt === 'myb' ? BC.convert.makeMyb(b, co)
                   : BC.convert.makeIpcfg(b, co);
-                const bname = BC.convert.sanitizeName(opts.prefix + (b.name || 'brush'), 0);
+                const bname = BC.convert.sanitizeName(opts.prefix + (b.name || 'brush'), 0, true);
                 outFiles.push({ name: uniqueFile(bname, '.' + fmt), data: made.bytes });
               }
             } else if (fmt === 'sai2') {
               const made = BC.convert.makeSai2Pack(list, commonOpts(rec));
-              outFiles.push({ name: uniqueFile(base + '_SAI2', '.zip'), data: made.bytes });
+              outFiles.push({ name: uniqueFile(base, '.zip'), data: made.bytes });
               if (made.warnings && made.warnings.length) warnings.push(...made.warnings);
             } else if (fmt === 'kbundle') {
               const made = BC.convert.makeKritaBundle(list, commonOpts(rec));
-              outFiles.push({ name: uniqueFile(base + '_krita', '.bundle'), data: made.bytes });
+              outFiles.push({ name: uniqueFile(base, '.bundle'), data: made.bytes });
               if (made.warnings && made.warnings.length) warnings.push(...made.warnings);
             } else if (fmt === 'gih') {
               const made = BC.convert.makeGih(list, commonOpts(rec));
@@ -1091,32 +1091,32 @@
             } else if (fmt === 'mbini') {
               for (const b of list) {
                 const made = BC.convert.makeMediBangIniPack([b], commonOpts(rec));
-                const bname = BC.convert.sanitizeName(opts.prefix + (b.name || 'medibang'), 0);
-                outFiles.push({ name: uniqueFile(bname + '_MediBang云笔刷', '.zip'), data: made.bytes });
+                const bname = BC.convert.sanitizeName(opts.prefix + (b.name || 'medibang'), 0, true);
+                outFiles.push({ name: uniqueFile(bname, '.zip'), data: made.bytes });
               }
             } else if (fmt === 'medibang') {
               for (const b of list) {
                 const made = BC.convert.makeMediBangBrush(b, commonOpts(rec));
-                const bname = BC.convert.sanitizeName(opts.prefix + (b.name || 'medibang'), 0);
-                outFiles.push({ name: uniqueFile(bname + '_MediBang笔刷', '.zip'), data: made.bytes });
+                const bname = BC.convert.sanitizeName(opts.prefix + (b.name || 'medibang'), 0, true);
+                outFiles.push({ name: uniqueFile(bname, '.zip'), data: made.bytes });
               }
             } else if (fmt === 'png') {
               const made = BC.convert.makeTipPngPack(list, commonOpts(rec));
-              outFiles.push({ name: uniqueFile(base + '_笔尖', '.zip'), data: made.bytes });
+              outFiles.push({ name: uniqueFile(base, '.zip'), data: made.bytes });
             } else if (fmt === 'gopaint_set') {
-              const made = BC.convert.makeGoPaintGroup(list, Object.assign({}, commonOpts(rec), { groupName: (opts.prefix || '') + base }));
-              outFiles.push({ name: uniqueFile(base + '_天生会画笔刷组', '.gobrushes'), data: made.bytes });
+              const made = BC.convert.makeGoPaintGroup(list, Object.assign({}, commonOpts(rec), { groupName: (opts.prefix || '') + sourceName }));
+              outFiles.push({ name: uniqueFile(base, '.gobrushes'), data: made.bytes });
             } else if (fmt === 'gopaint') {
               for (const b of list) {
                 const made = BC.convert.makeGoPaintBrush(b, commonOpts(rec));
-                outFiles.push({ name: uniqueFile(BC.convert.sanitizeName(opts.prefix + (b.name || 'gopaint'), 0), '.gobrush'), data: made.bytes });
+                outFiles.push({ name: uniqueFile(BC.convert.sanitizeName(opts.prefix + (b.name || 'gopaint'), 0, true), '.gobrush'), data: made.bytes });
               }
             } else if (fmt === 'gopaint_abr') {
               const made = BC.convert.makeGoPaintAbr(list, commonOpts(rec));
-              outFiles.push({ name: uniqueFile(base + '_天生会画_ABR', '.abr'), data: made.bytes });
+              outFiles.push({ name: uniqueFile(base, '.abr'), data: made.bytes });
             } else if (fmt === 'udongman') {
               const made = BC.convert.makeUdongmanPack(list, commonOpts(rec));
-              outFiles.push({ name: uniqueFile(base + '_优动漫', '.abr'), data: made.bytes });
+              outFiles.push({ name: uniqueFile(base, '.abr'), data: made.bytes });
               outFiles.push({ name: uniqueFile(base + '_优动漫导入说明', '.txt'), data: BC.util.utf8Encode(made.importGuide) });
               warnings.push(...made.warnings);
             } else if (fmt === 'udongman_sut') {
@@ -1181,26 +1181,24 @@
       for (let i = 0; i < list.length; i++) {
         const b = list[i];
         setProgress((doneCount + 0.5) / totalBrushes, '正在转换 ' + (doneCount + 1) + '/' + totalBrushes + '：' + (b.name || ''));
-        const order = String(i + 1).padStart(2, '0');
-        const srcTag = rec.baseName ? rec.baseName.trim() : '';
         const brushTag = (b.name || '').trim();
-        const composed = opts.prefix + (srcTag ? srcTag + (brushTag ? ' - ' : ' ') : '') + (brushTag || ('笔刷 ' + order));
-        const base = BC.convert.sanitizeName(composed, doneCount);
-        const folder = opts.groupBySource && rec.baseName ? BC.convert.sanitizeName(rec.baseName, 0) + '/' : '';
+        const composed = (opts.prefix || '') + (brushTag || rec.baseName || ('笔刷 ' + String(i + 1).padStart(2, '0')));
+        const base = BC.convert.sanitizeName(composed, doneCount, true);
+        const folder = opts.groupBySource && rec.baseName ? BC.convert.sanitizeName(rec.baseName, 0, true) + '/' : '';
         for (const fmt of targets) {
           try {
             if (fmt === 'brushset') continue;
             const co = commonOpts(rec);
             if (fmt === 'bru' && opts.bruEmbed !== false && b.dualTip && BC.convert.makeBru) {
               const made = BC.convert.makeBru(b, Object.assign({}, co, { embedSubTip: true }));
-              outFiles.push({ name: folder + uniqueFile(base, '.bru'), data: made.bytes });
+              outFiles.push({ name: uniqueFile(folder + base, '.bru'), data: made.bytes });
               warnings.push(b.dualOn ? '双笔刷已按画世界原生 3.0 单支内嵌副笔尖写出（一个文件=一支笔刷）' : '已内嵌缓存副笔尖，双笔刷保持关闭');
               continue;
             }
             if (fmt === 'bru' && opts.dualPair !== false && b.dualOn && b.dualTip && BC.convert.makeBruDualPair) {
               const pair = BC.convert.makeBruDualPair(b, co);
               if (pair) {
-                outFiles.push({ name: folder + uniqueFile(base + '_双笔刷对', '.bru'), data: pair.bytes });
+                outFiles.push({ name: uniqueFile(folder + base, '.bru'), data: pair.bytes });
                 warnings.push('双笔刷已输出为主笔及「原笔刷名_副笔尖」辅助条目，请选择主笔使用，保留关联辅助条目');
                 continue;
               }
@@ -1229,7 +1227,7 @@
               : BC.convert.makeBru(b, co);
             const extOut = { painter: '.brushcategory', kbundle: '.bundle', sai2: '.zip', medibang: '.zip', mbini: '.zip',
               udongman: '.abr', udongman_sut: '.sut', udongman_mtd: '.mtd', gopaint: '.gobrush', gopaint_abr: '.abr', gopaint_set: '.gobrushes' }[fmt] || ('.' + fmt);
-            outFiles.push({ name: folder + uniqueFile(base, extOut), data: made.bytes });
+            outFiles.push({ name: uniqueFile(folder + base, extOut), data: made.bytes });
             if (fmt==='tpl' && made.warnings) warnings.push(...made.warnings);
             if (fmt === 'udongman') {
               if (!outFiles.some(f => f.name === '优动漫导入说明.txt')) outFiles.push({ name: '优动漫导入说明.txt', data: BC.util.utf8Encode(made.importGuide) });
@@ -1246,7 +1244,7 @@
             if (fmt === 'png') {
               // PNG 笔尖旁边同时输出该笔刷的参数，方便在目标软件里手动还原设置
               outFiles.push({
-                name: folder + uniqueFile(base + '_参数', '.txt'),
+                name: uniqueFile(folder + base + '_参数', '.txt'),
                 data: BC.util.utf8Encode(BC.convert.brushParamText([b]))
               });
             }
@@ -1303,7 +1301,9 @@
       const ts = new Date();
       const pad = n => String(n).padStart(2, '0');
       const stamp = ts.getFullYear() + pad(ts.getMonth() + 1) + pad(ts.getDate()) + '_' + pad(ts.getHours()) + pad(ts.getMinutes());
-      const bundleName = outputBundleLabel(opts.target);
+      const bundleName = records.length === 1
+        ? BC.convert.sanitizeName((opts.prefix || '') + (records[0].baseName || records[0].name.replace(/\.[^.]+$/, '') || '笔刷集'), 0, true)
+        : outputBundleLabel(opts.target) + '_' + stamp;
       const LIMIT = 120 * 1024 * 1024;
       if (opts.autoBatch !== false && totalOut > 200 * 1024 * 1024) {
         // 大输出自动分卷：每卷最多 120MB，避免浏览器一次分配超大 Buffer
@@ -1316,11 +1316,11 @@
         }
         if (cur.length) vols.push(cur);
         payload = vols.map(function (files, i) {
-          return { name: bundleName + '_' + stamp + '_' + (i + 1) + 'of' + vols.length + '.zip', data: BC.zip.write(files) };
+          return { name: bundleName + '_' + (i + 1) + 'of' + vols.length + '.zip', data: BC.zip.write(files) };
         });
         warnings.push('输出较大，已自动分成 ' + vols.length + ' 个 ZIP（每卷约 120MB）');
       } else {
-        payload = [{ name: bundleName + '_' + stamp + '.zip', data: BC.zip.write(outFiles) }];
+        payload = [{ name: bundleName + '.zip', data: BC.zip.write(outFiles) }];
       }
       }
     }
@@ -1440,16 +1440,21 @@
       const ap = /\.pat$/i.test(a.name) ? 0 : 1, bp = /\.pat$/i.test(b.name) ? 0 : 1;
       return ap - bp;
     });
-    // 同名 ZIP 加序号
-    const seen = new Map();
+    // Keep original names, including existing numbered names, across batches.
+    const nameKey = name => name.normalize('NFC').toLowerCase();
+    const reservedNames = new Set(all.map(f => nameKey(f.name)));
+    const seen = new Set();
     all.forEach(function (f) {
-      const key = f.name;
-      const k = (seen.get(key) || 0) + 1;
-      seen.set(key, k);
-      if (k > 1) {
-        const m = f.name.match(/^(.*?)(\.[^.]+)$/);
-        if (m) f.name = m[1] + '_' + k + m[2];
+      const key = nameKey(f.name);
+      if (seen.has(key)) {
+        const m = f.name.match(/^(.*?)(\.[^./]+)$/);
+        const base = m ? m[1] : f.name, ext = m ? m[2] : '';
+        let k = 2, candidate;
+        do { candidate = base + ' (' + k++ + ')' + ext; }
+        while (reservedNames.has(nameKey(candidate)) || seen.has(nameKey(candidate)));
+        f.name = candidate;
       }
+      seen.add(nameKey(f.name));
     });
     const warns = [];
     let done = 0, failedCount = 0, files = 0;
@@ -1473,8 +1478,10 @@
         const ts = new Date();
         const pad = n => String(n).padStart(2, '0');
         const stamp = ts.getFullYear() + pad(ts.getMonth() + 1) + pad(ts.getDate()) + '_' + pad(ts.getHours()) + pad(ts.getMinutes());
-        const bundleName = outputBundleLabel($('#optTarget') ? $('#optTarget').value : '');
-        outAll = [{ name: bundleName + '_' + stamp + '.zip', data: BC.zip.write(all) }];
+        const bundleName = orig.length === 1
+          ? BC.convert.sanitizeName((($('#optPrefix') || {}).value || '') + (orig[0].baseName || String(orig[0].name || '').replace(/\.[^.]+$/, '') || '笔刷集'), 0, true)
+          : outputBundleLabel($('#optTarget') ? $('#optTarget').value : '') + '_' + stamp;
+        outAll = [{ name: bundleName + '.zip', data: BC.zip.write(all) }];
       }
       lastSavedFiles = outAll;
       const savedMsg = await saveOutputs(outAll, { packOut: packOutMode });
@@ -1715,7 +1722,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-  const APP_VERSION = '2.8.4';
+  const APP_VERSION = '2.8.5';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
