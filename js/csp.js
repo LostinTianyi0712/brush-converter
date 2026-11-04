@@ -85,7 +85,7 @@
     const unit = v.DualSizeUnit || 0;
     let sizePx = typeof v.DualSize === 'number' ? v.DualSize : 0;
     if (unit === 1) sizePx = sizePx * 10;
-    return {
+    const out = {
       dualOn: true,
       dualSizePx: Math.max(0, Math.round(sizePx)),
       dualSizeUnit: unit,
@@ -97,6 +97,20 @@
       dualCompositeMode: typeof v.DualBrushCompositeMode === 'number' ? v.DualBrushCompositeMode : 0,
       dualUsePattern: !!v.DualUsePatternImage
     };
+    // 其他格式（ABR/BRU/Procreate）的写出端读 dualBrush；没有这个对象时，
+    // 单纯“原样导出/改一个尺寸”会把 UseDualBrush 写成 0，副笔被静默关掉。
+    out.dualBrush = {
+      enabled: true,
+      diameter: out.dualSizePx,
+      spacing: out.dualSpacingPct,
+      opacity: out.dualFlowPct,
+      hardness: out.dualHardness,
+      roundness: out.dualThickness,
+      angle: out.dualAngle,
+      blend: out.dualCompositeMode
+    };
+    out.dualBlendMode = out.dualCompositeMode;
+    return out;
   }
 
   function parseSut(bytes, fileName) {
@@ -196,7 +210,9 @@
         pressureOpacity: hasOpacityDynamics,
         minOpacityRatio: hasOpacityDynamics ? 0.3 : 1,
         source: 'csp',
-        cspVersion: version
+        cspVersion: version,
+        // 回写原生 SUT 时用于定位这一支对应的 Variant 行（同一 SUT 的“当前/初始”副本）
+        _rawSutVariantId: v.VariantID
       }, readDualFields(v, clamp)));
     });
     return { brushes: brushes, warnings: warnings };

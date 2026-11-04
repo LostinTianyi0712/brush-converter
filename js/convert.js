@@ -16,6 +16,7 @@
   const genericBrush = isNode ? require('./genericbrush.js') : root.BC.genericBrush;
   const csp = isNode ? require('./csp.js') : root.BC.csp;
   const sutWrite = isNode ? require('./sutWrite.js') : root.BC.sutWrite;
+  const sqlite = isNode ? require('./sqlite.js') : root.BC.sqlite;
   const udongmanTemplate = isNode ? require('./udongmanTemplate.js') : root.BC.udongmanTemplate;
   const medibang = isNode ? require('./medibang.js') : root.BC.medibang;
   const medibangIni = isNode ? require('./medibangIni.js') : root.BC.medibangIni;
@@ -78,8 +79,52 @@
     return indices.size === group.count ? group : null;
   }
 
-  function withSizeAndSpacing(brush, opts) {
-    opts = opts || {};
+  /* 原生 SUT 被修改后，优先在原文件上原位改写 Variant 参数：
+     这样 material.layer（真实笔尖/纹理）、Effector 压感曲线、内置素材引用都不会被丢掉。
+     只在完整选择同一 SUT 的全部变体、且没有要求强制重建/切换压感时才走这条路。 */
+  function nativeSutMembers(brush, list) {
+    const group = brush && brush._rawSutGroup;
+    if (!group || !group.bytes) return null;
+    const members = [];
+    for (const b of list) {
+      if (b && b._rawSutGroup === group) members.push({ brush: b, index: b._rawSutIndex });
+    }
+    if (!members.length || members.length !== group.count) return null;
+    return { group: group, members: members };
+  }
+
+  function sutVariantTable(bytes) {
+    const db = sqlite.read(bytes);
+    return sqlite.getTable(db, 'Variant');
+  }
+
+  function sutVariantRowIndex(bytes, variantId) {
+    if (variantId === undefined || variantId === null) return -1;
+    const v = sutVariantTable(bytes);
+    if (!v) return -1;
+    for (let i = 0; i < v.rows.length; i++) {
+      if (String(v.rows[i].VariantID) === String(variantId)) return i;
+    }
+    return -1;
+  }
+
+  function filterSutParams(params, columns, dropped) {
+    const out = {};
+    for (const k in params) {
+      if (columns.indexOf(k) >= 0) out[k] = params[k];
+      else if (dropped && dropped.indexOf(k) < 0 && !(k === 'UseDualBrush' && !params[k])) dropped.push(k);
+    }
+    return out;
+  }
+
+  function sameSutParams(a, b) {
+    const ka = Object.keys(a), kb = Object.keys(b);
+    if (ka.length !== kb.length) return false;
+    for (const k of ka) if (a[k] !== b[k]) return false;
+    return true;
+  }
+
+  function withSizeAndSpacing(brush, opts) {    opts = opts || {};
     const b = Object.assign({}, brush);
     if (Number.isFinite(opts.sizeScale) && opts.sizeScale > 0) {
       b.sizePx = (brush.sizePx || 40) * opts.sizeScale;
@@ -446,8 +491,12 @@
       result = abr.parse(bytes);
     }
     if (kind === 'sut' && result.brushes.length) {
+      // 原位改写时要写回 NodeName，必须用原笔刷名而不是文件名，否则用户的笔刷名会被
+      // 「另存为的 .sut 文件名」覆盖（第137轮：BC136_RINGCS 被改成 BC136_texture_native）。
+      const originName = String((result.brushes[0] && result.brushes[0].name) || '')
+        .replace(/^.*[\\/]/, '').replace(/ #\d+$/, '').replace(/\.sut$/i, '').trim();
       const group = {bytes:new Uint8Array(bytes), count:result.brushes.length,
-        name:(name || result.brushes[0].name).replace(/^.*[\\/]/,'').replace(/\.sut$/i,'')};
+        name:originName || (name || '').replace(/^.*[\\/]/,'').replace(/\.sut$/i,'') || 'brush'};
       result.brushes.forEach(function (b, i) {
         b._rawSutGroup = group;
         b._rawSutIndex = i;
@@ -1432,7 +1481,7 @@
       p.UseDualBrush = 1;
       p.DualSizeUnit = 0;
       p.DualSize = clamp(Math.round(subPx || Math.max(1, mainPx * 0.5)), 1, 4000);
-      p.DualFlow = Math.round(clamp(num(sub.opacity, num(info.flowPct, num(info.flow, 1))), 0, 1) * 100);
+      p.DualFlow = Math.round(clamp(num(sub.opacity, num(info.opacity, num(info.flowPct, num(info.flow, 1)))), 0, 1) * 100);
       p.DualHardness = Math.round(clamp(num(info.hardness, num(sub.hardness, 1)), 0, 1) * 100);
       p.DualInterval = clamp(Math.round(num(info.spacing, num(brush.spacingPct, 10)) * 10) / 10, 1, 1000);
       p.DualAutoIntervalType = 0; // 与主笔一致：手动间距，否则 CSP 忽略 DualInterval
@@ -1459,6 +1508,39 @@
         程序无法生成像素；要真实素材笔尖请用「优动漫 CSP .abr（兼容）」目标；
       · 纹理/图案（TextureImage/BrushPatternImageArray）需要素材，未写入；
       · 压感动态（Effector 曲线 blob）暂未写入，模板里保留中性默认值。 */
+  /** 在原生 SUT 上原位改写参数（保留 material.layer 笔尖/纹理、Effector 动态、素材引用）。 */
+  function patchNativeSut(nat, opts, name, droppedCols) {
+    const bytes = nat.group.bytes;
+    const vt = sutVariantTable(bytes);
+    if (!vt || !vt.rows.length) throw new Error('原 SUT 没有 Variant 表');
+    const cols = vt.columns;
+    const params = nat.members.map(function (m) {
+      const b = withExportSettings(m.brush, opts) || m.brush;
+      return filterSutParams(variantParamsForSut(b), cols, droppedCols);
+    });
+    if (!params.length) throw new Error('没有可写入的参数');
+    // 原生模板自带副笔素材时，不要把 DualUsePatternImage 写成 0（那会把副笔笔尖换成内置圆形）
+    if (vt.columns.indexOf('DualUsePatternImage') >= 0 &&
+        vt.rows.some(function (r) { return r.DualUsePatternImage === 1; })) {
+      params.forEach(function (p) { delete p.DualUsePatternImage; });
+    }
+    const same = params.every(function (p) { return sameSutParams(p, params[0]); });
+    let overrides;
+    if (same) {
+      // 参数一致：写到全部 Variant 行（当前+初始副本），CSP 读哪行都拿到新值
+      overrides = [{ params: params[0], nodeName: name }];
+    } else {
+      overrides = [];
+      for (let i = 0; i < nat.members.length; i++) {
+        const row = sutVariantRowIndex(bytes, nat.members[i].brush._rawSutVariantId);
+        if (row < 0) throw new Error('找不到变体在原文件中的 Variant 行');
+        overrides.push({ params: params[i], variantIndex: row });
+      }
+      overrides[0].nodeName = name;
+    }
+    return sutWrite.buildSut(bytes, overrides);
+  }
+
   function makeUdongmanSutPack(brushList, opts) {
     opts = opts || {};
     if (!sutWrite || !udongmanTemplate) throw new Error('优动漫原生 SUT 组件未加载（sutWrite/udongmanTemplate）');
@@ -1469,8 +1551,11 @@
     const srcList = Array.isArray(brushList) ? brushList : [];
     const preserved = new Set();
     let rebuiltCount = 0;
-    const texturedCount = srcList.filter(function (b) { return b && b.hasTexture && !rawSutGroup(b, srcList, opts); }).length;
-    const dualCount = srcList.filter(function (b) { return b && b.dualOn && !rawSutGroup(b, srcList, opts); }).length;
+    let patchedCount = 0;
+    const patchFails = [];
+    const droppedCols = [];
+    const texturedCount = srcList.filter(function (b) { return b && b.hasTexture && !b._rawSutGroup; }).length;
+    const dualCount = srcList.filter(function (b) { return b && b.dualOn && !b._rawSutGroup; }).length;
     for (const rawBrush of srcList) {
       let name, bytes;
       try {
@@ -1486,9 +1571,25 @@
         }
         const brush = withExportSettings(rawBrush, opts);
         if (!brush) continue;
-        const base0 = sanitizeName(brush.name || 'brush', 0) || 'brush';
+        // 原生 SUT 被改过：先在原文件上原位改参数，保住笔尖/纹理/动态；
+        // 只在结构不支持（旧版本列缺失、强制重建、切换压感）时才退回模板重建。
+        const nat = (!opts.forceRebuild && opts.fidelity !== false &&
+          !/^(on|off)$/.test(String(opts.pressureMode || ''))) ? nativeSutMembers(rawBrush, srcList) : null;
+        if (nat && preserved.has(nat.group)) continue;
+        const base0 = sanitizeName(nat && nat.group.count > 1 ? (nat.group.name || brush.name) : (brush.name || 'brush'), 0) || 'brush';
         nameSeq[base0] = (nameSeq[base0] || 0) + 1;
         name = nameSeq[base0] > 1 ? base0 + ' ' + nameSeq[base0] : base0;
+        if (nat) {
+          try {
+            bytes = patchNativeSut(nat, opts, name, droppedCols);
+            preserved.add(nat.group);
+            files.push({ name: name + '.sut', data: bytes });
+            patchedCount++;
+            continue;
+          } catch (e) {
+            patchFails.push((rawBrush && rawBrush.name || '未命名') + '：' + e.message);
+          }
+        }
         // 新模板（G笔 2）没有素材层，因此不再写缩略图；预览由 CSP 用参数实时渲染色板样本笔触
         bytes = sutWrite.buildSut(tpl, [{
           params: variantParamsForSut(brush),
@@ -1510,6 +1611,9 @@
     const warnings = rebuiltCount ? [
       '优动漫原生 .sut：尺寸/间距(手动)/不透明度/流量/硬度/厚扁/旋转真实写入；笔尖用 CSP 内置圆形（素材笔尖是 CELSYS 私有位流，无法生成像素）；要真实素材笔尖请用「优动漫 CSP .abr（兼容）」目标'
     ] : [];
+    if (patchedCount) warnings.push('已修改的原生 SUT 在原文件上改写参数，笔尖、纹理、压感/角度动态与素材引用保持不变');
+    if (patchFails.length) warnings.push('部分原生 SUT 无法原位改写，已退回模板重建（笔尖为内置圆形）：' + patchFails.slice(0, 3).join('；'));
+    if (droppedCols.length) warnings.push('原 SUT 缺少列，未写入：' + droppedCols.slice(0, 8).join('、') + (droppedCols.length > 8 ? ' 等' : ''));
     if (texturedCount) warnings.push('SUT 目标：' + texturedCount + ' 支带纹理笔刷的纹理未写入（需要素材文件），导入后可在「纹理」里手动添加');
     if (dualCount) warnings.push('SUT 目标：' + dualCount + ' 支双笔刷已写入副笔参数（尺寸/流量/硬度/间距/角度），副笔笔尖用 CSP 内置圆形');
     if (skipped.length) warnings.unshift('已跳过 ' + skipped.length + ' 支无法写出 SUT 的笔刷：' + skipped.slice(0, 5).join('；') + (skipped.length > 5 ? ' 等' : ''));
@@ -1520,7 +1624,9 @@
       fileName: files.length ? files[0].name : 'brush.sut',
       format: 'sut',
       target: 'udongman_sut',
-      importGuide: !rebuiltCount ? '原生 SUT 未改动，已原样保留笔尖、纹理、动态及全部文件内容。在 CLIP STUDIO PAINT / 优动漫子工具面板中载入 .sut。' : [
+      importGuide: !rebuiltCount ? (patchedCount
+        ? '原生 SUT 参数级导出：在原始文件上改写尺寸/间距/不透明度/流量/硬度/厚扁/旋转，笔尖、纹理、动态和素材引用保持原样。在 CLIP STUDIO PAINT / 优动漫子工具面板中载入 .sut。'
+        : '原生 SUT 未改动，已原样保留笔尖、纹理、动态及全部文件内容。在 CLIP STUDIO PAINT / 优动漫子工具面板中载入 .sut。') : [
         '优动漫 PAINT / CLIP STUDIO PAINT：原生 SUT 导入（实验性）',
         '1）解压后得到若干 .sut（每支笔刷一个文件）',
         '2）优动漫 PAINT：子工具面板 → 面板菜单 → 「载入子工具」，选择 .sut 导入（也可把 .sut 直接拖进子工具面板）',
