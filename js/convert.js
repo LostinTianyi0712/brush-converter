@@ -62,6 +62,22 @@
       'flowPct','pressureCurve','pressureCurves','prop18'].some(function (key) { return opts[key] !== undefined; });
   }
 
+  // A SUT can contain current/initial variants. Preserve its private material
+  // only when every parsed variant is selected and unchanged, including after
+  // a Worker structured clone. A subset must never reintroduce hidden brushes.
+  function rawSutGroup(brush, list, opts) {
+    const group = brush && brush._rawSutGroup;
+    if (!group || !group.bytes || (opts && /^(on|off)$/.test(opts.pressureMode))) return null;
+    const members = list.filter(function (b) { return b._rawSutGroup === group; });
+    if (members.length !== group.count) return null;
+    const indices = new Set();
+    for (const b of members) {
+      if (!rawBrushUnchanged(b, opts)) return null;
+      indices.add(b._rawSutIndex);
+    }
+    return indices.size === group.count ? group : null;
+  }
+
   function withSizeAndSpacing(brush, opts) {
     opts = opts || {};
     const b = Object.assign({}, brush);
@@ -428,6 +444,15 @@
       }
     } else {
       result = abr.parse(bytes);
+    }
+    if (kind === 'sut' && result.brushes.length) {
+      const group = {bytes:new Uint8Array(bytes), count:result.brushes.length,
+        name:(name || result.brushes[0].name).replace(/^.*[\\/]/,'').replace(/\.sut$/i,'')};
+      result.brushes.forEach(function (b, i) {
+        b._rawSutGroup = group;
+        b._rawSutIndex = i;
+        b._rawBrushState = util.brushFingerprint(b);
+      });
     }
     return { kind, kindLabel: extLabel(kind), brushes: result.brushes, warnings: result.warnings || [] };
   }
@@ -1407,11 +1432,23 @@
     const nameSeq = {};
     const skipped = [];
     const srcList = Array.isArray(brushList) ? brushList : [];
-    const texturedCount = srcList.filter(function (b) { return b && b.hasTexture; }).length;
-    const dualCount = srcList.filter(function (b) { return b && b.dualOn; }).length;
+    const preserved = new Set();
+    let rebuiltCount = 0;
+    const texturedCount = srcList.filter(function (b) { return b && b.hasTexture && !rawSutGroup(b, srcList, opts); }).length;
+    const dualCount = srcList.filter(function (b) { return b && b.dualOn && !rawSutGroup(b, srcList, opts); }).length;
     for (const rawBrush of srcList) {
       let name, bytes;
       try {
+        const native = rawSutGroup(rawBrush, srcList, opts);
+        if (native && preserved.has(native)) continue;
+        if (native) {
+          preserved.add(native);
+          const base = sanitizeName(native.count === 1 ? rawBrush.name : native.name, 0) || 'brush';
+          nameSeq[base] = (nameSeq[base] || 0) + 1;
+          name = nameSeq[base] > 1 ? base + ' ' + nameSeq[base] : base;
+          files.push({name:name + '.sut', data:new Uint8Array(native.bytes)});
+          continue;
+        }
         const brush = withExportSettings(rawBrush, opts);
         if (!brush) continue;
         const tip = makeTipPng(brush, { maxTipSize: 1024 });
@@ -1429,15 +1466,16 @@
         continue;
       }
       files.push({ name: name + '.sut', data: bytes });
+      rebuiltCount++;
     }
     if (!files.length) {
       throw new Error(skipped.length
         ? '没有可导出的笔刷（' + skipped.slice(0, 3).join('；') + (skipped.length > 3 ? ' 等 ' + skipped.length + ' 支' : '') + '）'
         : '没有可导出的笔刷');
     }
-    const warnings = [
+    const warnings = rebuiltCount ? [
       '优动漫原生 .sut（实验）：参数真实写入；笔尖位图为模板占位（CSP 私有编码无法生成笔尖像素），压感动态暂不写入；需要真实笔尖请用「优动漫 CSP .abr（兼容）」目标'
-    ];
+    ] : [];
     if (texturedCount) warnings.push('SUT 目标：' + texturedCount + ' 支带纹理笔刷的纹理未写入（CSP 纹理为私有编码，模板不含该资源），请在子工具详情里手动添加材质');
     if (dualCount) warnings.push('SUT 目标：' + dualCount + ' 支双笔刷未写入双笔结构（模板不含双笔），只保留主笔参数');
     if (skipped.length) warnings.unshift('已跳过 ' + skipped.length + ' 支无法写出 SUT 的笔刷：' + skipped.slice(0, 5).join('；') + (skipped.length > 5 ? ' 等' : ''));
@@ -1448,7 +1486,7 @@
       fileName: files.length ? files[0].name : 'brush.sut',
       format: 'sut',
       target: 'udongman_sut',
-      importGuide: [
+      importGuide: !rebuiltCount ? '原生 SUT 未改动，已原样保留笔尖、纹理、动态及全部文件内容。在 CLIP STUDIO PAINT / 优动漫子工具面板中载入 .sut。' : [
         '优动漫 PAINT / CLIP STUDIO PAINT：原生 SUT 导入（实验性）',
         '1）解压后得到若干 .sut（每支笔刷一个文件）',
         '2）优动漫 PAINT：子工具面板 → 面板菜单 → 「载入子工具」，选择 .sut 导入（也可把 .sut 直接拖进子工具面板）',
@@ -2399,6 +2437,7 @@ Write-Host 'restart MediBang Paint Pro'
     const targetLabel = target === 'udongman' ? '优动漫 / CSP（ABR兼容）' : target === 'udongman_sut' ? '优动漫 / CSP 原生 .sut（实验）' : target === 'udongman_mtd' ? '优动漫 / .mtd 绘画助手包（实验）' : target;
     const rawCache = new WeakMap();
     target = reportTarget(target);
+    if (target === 'sut') brushList.forEach(function (b) { rawCache.set(b, !!rawSutGroup(b, brushList, meta && meta.options)); });
     const NL = String.fromCharCode(10);
     const fields = [
       ['尺寸', 'sizePx', function (v) { return Math.round(v) + 'px'; }],
@@ -2640,9 +2679,10 @@ Write-Host 'restart MediBang Paint Pro'
       const target = reportTarget(requestedTarget);
       const keep = support[target] || [];
       const rawCache = new WeakMap();
+      if (target === 'sut') brushList.forEach(function (b) { rawCache.set(b, !!rawSutGroup(b, brushList, opts)); });
       lines.push('【目标格式：' + (requestedTarget === 'udongman' ? '优动漫 / CSP（ABR兼容）' : requestedTarget === 'udongman_sut' ? '优动漫 / CSP 原生 .sut（实验）' : requestedTarget === 'udongman_mtd' ? '优动漫 / .mtd 绘画助手包（实验）' : target) + '】');
       if (requestedTarget === 'udongman') lines.push('  兼容说明：导出ABR，不是原生SUT；在子工具面板导入，动态/混色/双笔/纹理效果需目标软件核对。');
-      if (requestedTarget === 'udongman_sut') lines.push('  兼容说明：原生SUT参数级导出（实验）；尺寸/间距/不透明度/流量/硬度/厚扁/旋转真实写入；笔尖位图为模板占位（CSP私有编码无法生成笔尖像素），压感动态暂不写入；需要真实笔尖请用「优动漫 CSP .abr（兼容）」目标。');
+      if (requestedTarget === 'udongman_sut') lines.push(brushList.every(function (b) { return rawSutGroup(b, brushList, opts); }) ? '  兼容说明：原生 SUT 完整选择且未改动，整个文件原样保留。' : '  兼容说明：原生SUT参数级导出（实验）；未改动的完整原生SUT可原样保留；需要重建时笔尖位图为模板占位，压感动态暂不写入；需要真实笔尖请用「优动漫 CSP .abr（兼容）」目标。');
       if (requestedTarget === 'udongman_mtd') lines.push('  兼容说明：.mtd=zip+sut绘画助手素材包（实验，未真机验证）；参数限制同.sut目标（笔尖为模板占位）；如绘画助手拒绝导入请改用.sut或ABR兼容目标。');
       if (reason[target]) lines.push('  说明：' + reason[target]);
       let lostTotal = 0, keptTotal = 0;
@@ -2667,7 +2707,7 @@ Write-Host 'restart MediBang Paint Pro'
       });
       lines.push('  小结：写入参数 ' + keptTotal + ' 项，近似/未完整写入/丢失 ' + lostTotal + ' 项');
       if (requestedTarget === 'udongman') lines.push('  手动补全建议：通过子工具/工具组面板导入ABR后检查尺寸、间距与纹理，不把PS图案安装步骤视为优动漫原生流程。');
-      else if (requestedTarget === 'udongman_sut') lines.push('  手动补全建议：导入后在「笔尖形状」里选择想要的笔尖，压感等动态在「子工具详情」面板手动开启。');
+      else if (requestedTarget === 'udongman_sut' && !brushList.every(function (b) { return rawSutGroup(b, brushList, opts); })) lines.push('  手动补全建议：重建的笔刷导入后在「笔尖形状」里选择想要的笔尖，压感等动态在「子工具详情」面板手动开启。');
       else if (requestedTarget === 'udongman_mtd') lines.push('  手动补全建议：双击 .mtd 用绘画助手导入；笔尖位图为模板占位，导入后在「笔尖形状」里更换；如绘画助手拒绝导入请改用 .sut 或 ABR 兼容目标。');
       else if (MANUAL_ADVICE[target]) lines.push('  手动补全建议：' + MANUAL_ADVICE[target]);
       lines.push('');
