@@ -424,6 +424,143 @@
     return total;
   }
 
+  /* --- 笔尖（笔刷图案）位图：material*.layer 里嵌着一张 PNG --------------------
+     .sut 的 MaterialFile.FileData 是 tar，里面 data/material*.layer 是 CELSYS 的
+     C2F 容器（外层分节 + 内部一份文档）。容器里能看到一张 PNG（第三方 CSP2PC 就是
+     按 PNG 签名取这张图当笔尖）。
+     ⚠ 实测结论（第133轮，桌面版 CSP 5.1.5 导入+画线）：**素材库来源的层**里这张
+     PNG 只有 IHDR/pHYs/tEXt 是标准块，IDAT 之后接的是 CELSYS 私有位流（chunk 链
+     在第一个 IDAT 之后就断了），所以换掉 PNG 像素 CSP 解不出来 → 笔尖退化成实心圆。
+     只有 **CSP 自己写出的层**（用户新建笔刷再导出）里才是真正的标准 PNG。
+     因此下面的同长度替换只对「CSP 原生层」有意义，替换素材库模板层不会生效。
+     PNG 靠前后偏移定位，所以只做同长度替换：新 PNG ≤ 原槽位长度、像素尺寸一致，
+     不足部分在 IEND 之后补 0，其余字节原样保留。 */
+  const PNG_SIG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+  function findEmbeddedPng(bytes) {
+    if (!(bytes instanceof Uint8Array) || bytes.length < 32) return null;
+    let start = -1;
+    for (let i = 0; i + 8 <= bytes.length; i++) {
+      if (bytes[i] !== PNG_SIG[0]) continue;
+      let ok = true;
+      for (let k = 1; k < 8; k++) { if (bytes[i + k] !== PNG_SIG[k]) { ok = false; break; } }
+      if (ok) { start = i; break; }
+    }
+    if (start < 0 || start + 26 > bytes.length) return null;
+    let iend = -1;
+    for (let i = start; i + 4 <= bytes.length; i++) {
+      if (bytes[i] === 0x49 && bytes[i + 1] === 0x45 && bytes[i + 2] === 0x4e && bytes[i + 3] === 0x44) iend = i;
+    }
+    if (iend < 0) return null;
+    const end = iend + 8; // "IEND" + 4 字节 CRC（IEND 的 chunk 长度字段为 0）
+    const width = u32(bytes, start + 16), height = u32(bytes, start + 20);
+    if (!width || !height || width > 100000 || height > 100000) return null;
+    return { offset: start, length: end - start, width: width, height: height };
+  }
+
+  /* 在 layer 字节里用 newPng 覆盖原 PNG，保持总长度不变（尾部补 0）。 */
+  function spliceLayerPng(layerBytes, pngBytes) {
+    const slot = findEmbeddedPng(layerBytes);
+    if (!slot) throw new Error('sutWrite: layer 里没有可替换的明文 PNG（CELSYS 私有编码）');
+    if (!isPngBytes(pngBytes)) throw new Error('sutWrite: 笔尖不是 PNG');
+    const w = u32(pngBytes, 16), h = u32(pngBytes, 20);
+    if (w !== slot.width || h !== slot.height) {
+      throw new Error('sutWrite: 笔尖尺寸必须与模板槽位一致（' + slot.width + 'x' + slot.height + '，实际 ' + w + 'x' + h + '）');
+    }
+    if (pngBytes.length > slot.length) {
+      throw new Error('sutWrite: 笔尖 PNG 超出模板槽位（' + pngBytes.length + ' > ' + slot.length + ' 字节）');
+    }
+    const out = layerBytes.slice();
+    out.set(pngBytes, slot.offset);
+    for (let i = slot.offset + pngBytes.length; i < slot.offset + slot.length; i++) out[i] = 0;
+    return out;
+  }
+
+  /* 把 tar 里指定成员的内容整体换成 newData（长度必须与原成员相同）。 */
+  function replaceTarMemberSameLength(tarBytes, memberName, newData) {
+    const parsed = parseTar(tarBytes);
+    const want = String(memberName || '').replace(/^\.\//, '');
+    const parts = [];
+    let found = 0;
+    for (const item of parsed.entries) {
+      if (item.kind !== 'file') { parts.push(item.header, item.data, zeros(pad512(item.data.length))); continue; }
+      const name = String(item.name || '').replace(/^\.\//, '');
+      if (name !== want) { parts.push(item.header, item.data, zeros(pad512(item.data.length))); continue; }
+      if (newData.length !== item.data.length) {
+        throw new Error('sutWrite: 成员 ' + want + ' 长度不能变（' + item.data.length + ' → ' + newData.length + '）');
+      }
+      parts.push(item.header, newData, zeros(pad512(newData.length)));
+      found++;
+    }
+    if (!found) throw new Error('sutWrite: tar 里没有成员 ' + want + '（成员: ' + tarEntryNames(parsed).join(', ') + '）');
+    parts.push(zeros(2 * TAR_BLOCK));
+    const blocking = (tarBytes.length % TAR_RECORD === 0 && tarBytes.length >= TAR_RECORD) ? TAR_RECORD : TAR_BLOCK;
+    const total = util.concat(parts);
+    if (total.length % blocking) return util.concat([total, zeros(blocking - (total.length % blocking))]);
+    return total;
+  }
+
+  /* 从 Variant.BrushPatternImageArray 的 UTF-16 引用里取「笔尖图案」的 tar 成员名，
+     形如 ".:12:45:a338...:data:material_0.layer" → data/material_0.layer。 */
+  function referencedMemberName(blob) {
+    if (!(blob instanceof Uint8Array) || blob.length < 4) return null;
+    let s = '';
+    for (let i = 0; i + 1 < blob.length; i += 2) {
+      const c = blob[i] | (blob[i + 1] << 8);
+      if (!c) break;
+      s += String.fromCharCode(c);
+    }
+    const m = /data[:\/]([^:\/]+\.layer)$/i.exec(s);
+    return m ? 'data/' + m[1] : null;
+  }
+
+  function layerEntries(parsed) {
+    return parsed.entries.filter(function (e) { return e.kind === 'file' && /\.layer$/i.test(String(e.name || '')); });
+  }
+
+  function sutWriteTarNames(tarBytes) {
+    return parseTar(tarBytes).entries.filter(function (e) { return e.kind === 'file'; })
+      .map(function (e) { return String(e.name || '').replace(/^\.\//, ''); });
+  }
+
+  function findMaterialTar(db) {
+    const material = (db.tables || []).filter(function (t) { return t.name === 'MaterialFile'; })[0];
+    if (!material) return null;
+    const colData = material.columns.indexOf('FileData');
+    if (colData < 0) return null;
+    return { material: material, colData: colData };
+  }
+
+  /* 描述模板里「笔尖图案」那张 PNG 的槽位：{ member, width, height, byteLength }。
+     convert 层据此把笔尖缩放/压缩到槽位内；拿不到时返回 null（保持模板笔尖）。 */
+  function inspectTipSlot(templateBytes) {
+    let db;
+    try { db = sqlite.read(templateBytes); } catch (e) { return null; }
+    const info = findMaterialTar(db);
+    if (!info) return null;
+    const variant = (db.tables || []).filter(function (t) { return t.name === 'Variant'; })[0];
+    let want = null;
+    if (variant && variant.columns.indexOf('BrushPatternImageArray') >= 0) {
+      const v = variant.rows[0] && variant.rows[0].BrushPatternImageArray;
+      want = referencedMemberName(v instanceof Uint8Array ? v : null);
+    }
+    let fallback = null;
+    for (const row of info.material.rows) {
+      const tar = row.values ? row.values[info.colData] : row.FileData;
+      if (!(tar instanceof Uint8Array)) continue;
+      let parsed;
+      try { parsed = parseTar(tar); } catch (e) { continue; }
+      for (const entry of layerEntries(parsed)) {
+        const png = findEmbeddedPng(entry.data);
+        if (!png) continue;
+        const slot = { member: String(entry.name).replace(/^\.\//, ''), width: png.width, height: png.height, byteLength: png.length };
+        if (want && slot.member === want) return slot;
+        if (!fallback) fallback = slot;
+      }
+    }
+    return fallback;
+  }
+
   /* ---------------------------- input normalisation --------------------------- */
   function isPngBytes(b) {
     return !!b && b.length >= 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47;
@@ -443,10 +580,11 @@
     return list.map(function (o, i) {
       if (!o || typeof o !== 'object') throw new Error('sutWrite: overrides[' + i + '] 不是对象');
       const hasThumb = o.thumbnailPng !== undefined;
+      const hasPattern = o.patternPng !== undefined;
       const hasParams = o.params !== undefined;
       const hasName = o.nodeName !== undefined;
-      if (!hasThumb && !hasParams && !hasName) {
-        throw new Error('sutWrite: overrides[' + i + '] 需要 thumbnailPng / params / nodeName 之一');
+      if (!hasThumb && !hasPattern && !hasParams && !hasName) {
+        throw new Error('sutWrite: overrides[' + i + '] 需要 thumbnailPng / patternPng / params / nodeName 之一');
       }
       if (hasThumb) {
         if (!isPngBytes(o.thumbnailPng)) throw new Error('sutWrite: overrides[' + i + '].thumbnailPng 不是 PNG');
@@ -455,6 +593,9 @@
         }
         // 无定位字段时默认替换全部 MaterialFile 行（CSP 读哪行都拿到新缩略图）
         o._allMaterials = (o.materialUuid === undefined && o.index === undefined);
+      }
+      if (hasPattern) {
+        if (!isPngBytes(o.patternPng)) throw new Error('sutWrite: overrides[' + i + '].patternPng 不是 PNG');
       }
       if (hasParams) {
         if (!o.params || typeof o.params !== 'object' || Array.isArray(o.params)) {
@@ -557,14 +698,18 @@
     const tableByName = {};
     for (const t of tables) tableByName[t.name] = t;
 
-    /* --- replace thumbnails inside MaterialFile.FileData --- */
+    /* --- replace thumbnails inside MaterialFile.FileData （无素材层的模板跳过） --- */
     const material = tableByName.MaterialFile;
-    if (!material) throw new Error('sutWrite: 模板里没有 MaterialFile 表');
-    const colData = material.columns.indexOf('FileData');
-    if (colData < 0) throw new Error('sutWrite: MaterialFile 没有 FileData 列');
     const list = normalizeOverrides(overrides);
+    const needsMaterial = list.some(function (o) { return o.thumbnailPng !== undefined || o.patternPng !== undefined; });
+    if (!material && needsMaterial) {
+      throw new Error('sutWrite: 模板里没有 MaterialFile 表（无素材层），不能覆写缩略图/笔尖图案');
+    }
+    const colData = material ? material.columns.indexOf('FileData') : -1;
+    if (material && colData < 0) throw new Error('sutWrite: MaterialFile 没有 FileData 列');
     const replaced = [];
-    for (let i = 0; i < list.length; i++) {
+    if (material) {
+      for (let i = 0; i < list.length; i++) {
       const o = list[i];
       if (o.thumbnailPng === undefined) continue; // 纯 params / nodeName 覆写
       if (o._allMaterials) {
@@ -581,6 +726,42 @@
       if (!(oldTar instanceof Uint8Array)) throw new Error('sutWrite: 目标 MaterialFile 行没有 FileData');
       row.values[colData] = replaceTarThumbnail(oldTar, o.thumbnailPng);
       replaced.push({ rowid: row.rowid, index: material.rows.indexOf(row) });
+      }
+    }
+
+    /* --- 笔尖图案位图写入：layer 里的明文 PNG 同长度替换 --- */
+    const patternWrites = [];
+    for (let i = 0; i < list.length; i++) {
+      const o = list[i];
+      if (o.patternPng === undefined) continue;
+      let wantMember = o.patternMember || null;
+      if (!wantMember) {
+        const slot = inspectTipSlot(templateBytes);
+        wantMember = slot && slot.member;
+      }
+      if (!wantMember) throw new Error('sutWrite: 模板里找不到可写入的笔尖图案 layer');
+      let row = null;
+      if (o.materialUuid !== undefined || o.index !== undefined) {
+        row = resolveMaterialRow(material.rows, material.columns, o, 'overrides[' + i + ']');
+      } else {
+        // 没指定行时：找 FileData 里真的含该 layer 成员的那一行
+        for (const cand of material.rows) {
+          const tar = cand.values[colData];
+          if (!(tar instanceof Uint8Array)) continue;
+          let names = [];
+          try { names = sutWriteTarNames(tar); } catch (e) { continue; }
+          if (names.indexOf(wantMember) >= 0) { row = cand; break; }
+        }
+      }
+      if (!row) throw new Error('sutWrite: 没有 MaterialFile 行包含成员 ' + wantMember);
+      const oldTar = row.values[colData];
+      if (!(oldTar instanceof Uint8Array)) throw new Error('sutWrite: 目标 MaterialFile 行没有 FileData');
+      const parsed = parseTar(oldTar);
+      const entry = parsed.entries.filter(function (e) { return e.kind === 'file' && String(e.name).replace(/^\.\//, '') === wantMember; })[0];
+      if (!entry) throw new Error('sutWrite: tar 里没有成员 ' + wantMember);
+      const newLayer = spliceLayerPng(entry.data, o.patternPng);
+      row.values[colData] = replaceTarMemberSameLength(oldTar, wantMember, newLayer);
+      patternWrites.push({ rowid: row.rowid, member: wantMember });
     }
 
     /* --- Variant 参数覆写（应用到全部 Variant 行，或 variantIndex 指定行） --- */
@@ -869,7 +1050,10 @@
     replaceTarThumbnail: replaceTarThumbnail,
     isThumbnailName: isThumbnailName,
     isPngBytes: isPngBytes,
-    buildSutVersion: 1
+    inspectTipSlot: inspectTipSlot,
+    spliceLayerPng: spliceLayerPng,
+    findEmbeddedPng: findEmbeddedPng,
+    buildSutVersion: 2
   };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { sutWrite: api });
