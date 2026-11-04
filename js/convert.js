@@ -493,8 +493,10 @@
     if (kind === 'sut' && result.brushes.length) {
       // 原位改写时要写回 NodeName，必须用原笔刷名而不是文件名，否则用户的笔刷名会被
       // 「另存为的 .sut 文件名」覆盖（第137轮：BC136_RINGCS 被改成 BC136_texture_native）。
-      const originName = String((result.brushes[0] && result.brushes[0].name) || '')
-        .replace(/^.*[\\/]/, '').replace(/ #\d+$/, '').replace(/\.sut$/i, '').trim();
+      let originName = String((result.brushes[0] && result.brushes[0].name) || '');
+      // Only the parser-added multi-variant suffix is bookkeeping. A real
+      // NodeName may itself end in " #12" or ".sut"; keep that name intact.
+      if (result.brushes.length > 1) originName = originName.replace(/ #\d+$/, '');
       const group = {bytes:new Uint8Array(bytes), count:result.brushes.length,
         name:originName || (name || '').replace(/^.*[\\/]/,'').replace(/\.sut$/i,'') || 'brush'};
       result.brushes.forEach(function (b, i) {
@@ -1469,7 +1471,7 @@
     p.BrushRotation = ang;
     /* 双笔刷（副笔）：参考样本 sample_ceshi2.sut（UseDualBrush=1 / DualSize=30 / DualFlow=31 /
        DualHardness=80 / DualInterval=100 / DualSizeUnit=0），单位与主笔一致（0=px）。
-       副笔笔尖用 CSP 内置（DualUsePatternImage=0），因为素材笔尖是私有位流写不了。 */
+       重建时副笔笔尖用 CSP 内置（DualUsePatternImage=0）；任意素材图块写入尚未接入。 */
     const dual = brush.dualOn && (brush.dualBrush || brush.dualTip || brush.dualSubBrush);
     if (dual) {
       const info = brush.dualBrush || {};
@@ -1504,8 +1506,8 @@
   /** 优动漫 / CSP 原生 .sut 输出：以内嵌「G笔 2」（CSP 5.1.5 自己导出的新版结构）为模板做参数级覆写。
       真实写入：尺寸/间距(手动)/不透明度/流量/硬度/厚扁/旋转 + 笔刷名 + 双笔刷副笔参数（内置圆头副笔尖）。
       已知限制（写入 warnings 与随包说明）：
-      · 笔尖形状用 CSP 内置圆形：素材笔尖存在 material.layer 里，是 CELSYS 私有位流，
-        程序无法生成像素；要真实素材笔尖请用「优动漫 CSP .abr（兼容）」目标；
+      · 笔尖形状用 CSP 内置圆形：任意尺寸素材图块写入尚未接入；
+        要真实素材笔尖请用「优动漫 CSP .abr（兼容）」目标；
       · 纹理/图案（TextureImage/BrushPatternImageArray）需要素材，未写入；
       · 压感动态（Effector 曲线 blob）暂未写入，模板里保留中性默认值。 */
   /** 在原生 SUT 上原位改写参数（保留 material.layer 笔尖/纹理、Effector 动态、素材引用）。 */
@@ -1513,31 +1515,46 @@
     const bytes = nat.group.bytes;
     const vt = sutVariantTable(bytes);
     if (!vt || !vt.rows.length) throw new Error('原 SUT 没有 Variant 表');
-    const cols = vt.columns;
-    const params = nat.members.map(function (m) {
-      const b = withExportSettings(m.brush, opts) || m.brush;
-      return filterSutParams(variantParamsForSut(b), cols, droppedCols);
-    });
-    if (!params.length) throw new Error('没有可写入的参数');
-    // 原生模板自带副笔素材时，不要把 DualUsePatternImage 写成 0（那会把副笔笔尖换成内置圆形）
-    if (vt.columns.indexOf('DualUsePatternImage') >= 0 &&
-        vt.rows.some(function (r) { return r.DualUsePatternImage === 1; })) {
-      params.forEach(function (p) { delete p.DualUsePatternImage; });
+    const originals = csp.parseSut(bytes, nat.group.name).brushes;
+    const overrides = [];
+    function sameVariant(a, b) {
+      return vt.columns.every(function (key) {
+        if (key === 'VariantID') return true;
+        const x = a[key], y = b[key];
+        if (x instanceof Uint8Array && y instanceof Uint8Array) {
+          return x.length === y.length && x.every(function (v, i) { return v === y[i]; });
+        }
+        return x === y;
+      });
     }
-    const same = params.every(function (p) { return sameSutParams(p, params[0]); });
-    let overrides;
-    if (same) {
-      // 参数一致：写到全部 Variant 行（当前+初始副本），CSP 读哪行都拿到新值
-      overrides = [{ params: params[0], nodeName: name }];
-    } else {
-      overrides = [];
-      for (let i = 0; i < nat.members.length; i++) {
-        const row = sutVariantRowIndex(bytes, nat.members[i].brush._rawSutVariantId);
-        if (row < 0) throw new Error('找不到变体在原文件中的 Variant 行');
-        overrides.push({ params: params[i], variantIndex: row });
+    nat.members.forEach(function (m) {
+      const original = originals.filter(function (b) { return b._rawSutVariantId === m.brush._rawSutVariantId; })[0];
+      const row = vt.rows.filter(function (r) { return r.VariantID === m.brush._rawSutVariantId; })[0];
+      if (!original || !row) throw new Error('找不到变体在原文件中的 Variant 行');
+      const before = variantParamsForSut(original);
+      const after = variantParamsForSut(withExportSettings(m.brush, opts));
+      const changes = {};
+      // Comparing the normalized projections identifies intentional edits.
+      // Never round-trip untouched values: native units, subpixel precision,
+      // automatic spacing and secondary compensation are not generic defaults.
+      Object.keys(after).forEach(function (key) {
+        if (after[key] !== before[key]) changes[key] = after[key];
+      });
+      if (changes.BrushSize !== undefined) changes.BrushSizeUnit = after.BrushSizeUnit;
+      if (changes.DualSize !== undefined) changes.DualSizeUnit = after.DualSizeUnit;
+      if (changes.BrushInterval !== undefined) changes.BrushAutoIntervalType = after.BrushAutoIntervalType;
+      if (changes.DualInterval !== undefined) changes.DualAutoIntervalType = after.DualAutoIntervalType;
+      const params = filterSutParams(changes, vt.columns, droppedCols);
+      // Apply the same edits to exact current/initial copies of this variant,
+      // keeping distinct variants and every unedited blob/column unchanged.
+      vt.rows.forEach(function (candidate, index) {
+        if (sameVariant(row, candidate)) overrides.push({ params: params, variantIndex: index });
+      });
+      if (m.brush.name !== original.name && nat.group.count === 1) {
+        overrides[overrides.length - 1].nodeName = m.brush.name;
       }
-      overrides[0].nodeName = name;
-    }
+    });
+    if (!overrides.length) throw new Error('没有可写入的参数');
     return sutWrite.buildSut(bytes, overrides);
   }
 
@@ -1609,7 +1626,7 @@
         : '没有可导出的笔刷');
     }
     const warnings = rebuiltCount ? [
-      '优动漫原生 .sut：尺寸/间距(手动)/不透明度/流量/硬度/厚扁/旋转真实写入；笔尖用 CSP 内置圆形（素材笔尖是 CELSYS 私有位流，无法生成像素）；要真实素材笔尖请用「优动漫 CSP .abr（兼容）」目标'
+      '优动漫原生 .sut：尺寸/间距(手动)/不透明度/流量/硬度/厚扁/旋转真实写入；笔尖用 CSP 内置圆形（任意尺寸素材笔尖写入尚未接入）；要真实素材笔尖请用「优动漫 CSP .abr（兼容）」目标'
     ] : [];
     if (patchedCount) warnings.push('已修改的原生 SUT 在原文件上改写参数，笔尖、纹理、压感/角度动态与素材引用保持不变');
     if (patchFails.length) warnings.push('部分原生 SUT 无法原位改写，已退回模板重建（笔尖为内置圆形）：' + patchFails.slice(0, 3).join('；'));
@@ -1634,10 +1651,10 @@
         '',
         '重要说明（参数级导出的已知限制）：',
         '· 尺寸/间距（手动间距）/不透明度/流量/硬度/厚扁/旋转等参数已真实写入',
-        '· 笔尖形状使用 CSP 内置圆形：素材笔尖存在 material.layer 里，是 CELSYS 私有位流，',
-        '  程序无法生成像素。需要原始笔尖请看「优动漫 CSP .abr（兼容）」目标；',
+        '· 笔尖形状使用 CSP 内置圆形：任意尺寸素材图块写入尚未接入，',
+        '  需要原始笔尖请看「优动漫 CSP .abr（兼容）」目标；',
         '  导入后也可以自己在「笔尖形状」里换成素材',
-        '· 双笔刷：副笔的尺寸/流量/硬度/间距/角度会写入，副笔笔尖为内置圆形（素材笔尖写不了）',
+        '· 双笔刷：副笔的尺寸/流量/硬度/间距/角度会写入，副笔笔尖为内置圆形（尚未写入素材副笔尖）',
         '· 纹理/图案与压感动态暂未写入（都需要素材或私有曲线格式）',
         '官方说明：https://www.udongman.cn/resource/details/doc/25050'
       ].join('\n'),
