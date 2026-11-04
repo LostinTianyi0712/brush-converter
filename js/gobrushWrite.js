@@ -326,7 +326,9 @@
     if (EXTRA.jitterPct === undefined) {
       EXTRA.jitterPct = brush.source === 'gopaint'
         ? (brush.jitterPct === undefined ? 0 : brush.jitterPct)
-        : (brush.scatterOn === false ? 0 : Math.round(brush.scatterPct || 0));
+        // 真机标定（40px 圆头笔刷，300dpi）：抖动 j% 的偏移半径 ≈ 1.95×直径×(j/100)²（j=0/25/50/100 → 包围盒 40/49/76/196px）。
+        // 反解：要让「散播 s%」等价于偏移半径 s% 直径（Procreate/PS 语义），取 j ≈ 100×sqrt(s/195) ≈ 7.16×sqrt(s)。
+        : (brush.scatterOn === false ? 0 : Math.round(Math.min(200, 7.16 * Math.sqrt(Math.max(0, brush.scatterPct || 0)))));
     }
     // 掉落：只有原生来源有等价字段，其它来源写 0 而不是乱猜
     if (EXTRA.falloffPct === undefined) {
