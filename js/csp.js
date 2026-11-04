@@ -76,6 +76,29 @@
   // ABR 45deg -> 315. CSP uses the opposite angular direction.
   function modelAngle(rotation) { return ((360 - rotation) % 360 + 360) % 360; }
 
+  /* 读取双笔刷（副笔）字段。参考真实样本 sample_ceshi2.sut：
+     UseDualBrush=1 / DualSize=30 / DualSizeUnit=0 / DualFlow=31 / DualHardness=80 /
+     DualInterval=100 / DualThickness=100 / DualRotation=0 / DualBrushCompositeMode=3。
+     单位与主笔一致：DualSizeUnit 0 = px、1 = 主笔百分比口径（×10 近似）。 */
+  function readDualFields(v, clamp) {
+    if (!v || !v.UseDualBrush) return { dualOn: false };
+    const unit = v.DualSizeUnit || 0;
+    let sizePx = typeof v.DualSize === 'number' ? v.DualSize : 0;
+    if (unit === 1) sizePx = sizePx * 10;
+    return {
+      dualOn: true,
+      dualSizePx: Math.max(0, Math.round(sizePx)),
+      dualSizeUnit: unit,
+      dualFlowPct: typeof v.DualFlow === 'number' ? clamp(v.DualFlow / 100, 0, 1) : 1,
+      dualHardness: typeof v.DualHardness === 'number' ? clamp(v.DualHardness / 100, 0, 1) : 1,
+      dualSpacingPct: typeof v.DualInterval === 'number' ? clamp(v.DualInterval, 1, 1000) : 10,
+      dualThickness: typeof v.DualThickness === 'number' ? clamp(v.DualThickness, 1, 100) : 100,
+      dualAngle: typeof v.DualRotation === 'number' ? modelAngle(v.DualRotation) : 0,
+      dualCompositeMode: typeof v.DualBrushCompositeMode === 'number' ? v.DualBrushCompositeMode : 0,
+      dualUsePattern: !!v.DualUsePatternImage
+    };
+  }
+
   function parseSut(bytes, fileName) {
     const warnings = [];
     const db = sqlite.read(bytes);
@@ -157,7 +180,7 @@
       const rotation = typeof v.BrushRotation === 'number' ? v.BrushRotation : 0;
       const hasSizeDynamics = !!(v.BrushSizeEffector && v.BrushSizeEffector.length);
       const hasOpacityDynamics = !!(v.BrushOpacityEffector && v.BrushOpacityEffector.length);
-      brushes.push({
+      brushes.push(Object.assign({
         name: variantTotal > 1 ? baseName + ' #' + (idx + 1) : baseName,
         tip: tip,
         sizePx: sizePx,
@@ -174,7 +197,7 @@
         minOpacityRatio: hasOpacityDynamics ? 0.3 : 1,
         source: 'csp',
         cspVersion: version
-      });
+      }, readDualFields(v, clamp)));
     });
     return { brushes: brushes, warnings: warnings };
   }
@@ -261,7 +284,7 @@
         if (pool.length) tip = pool[idx % pool.length];
       }
       if (referenced.length > 1) warnings.push('CSP 变体含多个图案材质，转换时使用其中第一个作为笔尖');
-      brushes.push({
+      brushes.push(Object.assign({
         name: variantTotal > 1 ? brushName + ' #' + (idx + 1) : brushName,
         tip: tip,
         sizePx: sizePx,
@@ -278,7 +301,7 @@
         minOpacityRatio: hasOpacityDynamics ? 0.3 : 1,
         source: 'csp-decrypted',
         cspVersion: json.manager && json.manager.Version
-      });
+      }, readDualFields(variant, clamp)));
     });
     return { brushes: brushes, warnings: warnings };
   }

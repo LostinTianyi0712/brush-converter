@@ -1418,16 +1418,47 @@
     let ang = (360 - num(brush.angle, 0)) % 360;
     if (ang < 0) ang += 360;
     p.BrushRotation = ang;
+    /* 双笔刷（副笔）：参考样本 sample_ceshi2.sut（UseDualBrush=1 / DualSize=30 / DualFlow=31 /
+       DualHardness=80 / DualInterval=100 / DualSizeUnit=0），单位与主笔一致（0=px）。
+       副笔笔尖用 CSP 内置（DualUsePatternImage=0），因为素材笔尖是私有位流写不了。 */
+    const dual = brush.dualOn && (brush.dualBrush || brush.dualTip || brush.dualSubBrush);
+    if (dual) {
+      const info = brush.dualBrush || {};
+      const sub = brush.dualSubBrush || {};
+      const mainPx = p.BrushSize;
+      let subPx = num(info.diameter, 0);
+      if (!subPx && num(info.ratio, 0) > 0) subPx = mainPx * num(info.ratio, 1);
+      if (!subPx && num(sub.sizePx, 0) > 0) subPx = sub.sizePx;
+      p.UseDualBrush = 1;
+      p.DualSizeUnit = 0;
+      p.DualSize = clamp(Math.round(subPx || Math.max(1, mainPx * 0.5)), 1, 4000);
+      p.DualFlow = Math.round(clamp(num(sub.opacity, num(info.flowPct, num(info.flow, 1))), 0, 1) * 100);
+      p.DualHardness = Math.round(clamp(num(info.hardness, num(sub.hardness, 1)), 0, 1) * 100);
+      p.DualInterval = clamp(Math.round(num(info.spacing, num(brush.spacingPct, 10)) * 10) / 10, 1, 1000);
+      p.DualAutoIntervalType = 0; // 与主笔一致：手动间距，否则 CSP 忽略 DualInterval
+      p.DualThickness = clamp(Math.round(num(info.roundness, 100)), 1, 100);
+      let dAng = (360 - num(info.angle, num(brush.angle, 0))) % 360;
+      if (dAng < 0) dAng += 360;
+      p.DualRotation = dAng;
+      p.DualUsePatternImage = 0;
+      p.DualAdjustFlowByInterval = 0;
+      // 合成模式：有源值就透传，否则显式写 0（通常），不要沿用模板的 1——
+      // 实测模板默认 1 时画出来只剩副笔/很细，0 才是主副笔正常叠加。
+      p.DualBrushCompositeMode = (brush.dualBlendMode !== undefined && isFinite(brush.dualBlendMode))
+        ? clamp(Math.round(brush.dualBlendMode), 0, 30) : 0;
+    } else {
+      p.UseDualBrush = 0;
+    }
     return p;
   }
 
   /** 优动漫 / CSP 原生 .sut 输出：以内嵌「G笔 2」（CSP 5.1.5 自己导出的新版结构）为模板做参数级覆写。
-      真实写入：尺寸/间距(手动)/不透明度/流量/硬度/厚扁/旋转 + 笔刷名。
+      真实写入：尺寸/间距(手动)/不透明度/流量/硬度/厚扁/旋转 + 笔刷名 + 双笔刷副笔参数（内置圆头副笔尖）。
       已知限制（写入 warnings 与随包说明）：
       · 笔尖形状用 CSP 内置圆形：素材笔尖存在 material.layer 里，是 CELSYS 私有位流，
         程序无法生成像素；要真实素材笔尖请用「优动漫 CSP .abr（兼容）」目标；
       · 纹理/图案（TextureImage/BrushPatternImageArray）需要素材，未写入；
-      · 压感动态（Effector 曲线 blob）与双笔刷映射暂未做，模板里保留中性默认值。 */
+      · 压感动态（Effector 曲线 blob）暂未写入，模板里保留中性默认值。 */
   function makeUdongmanSutPack(brushList, opts) {
     opts = opts || {};
     if (!sutWrite || !udongmanTemplate) throw new Error('优动漫原生 SUT 组件未加载（sutWrite/udongmanTemplate）');
@@ -1480,7 +1511,7 @@
       '优动漫原生 .sut：尺寸/间距(手动)/不透明度/流量/硬度/厚扁/旋转真实写入；笔尖用 CSP 内置圆形（素材笔尖是 CELSYS 私有位流，无法生成像素）；要真实素材笔尖请用「优动漫 CSP .abr（兼容）」目标'
     ] : [];
     if (texturedCount) warnings.push('SUT 目标：' + texturedCount + ' 支带纹理笔刷的纹理未写入（需要素材文件），导入后可在「纹理」里手动添加');
-    if (dualCount) warnings.push('SUT 目标：' + dualCount + ' 支双笔刷的副笔未写入（模板支持双笔字段，映射待做），只保留主笔参数');
+    if (dualCount) warnings.push('SUT 目标：' + dualCount + ' 支双笔刷已写入副笔参数（尺寸/流量/硬度/间距/角度），副笔笔尖用 CSP 内置圆形');
     if (skipped.length) warnings.unshift('已跳过 ' + skipped.length + ' 支无法写出 SUT 的笔刷：' + skipped.slice(0, 5).join('；') + (skipped.length > 5 ? ' 等' : ''));
     return {
       files: files,
@@ -1500,6 +1531,7 @@
         '· 笔尖形状使用 CSP 内置圆形：素材笔尖存在 material.layer 里，是 CELSYS 私有位流，',
         '  程序无法生成像素。需要原始笔尖请看「优动漫 CSP .abr（兼容）」目标；',
         '  导入后也可以自己在「笔尖形状」里换成素材',
+        '· 双笔刷：副笔的尺寸/流量/硬度/间距/角度会写入，副笔笔尖为内置圆形（素材笔尖写不了）',
         '· 纹理/图案与压感动态暂未写入（都需要素材或私有曲线格式）',
         '官方说明：https://www.udongman.cn/resource/details/doc/25050'
       ].join('\n'),
