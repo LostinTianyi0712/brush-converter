@@ -106,7 +106,7 @@
             if (q + 6 + l2 > body.length) break;
             if (t2 === 0x11) {
               try { nm = util.utf8Decode(body.subarray(q + 6, q + 6 + l2)); } catch (e) { nm = ''; }
-            } else if (t2 === 0x15 && l2 === 4) {
+            } else if (t2 === 0x18 && l2 === 4) {
               v18 = le(body, q + 6);
             }
             q += 6 + l2;
@@ -149,11 +149,17 @@
     const props = extractPropValues(fullInfo);
     if (props.strokeSpacing !== undefined) out.spacing = props.strokeSpacing;
     if (props.propertiesMaxAlpha !== undefined) out.opacity = props.propertiesMaxAlpha;
-    // propertiesMaxSize 量纲与 tag5 不同（1600 vs 35），尺寸仍以 tag5 为准
+    // tag5 is a percentage between the current minimum and maximum bounds.
     if (props.shapeScatter !== undefined) out.scatter = props.shapeScatter;
     if (props.grainDepth !== undefined) out.textureDepth = props.grainDepth / 100;
     if (props.renderingFlow !== undefined) out.flowPct = Math.max(0, Math.min(1, props.renderingFlow / 100));
-    if (props.propertiesMaxSize > 0 && props.propertiesMinSize !== undefined) out.minSizeRatio = Math.max(0, Math.min(1, props.propertiesMinSize / props.propertiesMaxSize));
+    if (props.propertiesMaxSize > 0) out.maxSizePct = props.propertiesMaxSize;
+    out.minSizePct = props.propertiesMinSize === undefined ? 0 : props.propertiesMinSize;
+    // Native A/B exports: tag5 is the interpolation position between these
+    // bounds. A 14% slider within 70..100 means 74.2%, not 14 units.
+    const maxSize = out.maxSizePct || 262;
+    const effectiveSize = out.minSizePct + (maxSize - out.minSizePct) * out.size / 100;
+    if (effectiveSize > 0) out.minSizeRatio = Math.max(0, Math.min(1, out.minSizePct / effectiveSize));
     // 最小不透明度是独立属性，不能被无关的 propertiesMaxSize 门控吞掉
     if (props.propertiesMinAlpha !== undefined && props.propertiesMaxAlpha > 0) out.minOpacityRatio = Math.max(0, Math.min(1, props.propertiesMinAlpha / props.propertiesMaxAlpha));
     return out;
@@ -222,10 +228,17 @@
     const params = infoFile ? extractParams(infoFile) : { size: 0, spacing: 0 };
     const pressureCurves = infoFile ? extractPressureCurves(infoFile) : {global:null,parameters:{}};
     if (!shape) warnings.push('该 .gobrush 没有 shape PNG，转换时会生成程序化笔尖');
-    warnings.push('天生会画参数：间距已校准（tag5），尺寸/不透明度按参数块映射，笔尖形状图精确；可在界面用「整体尺寸倍数」微调');
+    warnings.push('天生会画尺寸按300dpi真机近似标定换算为像素（尺寸百分比会取整）；其他DPI、画布缩放和真实压感笔迹仍待核对，可用「整体尺寸倍数」微调');
     // Keep source pixels; logical brush diameter is independent of resolution.
     const tip = shape;
-    let sizePx = params.size > 0 && params.size < 3000 ? params.size : 100;
+    // Empirical 300dpi calibration on MatePad MRDI-W10 / GoPaint 16.0.0.250:
+    // 8/35/70 maximum at a 100% toolbar produced 20/82/162px solid strokes.
+    // 2.3px per bound unit excludes the roughly 1-2px raster edge; this is
+    // an approximation, not a documented cross-device physical unit.
+    const maxSizePct = params.maxSizePct > 0 ? params.maxSizePct : 262;
+    const minSizePct = params.minSizePct || 0;
+    const sizePx = params.size >= 0 && params.size <= 100
+      ? (minSizePct + (maxSizePct - minSizePct) * params.size / 100) * 2.3 : 100;
     let spacingPct = params.spacing >= 1 && params.spacing <= 1000 ? params.spacing : 25;
     let opacity = params.opacity === undefined ? 1 : Math.max(0, Math.min(1, params.opacity / 100));
     return {
@@ -235,6 +248,7 @@
         tip: tip,
         grain: grain,
         sizePx: sizePx,
+        gopaintMaxSizePct: params.maxSizePct,
         spacingPct: spacingPct,
         opacity: opacity,
         hardness: 1,

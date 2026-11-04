@@ -166,7 +166,9 @@
   }
 
   function setPropField(bytes, propName, value, fieldTag) {
-    const FT = fieldTag === undefined ? 0x15 : fieldTag;
+    // Native editor exports store the current value in 0x18. 0x15 is
+    // attribute metadata; changing it leaves the imported slider unchanged.
+    const FT = fieldTag === undefined ? 0x18 : fieldTag;
     let p = 0;
     while (p + 6 <= bytes.length) {
       const tag = bytes[p];
@@ -286,14 +288,12 @@
       if (EXTRA.pressureCurves) propBytes = setPressureCurve(propBytes, EXTRA.pressureCurve, true, EXTRA.pressureCurves);
     }
     setPropField(propBytes, 'strokeSpacing', spacing);
-    // 真机实测：propertiesMaxSize/MinSize 是「尺寸百分比」而不是像素值（原生样本 100~1600%）。
-    // 笔尖图已经按目标直径导出，所以这里写 100% 就是 1:1；写像素值会被当成 20% 之类，尺寸全乱。
-    setPropField(propBytes, 'propertiesMaxSize', 100);
+    const maxSizePct = EXTRA.maxSizePct;
+    setPropField(propBytes, 'propertiesMaxSize', maxSizePct);
     // 按原笔刷输出：最小不透明度/流量/纹理深度都用源笔刷的真实值
-    const minSizeRatio = (EXTRA && EXTRA.minSizeRatio !== undefined) ? Math.max(0, Math.min(1, EXTRA.minSizeRatio)) : 0.1;
     const minAlphaRatio = (EXTRA && EXTRA.minOpacityRatio !== undefined) ? Math.max(0, Math.min(1, EXTRA.minOpacityRatio)) : 1;
     const flow = (EXTRA && EXTRA.flowPct !== undefined) ? Math.round(EXTRA.flowPct * 100) : 100;
-    setPropField(propBytes, 'propertiesMinSize', 0);
+    setPropField(propBytes, 'propertiesMinSize', EXTRA.minSizePct);
     setPropField(propBytes, 'propertiesMaxAlpha', opacity);
     setPropField(propBytes, 'propertiesMinAlpha', Math.max(0, Math.round(opacity * minAlphaRatio)));
     setPropField(propBytes, 'renderingFlow', Math.max(0, Math.min(100, flow)));
@@ -318,6 +318,7 @@
   function makeGobrush(brush, opts) {
     opts = opts || {};
     EXTRA = Object.assign({}, opts);
+    if (EXTRA.maxSizePct === undefined && brush.source === 'gopaint') EXTRA.maxSizePct = brush.gopaintMaxSizePct;
     if (EXTRA.scatter === undefined) EXTRA.scatter = brush.scatterOn === false ? 0 : (brush.scatterPct === undefined ? 0 : brush.scatterPct);
     EXTRA.hasTexture = !!brush.hasTexture;
     if (EXTRA.textureDepth === undefined) EXTRA.textureDepth = brush.textureDepth;
@@ -326,31 +327,32 @@
     if (EXTRA.flowPct === undefined) EXTRA.flowPct = brush.flowPct;
     if (EXTRA.pressureCurves === undefined) EXTRA.pressureCurves = brush.gopaintPressureCurves;
     if (EXTRA.pressureCurve === undefined) {
-      EXTRA.pressureCurve = brush.gopaintPressureCurve || (function () {
-        const min = EXTRA.minSizeRatio === undefined ? 0.5 : Math.max(0, Math.min(1, EXTRA.minSizeRatio));
-        return [{ x: 0, y: Math.round(min * 255) }, { x: 255, y: 255 }];
-      })();
+      // Size limits already represent the minimum. Applying it to the global
+      // pressure response a second time also changes opacity, texture, etc.
+      EXTRA.pressureCurve = brush.gopaintPressureCurve || [{ x: 0, y: 0 }, { x: 255, y: 255 }];
     }
     const uuid = makeUuid();
     const name = String(brush.name || 'brush').slice(0, 40) || 'brush';
-    // 来自原生 .gobrush 的笔刷：sizePx 读到的就是「单位值」，原样写回，笔尖也不动。
-    const fromNative = brush.source === 'gopaint';
-    // 其它来源的 sizePx 是画布像素（PS 的 px）。
-    const px = Math.max(1, Math.min(1000 * 5.9, Math.round((brush.sizePx || 40) * (opts.sizeScale === undefined ? 1 : opts.sizeScale))));
-    // 天生会画尺寸单位 ≈ 0.5mm：300dpi 下 1 单位 = 5.906 画布像素（真机实测 20→18px、80→82px、160→157px）。
-    const dpi = opts.canvasDpi === undefined ? 300 : Number(opts.canvasDpi);
-    const size = fromNative
-      ? Math.max(1, Math.min(1000, Math.round(px)))
-      : Math.max(1, Math.min(1000, Math.round(px * 50.8 / (dpi > 0 ? dpi : 300))));
+    // All sources, including native GoPaint, use pixels in the common model.
+    const requested = Number(brush.sizePx === undefined ? 40 : brush.sizePx) * (opts.sizeScale === undefined ? 1 : Number(opts.sizeScale));
+    const px = Number.isFinite(requested) && requested > 0 ? requested : 40;
+    // Calibrated at 300dpi on the user's device. Other DPI values are not yet
+    // native-verified; do not confuse this conversion with shape resolution.
+    const requestedDpi = Number(opts.canvasDpi === undefined ? 300 : opts.canvasDpi);
+    const dpi = Number.isFinite(requestedDpi) && requestedDpi > 0 ? requestedDpi : 300;
+    // Inverse of the native interpolation, calibrated empirically at 300dpi.
+    // Keep native bounds when possible; choose a close bound for foreign
+    // brushes so the integer toolbar percentage retains small-size detail.
+    const diameterPct = px / 2.3 * 300 / dpi;
+    const minRatio = EXTRA.minSizeRatio === undefined ? 0.1 : Math.max(0, Math.min(1, EXTRA.minSizeRatio));
+    const maxSizePct = Math.max(1, Math.ceil(diameterPct), Math.round(EXTRA.maxSizePct > 0 ? EXTRA.maxSizePct : 0));
+    const minSizePct = Math.min(maxSizePct, Math.round(diameterPct * minRatio));
+    const size = maxSizePct === minSizePct ? 100 : Math.max(0, Math.min(100, Math.round((diameterPct - minSizePct) / (maxSizePct - minSizePct) * 100)));
+    EXTRA.maxSizePct = maxSizePct;
+    EXTRA.minSizePct = minSizePct;
     const spacing = Math.max(1, Math.min(1000, Math.round(opts.spacingOverride > 0 ? opts.spacingOverride : (brush.spacingPct === undefined ? 25 : brush.spacingPct))));
     const opacity = Math.max(0, Math.min(100, Math.round((brush.opacity === undefined ? 1 : brush.opacity) * 100)));
-    let tip = limitImage(whiteShape(tipRgba(brush)), Math.max(1, Math.min(2048, opts.maxTipSize || 2048)));
-    // 原生来源：笔尖保持原像素（改参数不应该把原笔尖重采样）；其它来源按画布像素直径等比缩放。
-    const tipTarget = fromNative ? 0 : Math.max(8, Math.min(512, Math.round(px)));
-    if (tipTarget > 0 && Math.max(tip.w, tip.h) !== tipTarget) {
-      const k = tipTarget / Math.max(tip.w, tip.h);
-      tip = resize(tip, Math.max(1, Math.round(tip.w * k)), Math.max(1, Math.round(tip.h * k)));
-    }
+    const tip = limitImage(whiteShape(tipRgba(brush)), Math.max(1, Math.min(2048, opts.maxTipSize || 2048)));
     let grain = grainImage(brush);
     if (EXTRA.grainMode === 'tip') {
       grain = {w:tip.w,h:tip.h,rgba:new Uint8Array(tip.rgba)};

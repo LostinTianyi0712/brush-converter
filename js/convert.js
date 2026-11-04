@@ -2262,6 +2262,7 @@ Write-Host 'restart MediBang Paint Pro'
        (target === 'myb' && brush._rawMyb && rawBrushUnchanged(brush, opts)));
     if (rawCache) rawCache.set(brush, raw);
     if (raw) return '原样保留';
+    if (key === 'sizePx' && target === 'gobrush') return '近似（按300dpi真机标定换算，尺寸百分比取整；其他DPI和真实压感笔迹待复测）';
     if (brush.source === 'procreate' && target !== 'brush' && target !== 'brushset') {
       if (key === 'angle') {
         const native=brush._params||{}, rotation=Number(native.shapeRotation)||0;
