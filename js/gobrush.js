@@ -151,6 +151,9 @@
     if (props.propertiesMaxAlpha !== undefined) out.opacity = props.propertiesMaxAlpha;
     // tag5 is a percentage between the current minimum and maximum bounds.
     if (props.shapeScatter !== undefined) out.scatter = props.shapeScatter;
+    // 线条→抖动 / 掉落：原生样本（楷书）分别是 64%/19%，之前完全没读，重建时会丢成 0
+    if (props.strokeJitter !== undefined) out.jitter = Math.max(0, Math.min(200, props.strokeJitter));
+    if (props.strokeFallOff !== undefined) out.falloff = Math.max(0, Math.min(100, props.strokeFallOff));
     if (props.grainDepth !== undefined) out.textureDepth = props.grainDepth / 100;
     if (props.renderingFlow !== undefined) out.flowPct = Math.max(0, Math.min(1, props.renderingFlow / 100));
     if (props.propertiesMaxSize > 0) out.maxSizePct = props.propertiesMaxSize;
@@ -261,6 +264,8 @@
         flowPct: (params.flowPct !== undefined ? params.flowPct : 1),
         scatterOn: (params.scatter || 0) > 0,
         scatterPct: params.scatter || 0,
+        jitterPct: params.jitter === undefined ? 0 : params.jitter,
+        falloffPct: params.falloff === undefined ? 0 : params.falloff,
         scatterCount: 1,
         scatterBothAxes: true,
         gopaintPressureCurve: pressureCurves.global || undefined,

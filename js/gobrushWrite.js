@@ -304,6 +304,8 @@
       ? Math.max(0, Math.min(100, Math.round(EXTRA.scatter)))
       : 0;
     setPropField(propBytes, 'shapeScatter', scatter);
+    setPropField(propBytes, 'strokeJitter', Math.max(0, Math.min(200, Math.round(EXTRA.jitterPct || 0))));
+    setPropField(propBytes, 'strokeFallOff', Math.max(0, Math.min(100, Math.round(EXTRA.falloffPct || 0))));
     if (EXTRA && EXTRA.prop18) {
       for (const k of Object.keys(EXTRA.prop18)) setPropField(propBytes, k, EXTRA.prop18[k]);
     }
@@ -320,6 +322,16 @@
     EXTRA = Object.assign({}, opts);
     if (EXTRA.maxSizePct === undefined && brush.source === 'gopaint') EXTRA.maxSizePct = brush.gopaintMaxSizePct;
     if (EXTRA.scatter === undefined) EXTRA.scatter = brush.scatterOn === false ? 0 : (brush.scatterPct === undefined ? 0 : brush.scatterPct);
+    // 抖动：原生来源沿用自身值；其它来源把「散播」按同一百分比映射过来（GoPaint 的抖动也是位置抖动，量纲未标定，先按 1:1）
+    if (EXTRA.jitterPct === undefined) {
+      EXTRA.jitterPct = brush.source === 'gopaint'
+        ? (brush.jitterPct === undefined ? 0 : brush.jitterPct)
+        : (brush.scatterOn === false ? 0 : Math.round(brush.scatterPct || 0));
+    }
+    // 掉落：只有原生来源有等价字段，其它来源写 0 而不是乱猜
+    if (EXTRA.falloffPct === undefined) {
+      EXTRA.falloffPct = brush.source === 'gopaint' ? (brush.falloffPct === undefined ? 0 : brush.falloffPct) : 0;
+    }
     EXTRA.hasTexture = !!brush.hasTexture;
     if (EXTRA.textureDepth === undefined) EXTRA.textureDepth = brush.textureDepth;
     if (EXTRA.minSizeRatio === undefined) EXTRA.minSizeRatio = brush.minSizeRatio;
