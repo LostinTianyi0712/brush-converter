@@ -72,6 +72,10 @@
 
   function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
 
+  // Native CSP 5.1.5 exports: ABR 90deg -> BrushRotation 270,
+  // ABR 45deg -> 315. CSP uses the opposite angular direction.
+  function modelAngle(rotation) { return ((360 - rotation) % 360 + 360) % 360; }
+
   function parseSut(bytes, fileName) {
     const warnings = [];
     const db = sqlite.read(bytes);
@@ -143,8 +147,8 @@
       let sizePx = sizeRaw;
       if (unit === 1) sizePx = sizeRaw * 10; // percent-ish unit -> rough px
       sizePx = clamp(sizePx, 1, 4000);
-      let interval = typeof v.BrushInterval === 'number' ? v.BrushInterval : 10;
-      if (interval > 0 && interval <= 2) interval = interval * 100; // fraction -> percent
+      // Native CSP exports preserve 1% as BrushInterval=1, not a fraction.
+      const interval = typeof v.BrushInterval === 'number' ? v.BrushInterval : 10;
       const spacingPct = clamp(interval || 10, 1, 1000);
       const opacityBase = typeof v.Opacity === 'number' ? v.Opacity / 100 : 1;
       const flow = typeof v.BrushFlow === 'number' ? v.BrushFlow / 100 : 1;
@@ -161,7 +165,7 @@
         opacity: clamp(opacityBase, 0, 1),
         flowPct: clamp(flow, 0, 1),
         hardness: hardness,
-        angle: rotation,
+        angle: modelAngle(rotation),
         roundness: thickness,
         pressure: hasSizeDynamics || hasOpacityDynamics,
         pressureSize: hasSizeDynamics,
@@ -228,8 +232,7 @@
       let sizePx = rawSize;
       if (p.BrushSizeUnit === 1) sizePx = rawSize * 10;
       sizePx = clamp(sizePx, 1, 4000);
-      let interval = typeof p.BrushInterval === 'number' ? p.BrushInterval : 10;
-      if (interval > 0 && interval <= 2) interval = interval * 100; // 0.1 -> 10%
+      const interval = typeof p.BrushInterval === 'number' ? p.BrushInterval : 10;
       const spacingPct = clamp(interval || 10, 1, 1000);
       const opacityBase = typeof p.Opacity === 'number' ? p.Opacity / 100 : 1;
       const flow = typeof p.BrushFlow === 'number' ? p.BrushFlow / 100 : 1;
@@ -266,7 +269,7 @@
         opacity: clamp(opacityBase, 0, 1),
         flowPct: clamp(flow, 0, 1),
         hardness: hardness,
-        angle: rotation,
+        angle: modelAngle(rotation),
         roundness: thickness,
         pressure: hasSizeDynamics || hasOpacityDynamics,
         pressureSize: hasSizeDynamics,

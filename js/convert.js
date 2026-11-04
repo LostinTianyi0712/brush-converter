@@ -1411,7 +1411,8 @@
     p.BrushFlow = Math.round(clamp(num(brush.flowPct, 1), 0, 1) * 100);
     p.BrushHardness = Math.round(clamp(num(brush.hardness, 1), 0, 1) * 100);
     p.BrushThickness = clamp(Math.round(num(brush.roundness, 100)), 1, 100);
-    let ang = num(brush.angle, 0) % 360;
+    // CSP native SUT rotation runs opposite to the common/ABR angle.
+    let ang = (360 - num(brush.angle, 0)) % 360;
     if (ang < 0) ang += 360;
     p.BrushRotation = ang;
     return p;
