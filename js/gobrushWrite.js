@@ -286,12 +286,14 @@
       if (EXTRA.pressureCurves) propBytes = setPressureCurve(propBytes, EXTRA.pressureCurve, true, EXTRA.pressureCurves);
     }
     setPropField(propBytes, 'strokeSpacing', spacing);
-    setPropField(propBytes, 'propertiesMaxSize', size);
-    // 按原笔刷输出：最小尺寸/最小不透明度/流量/纹理深度都用源笔刷的真实值
+    // 真机实测：propertiesMaxSize/MinSize 是「尺寸百分比」而不是像素值（原生样本 100~1600%）。
+    // 笔尖图已经按目标直径导出，所以这里写 100% 就是 1:1；写像素值会被当成 20% 之类，尺寸全乱。
+    setPropField(propBytes, 'propertiesMaxSize', 100);
+    // 按原笔刷输出：最小不透明度/流量/纹理深度都用源笔刷的真实值
     const minSizeRatio = (EXTRA && EXTRA.minSizeRatio !== undefined) ? Math.max(0, Math.min(1, EXTRA.minSizeRatio)) : 0.1;
     const minAlphaRatio = (EXTRA && EXTRA.minOpacityRatio !== undefined) ? Math.max(0, Math.min(1, EXTRA.minOpacityRatio)) : 1;
     const flow = (EXTRA && EXTRA.flowPct !== undefined) ? Math.round(EXTRA.flowPct * 100) : 100;
-    setPropField(propBytes, 'propertiesMinSize', Math.max(0, Math.round(size * minSizeRatio)));
+    setPropField(propBytes, 'propertiesMinSize', 0);
     setPropField(propBytes, 'propertiesMaxAlpha', opacity);
     setPropField(propBytes, 'propertiesMinAlpha', Math.max(0, Math.round(opacity * minAlphaRatio)));
     setPropField(propBytes, 'renderingFlow', Math.max(0, Math.min(100, flow)));
@@ -331,10 +333,24 @@
     }
     const uuid = makeUuid();
     const name = String(brush.name || 'brush').slice(0, 40) || 'brush';
-    const size = Math.max(1, Math.min(1000, Math.round((brush.sizePx || 40) * (opts.sizeScale === undefined ? 1 : opts.sizeScale))));
+    // 来自原生 .gobrush 的笔刷：sizePx 读到的就是「单位值」，原样写回，笔尖也不动。
+    const fromNative = brush.source === 'gopaint';
+    // 其它来源的 sizePx 是画布像素（PS 的 px）。
+    const px = Math.max(1, Math.min(1000 * 5.9, Math.round((brush.sizePx || 40) * (opts.sizeScale === undefined ? 1 : opts.sizeScale))));
+    // 天生会画尺寸单位 ≈ 0.5mm：300dpi 下 1 单位 = 5.906 画布像素（真机实测 20→18px、80→82px、160→157px）。
+    const dpi = opts.canvasDpi === undefined ? 300 : Number(opts.canvasDpi);
+    const size = fromNative
+      ? Math.max(1, Math.min(1000, Math.round(px)))
+      : Math.max(1, Math.min(1000, Math.round(px * 50.8 / (dpi > 0 ? dpi : 300))));
     const spacing = Math.max(1, Math.min(1000, Math.round(opts.spacingOverride > 0 ? opts.spacingOverride : (brush.spacingPct === undefined ? 25 : brush.spacingPct))));
     const opacity = Math.max(0, Math.min(100, Math.round((brush.opacity === undefined ? 1 : brush.opacity) * 100)));
-    const tip = limitImage(whiteShape(tipRgba(brush)), Math.max(1, Math.min(2048, opts.maxTipSize || 2048)));
+    let tip = limitImage(whiteShape(tipRgba(brush)), Math.max(1, Math.min(2048, opts.maxTipSize || 2048)));
+    // 原生来源：笔尖保持原像素（改参数不应该把原笔尖重采样）；其它来源按画布像素直径等比缩放。
+    const tipTarget = fromNative ? 0 : Math.max(8, Math.min(512, Math.round(px)));
+    if (tipTarget > 0 && Math.max(tip.w, tip.h) !== tipTarget) {
+      const k = tipTarget / Math.max(tip.w, tip.h);
+      tip = resize(tip, Math.max(1, Math.round(tip.w * k)), Math.max(1, Math.round(tip.h * k)));
+    }
     let grain = grainImage(brush);
     if (EXTRA.grainMode === 'tip') {
       grain = {w:tip.w,h:tip.h,rgba:new Uint8Array(tip.rgba)};
