@@ -1,13 +1,14 @@
 ﻿/* Clip Studio Paint brush material: .sut = SQLite database.
    Brush parameters live in the `Variant` table; the tip preview lives in
-   MaterialFile.FileData (a tar archive; thumbnail/thumbnail.png is readable,
-   the actual material.layer is an encrypted C2F container). */
+   MaterialFile.FileData (tar). Verified plain C2F tiles are readable;
+   encrypted/unsupported native layers use an explicitly marked preview. */
 (function (root) {
   'use strict';
   const isNode = typeof module !== 'undefined' && module.exports && typeof process !== 'undefined';
   const util = isNode ? require('./util.js') : root.BC.util;
   const sqlite = isNode ? require('./sqlite.js') : root.BC.sqlite;
   const png = isNode ? require('./png.js') : root.BC.png;
+  const cspMaterial = isNode ? require('./cspMaterial.js') : root.BC.cspMaterial;
   const fs = isNode ? require('fs') : null;
   const nodePath = isNode ? require('path') : null;
 
@@ -34,6 +35,7 @@
       const type = bytes[pos + 156] || 0x30;
       const dataStart = pos + 512;
       const dataEnd = dataStart + size;
+      if (!Number.isSafeInteger(size) || size < 0 || dataEnd > bytes.length) throw new Error('Truncated material TAR');
       if (type === 0x78) { // 'x' pax extended header: contains "path=..." for next entry
         const body = util.utf8Decode(bytes.subarray(dataStart, dataEnd));
         const m = /(?:^|\n)\d+ path=([^\n]*)/.exec(body);
@@ -125,26 +127,39 @@
     }
     const version = manager && manager.rows.length ? manager.rows[0].Version : 0;
 
-    // brush tip: thumbnail from the first material archive
-    let tip = null;
+    // Resolve each Variant's tip and texture separately. A texture-only SUT
+    // must keep its computed tip; previews must not replace readable tiles.
+    const materials = Object.create(null);
+    const legacyMaterials = [];
     if (materialTable) {
       for (const mf of materialTable.rows) {
         if (!(mf.FileData instanceof Uint8Array)) continue;
         let files = [];
         try { files = readTar(mf.FileData); } catch (e) { continue; }
-        const thumb = findPng(files);
+        const entry = {tip:null, mask:null, approximate:false};
+        const layer = files.filter(function(f){return /data\/material_\d+\.layer$/i.test(f.name);})[0];
+        if (layer && cspMaterial) {
+          try {
+            const image = cspMaterial.read(layer.data), rgba = new Uint8Array(image.w*image.h*4);
+            for(let i=0;i<image.mask.length;i++){rgba[i*4]=rgba[i*4+1]=rgba[i*4+2]=255;rgba[i*4+3]=image.mask[i];}
+            entry.tip = {w:image.w,h:image.h,rgba:rgba};
+            entry.mask = {w:image.w,h:image.h,mode:1,data:image.mask};
+          } catch(e) { /* Explicit preview fallback for encrypted/unsupported data. */ }
+        }
+        const thumb = !entry.tip && findPng(files);
         if (thumb) {
           try {
             const img = png.decode(thumb.data);
             const rgba = png.toMaskRgba(img.rgba);
-            tip = { w: img.width, h: img.height, rgba: rgba };
-            warnings.push('CSP 笔尖取自缩略图（原始 material.layer 是加密 C2F 容器，无法还原精确笔尖）');
-            break;
+            entry.tip = { w: img.width, h: img.height, rgba: rgba };
+            entry.mask = {w:img.width,h:img.height,mode:1,data:Uint8Array.from({length:img.width*img.height},function(_,i){return rgba[i*4+3];})};
+            entry.approximate = true;
           } catch (e) { /* next */ }
         }
+        if (mf.OriginalPath) materials[mf.OriginalPath] = entry;
+        else if (entry.tip) legacyMaterials.push(entry);
       }
     }
-    if (!tip) warnings.push('CSP 文件中没有可读的笔尖缩略图，转换时将自动生成圆头笔尖');
 
     const nodes = nodeTable ? nodeTable.rows : [];
     const node = nodes.length ? nodes[0] : null;
@@ -179,6 +194,16 @@
     }
     const variantTotal = uniqueVariants.length;
     uniqueVariants.forEach(function (v, idx) {
+      const tipPath = cspMaterial.referencePath(v.BrushPatternImageArray);
+      const texturePath = cspMaterial.referencePath(v.TextureImage);
+      const tipMaterial = v.BrushUsePatternImage && (materials[tipPath] || legacyMaterials[0]);
+      const textureMaterial = materials[texturePath];
+      const tip = tipMaterial ? tipMaterial.tip : null;
+      if (v.BrushUsePatternImage && !tip) warnings.push('CSP 文件中没有可读的笔尖素材，转换时将自动生成圆头笔尖');
+      if (tipMaterial && !materials[tipPath]) warnings.push('CSP 旧素材缺少 OriginalPath，无法准确定位笔尖；暂用首个素材预览，需核对图案');
+      if (tipMaterial && tipMaterial.approximate) warnings.push('CSP 笔尖取自缩略图（原始 material.layer 加密或像素布局不支持，无法还原精确笔尖）');
+      if (texturePath && !(textureMaterial && textureMaterial.mask)) warnings.push('CSP 纹理素材不可读，纹理未提取');
+      if (textureMaterial && textureMaterial.approximate) warnings.push('CSP 纹理取自缩略图，分辨率与原始纹理可能不同');
       const sizeRaw = typeof v.BrushSize === 'number' ? v.BrushSize : 80;
       const unit = v.BrushSizeUnit || 0;
       let sizePx = sizeRaw;
@@ -197,6 +222,11 @@
       brushes.push(Object.assign({
         name: variantTotal > 1 ? baseName + ' #' + (idx + 1) : baseName,
         tip: tip,
+        hasTexture: !!(textureMaterial && textureMaterial.mask),
+        _patternPixels: textureMaterial ? textureMaterial.mask : null,
+        textureDepth: typeof v.TextureDensity === 'number' ? clamp(v.TextureDensity / 100, 0, 1) : 1,
+        textureScale: typeof v.TextureScale2 === 'number' ? Math.max(0.01,v.TextureScale2 / 100) : 1,
+        textureInverted: !!v.TextureReverseDensity,
         sizePx: sizePx,
         spacingPct: spacingPct,
         opacity: clamp(opacityBase, 0, 1),

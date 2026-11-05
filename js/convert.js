@@ -16,6 +16,7 @@
   const genericBrush = isNode ? require('./genericbrush.js') : root.BC.genericBrush;
   const csp = isNode ? require('./csp.js') : root.BC.csp;
   const sutWrite = isNode ? require('./sutWrite.js') : root.BC.sutWrite;
+  const cspMaterial = isNode ? require('./cspMaterial.js') : root.BC.cspMaterial;
   const sqlite = isNode ? require('./sqlite.js') : root.BC.sqlite;
   const udongmanTemplate = isNode ? require('./udongmanTemplate.js') : root.BC.udongmanTemplate;
   const medibang = isNode ? require('./medibang.js') : root.BC.medibang;
@@ -1441,7 +1442,7 @@
       '优动漫 PAINT 1.10.5 及以上：在子工具面板菜单选择「载入子工具」，导入本包 .abr。',
       '不要在画布打开 ABR；导入后选择新笔刷，检查尺寸、间距、双笔和纹理，再对照原笔刷试画。',
       '这是 ABR 兼容格式，不是原生 SUT；不同引擎的动态、混色、双笔和纹理效果可能不同。',
-      '需要原生 .sut（参数级写入、笔尖为内置圆形）时请改用「优动漫 CSP 原生 .sut（实验）」目标。',
+      '需要原生 .sut（单色主笔尖/纹理素材）时请改用「优动漫 CSP 原生 .sut（实验）」目标，并核对其动态与混合限制。',
       '官方说明：https://www.udongman.cn/resource/details/doc/25050',
       'CSP：https://help.clip-studio.com/en-us/manual_en/150_tools/Importing_tools.htm'
     ].join('\n');
@@ -1506,9 +1507,8 @@
   /** 优动漫 / CSP 原生 .sut 输出：以内嵌「G笔 2」（CSP 5.1.5 自己导出的新版结构）为模板做参数级覆写。
       真实写入：尺寸/间距(手动)/不透明度/流量/硬度/厚扁/旋转 + 笔刷名 + 双笔刷副笔参数（内置圆头副笔尖）。
       已知限制（写入 warnings 与随包说明）：
-      · 笔尖形状用 CSP 内置圆形：任意尺寸素材图块写入尚未接入；
-        要真实素材笔尖请用「优动漫 CSP .abr（兼容）」目标；
-      · 纹理/图案（TextureImage/BrushPatternImageArray）需要素材，未写入；
+      · 有图主笔尖/纹理写入原分辨率单色素材；无笔尖图时用 CSP 内置圆形；
+      · 副笔素材、彩色素材与复杂纹理混合尚未映射；
       · 压感动态（Effector 曲线 blob）暂未写入，模板里保留中性默认值。 */
   /** 在原生 SUT 上原位改写参数（保留 material.layer 笔尖/纹理、Effector 动态、素材引用）。 */
   function patchNativeSut(nat, opts, name, droppedCols) {
@@ -1568,10 +1568,10 @@
     const srcList = Array.isArray(brushList) ? brushList : [];
     const preserved = new Set();
     let rebuiltCount = 0;
+    let materialTipCount = 0, writtenTextureCount = 0, missingTextureCount = 0;
     let patchedCount = 0;
     const patchFails = [];
     const droppedCols = [];
-    const texturedCount = srcList.filter(function (b) { return b && b.hasTexture && !b._rawSutGroup; }).length;
     const dualCount = srcList.filter(function (b) { return b && b.dualOn && !b._rawSutGroup; }).length;
     for (const rawBrush of srcList) {
       let name, bytes;
@@ -1607,11 +1607,26 @@
             patchFails.push((rawBrush && rawBrush.name || '未命名') + '：' + e.message);
           }
         }
-        // 新模板（G笔 2）没有素材层，因此不再写缩略图；预览由 CSP 用参数实时渲染色板样本笔触
-        bytes = sutWrite.buildSut(tpl, [{
-          params: variantParamsForSut(brush),
-          nodeName: name
-        }]);
+        const tip = tipToRGBA(brush);
+        if (tip) cspMaterial.validateSource(tip.w,tip.h,tip.rgba,4);
+        if (brush.hasTexture) {
+          const pp=brush._patternPixels,g=brush._grainRgba;
+          if (pp && pp.w>0) cspMaterial.validateSource(pp.w,pp.h,pp.data,pp.mode===3?3:1);
+          else if (g && g.w>0) cspMaterial.validateSource(g.w,g.h,g.rgba,4);
+        }
+        const texture = brush.hasTexture ? textureGray(brush) : null;
+        if (tip || texture) {
+          bytes = cspMaterial.build({name:name,params:variantParamsForSut(brush),
+            tip:tip ? {w:tip.w,h:tip.h,mask:abr.maskFromRGBA(tip.rgba)} : null,
+            texture:texture ? {w:texture.w,h:texture.h,mask:texture.gray} : null,
+            textureDensity:Math.round(Math.max(0,Math.min(1,brush.textureDepth===undefined?1:brush.textureDepth))*100),
+            textureScale:Math.max(1,Math.min(2000,(brush.textureScale===undefined?1:brush.textureScale)*100))});
+          if(tip)materialTipCount++;
+          if(texture)writtenTextureCount++;
+        } else {
+          bytes = sutWrite.buildSut(tpl, [{params:variantParamsForSut(brush),nodeName:name}]);
+        }
+        if(brush.hasTexture && !texture)missingTextureCount++;
       } catch (e) {
         // 单支失败不拖垮整包（#283）：跳过并记录，其余笔刷照常导出
         skipped.push((rawBrush && rawBrush.name || '未命名') + '：' + e.message);
@@ -1626,12 +1641,14 @@
         : '没有可导出的笔刷');
     }
     const warnings = rebuiltCount ? [
-      '优动漫原生 .sut：尺寸/间距(手动)/不透明度/流量/硬度/厚扁/旋转真实写入；笔尖用 CSP 内置圆形（任意尺寸素材笔尖写入尚未接入）；要真实素材笔尖请用「优动漫 CSP .abr（兼容）」目标'
+      '优动漫原生 .sut（实验）：尺寸/间距(手动)/不透明度/流量/硬度/厚扁/旋转已写入；有图主笔尖和纹理写入单色素材，无笔尖图时用内置圆形；压感动态、彩色与复杂混合仍需核对'
     ] : [];
     if (patchedCount) warnings.push('已修改的原生 SUT 在原文件上改写参数，笔尖、纹理、压感/角度动态与素材引用保持不变');
-    if (patchFails.length) warnings.push('部分原生 SUT 无法原位改写，已退回模板重建（笔尖为内置圆形）：' + patchFails.slice(0, 3).join('；'));
+    if (patchFails.length) warnings.push('部分原生 SUT 无法原位改写，已退回模板重建（只写可读素材，原生动态不保留）：' + patchFails.slice(0, 3).join('；'));
     if (droppedCols.length) warnings.push('原 SUT 缺少列，未写入：' + droppedCols.slice(0, 8).join('、') + (droppedCols.length > 8 ? ' 等' : ''));
-    if (texturedCount) warnings.push('SUT 目标：' + texturedCount + ' 支带纹理笔刷的纹理未写入（需要素材文件），导入后可在「纹理」里手动添加');
+    if (materialTipCount) warnings.push('SUT 目标：' + materialTipCount + ' 支主笔尖已写入真实单色素材图块，保留原图分辨率；不代表动态和混合完全还原');
+    if (writtenTextureCount) warnings.push('SUT 目标：' + writtenTextureCount + ' 支纹理已写入独立素材；强度/比例为跨软件近似，需在目标软件核对');
+    if (missingTextureCount) warnings.push('SUT 目标：' + missingTextureCount + ' 支带纹理笔刷缺少可读纹理图片，纹理未写入，导入后可手动添加');
     if (dualCount) warnings.push('SUT 目标：' + dualCount + ' 支双笔刷已写入副笔参数（尺寸/流量/硬度/间距/角度），副笔笔尖用 CSP 内置圆形');
     if (skipped.length) warnings.unshift('已跳过 ' + skipped.length + ' 支无法写出 SUT 的笔刷：' + skipped.slice(0, 5).join('；') + (skipped.length > 5 ? ' 等' : ''));
     return {
@@ -1651,11 +1668,10 @@
         '',
         '重要说明（参数级导出的已知限制）：',
         '· 尺寸/间距（手动间距）/不透明度/流量/硬度/厚扁/旋转等参数已真实写入',
-        '· 笔尖形状使用 CSP 内置圆形：任意尺寸素材图块写入尚未接入，',
-        '  需要原始笔尖请看「优动漫 CSP .abr（兼容）」目标；',
-        '  导入后也可以自己在「笔尖形状」里换成素材',
+        '· 有图主笔尖/纹理写入独立单色素材，保留原图分辨率（上限4096×4096）；没有笔尖图时使用内置圆形',
+        '· 彩色素材未映射；纹理强度/比例属于近似，复杂混合效果需在目标软件核对',
         '· 双笔刷：副笔的尺寸/流量/硬度/间距/角度会写入，副笔笔尖为内置圆形（尚未写入素材副笔尖）',
-        '· 纹理/图案与压感动态暂未写入（都需要素材或私有曲线格式）',
+        '· 压感/角度等动态曲线暂未写入，导入后需按实际效果调整',
         '官方说明：https://www.udongman.cn/resource/details/doc/25050'
       ].join('\n'),
       warnings: warnings
@@ -1684,12 +1700,12 @@
         '3）笔刷素材：素材面板拖到子工具面板即可使用；导入后先试画核对',
         '',
         '重要说明：',
-        '· 包内为参数级真实的 .sut（同「优动漫 CSP 原生 .sut」目标的限制）：笔尖为内置圆形，压感动态暂不写入',
+        '· 包内为 .sut（同「优动漫 CSP 原生 .sut」目标的限制）：有图主笔尖/纹理写入单色素材，无笔尖图时用内置圆形，压感动态暂不写入',
         '· 此导出未经优动漫官方真机验证；如绘画助手拒绝导入，请改用「优动漫 CSP 原生 .sut」直接拖入子工具面板，或「优动漫 CSP .abr（兼容）」目标'
       ].join('\n'),
       warnings: [
-        '优动漫 .mtd（实验）：zip+sut 壳，未经真机导入验证；笔尖为内置圆形（同 .sut 目标限制）'
-      ]
+        '优动漫 .mtd（实验）：zip+sut 壳，未经真机导入验证；素材/参数限制同 .sut 目标'
+      ].concat(inner.warnings || [])
     };
   }
 
@@ -2459,6 +2475,11 @@ Write-Host 'restart MediBang Paint Pro'
        (target === 'myb' && brush._rawMyb && rawBrushUnchanged(brush, opts)));
     if (rawCache) rawCache.set(brush, raw);
     if (raw) return '原样保留';
+    if (target === 'sut' || target === 'mtd') {
+      if (key === 'textureDepth' && brush.hasTexture) return textureGray(brush)
+        ? '近似（纹理已写入独立素材，强度/比例及混合需目标软件核对）' : '未写出（缺少可读纹理图）';
+      if (key === 'dualOn') return '未完整写入（副笔参数已写入，副笔尖使用内置圆形）';
+    }
     if (key === 'sizePx' && target === 'gobrush') return '近似（按300dpi真机标定换算，尺寸百分比取整；其他DPI和真实压感笔迹待复测）';
     if (brush.source === 'procreate' && target !== 'brush' && target !== 'brushset') {
       if (key === 'angle') {
@@ -2624,6 +2645,8 @@ Write-Host 'restart MediBang Paint Pro'
       ['双笔刷', 'dualOn', function () { return '开'; }]
     ];
     const support = {
+      sut: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','纹理深度','双笔刷'],
+      mtd: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','纹理深度','双笔刷'],
       abr: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','角度随机','散布','散布数量','纹理深度','锥度','湿边','混色/涂抹','颜色动态','平滑','双笔刷'],
       bru: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','角度随机','散布','散布数量','纹理深度','锥度','湿边','混色/涂抹','颜色动态','平滑','双笔刷'],
       brushset: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','角度随机','散布','散布数量','纹理深度','锥度','湿边','混色/涂抹','颜色动态','平滑'],
@@ -2799,6 +2822,8 @@ Write-Host 'restart MediBang Paint Pro'
       ['双笔刷', 'dualOn', function () { return '开'; }]
     ];
     const support = {
+      sut: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','纹理','双笔刷'],
+      mtd: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','纹理','双笔刷'],
       abr: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','角度随机','散布','散布数量','纹理','压感尺寸','压感不透明度','湿边','平滑','双笔刷'],
       bru: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','角度随机','散布','散布数量','纹理','压感尺寸','压感不透明度','锥度','湿边','混色/涂抹','颜色动态','平滑'],
       brushset: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','角度随机','散布','散布数量','纹理','压感尺寸','压感不透明度','锥度','湿边','混色/涂抹','颜色动态','平滑'],
@@ -2841,8 +2866,8 @@ Write-Host 'restart MediBang Paint Pro'
       if (target === 'sut') brushList.forEach(function (b) { rawCache.set(b, !!rawSutGroup(b, brushList, opts)); });
       lines.push('【目标格式：' + (requestedTarget === 'udongman' ? '优动漫 / CSP（ABR兼容）' : requestedTarget === 'udongman_sut' ? '优动漫 / CSP 原生 .sut（实验）' : requestedTarget === 'udongman_mtd' ? '优动漫 / .mtd 绘画助手包（实验）' : target) + '】');
       if (requestedTarget === 'udongman') lines.push('  兼容说明：导出ABR，不是原生SUT；在子工具面板导入，动态/混色/双笔/纹理效果需目标软件核对。');
-      if (requestedTarget === 'udongman_sut') lines.push(brushList.every(function (b) { return rawSutGroup(b, brushList, opts); }) ? '  兼容说明：原生 SUT 完整选择且未改动，整个文件原样保留。' : '  兼容说明：原生SUT参数级导出（实验）；未改动的完整原生SUT可原样保留；需要重建时笔尖为内置圆形，压感动态暂不写入；需要真实笔尖请用「优动漫 CSP .abr（兼容）」目标。');
-      if (requestedTarget === 'udongman_mtd') lines.push('  兼容说明：.mtd=zip+sut绘画助手素材包（实验，未真机验证）；参数限制同.sut目标（笔尖为内置圆形）；如绘画助手拒绝导入请改用.sut或ABR兼容目标。');
+      if (requestedTarget === 'udongman_sut') lines.push(brushList.every(function (b) { return rawSutGroup(b, brushList, opts); }) ? '  兼容说明：原生 SUT 完整选择且未改动，整个文件原样保留。' : '  兼容说明：原生SUT导出（实验）；未改动的完整原生SUT可原样保留；重建时有图主笔尖/纹理写入单色素材，无笔尖图时用内置圆形；压感等动态、彩色和复杂混合尚未还原。');
+      if (requestedTarget === 'udongman_mtd') lines.push('  兼容说明：.mtd=zip+sut绘画助手素材包（实验，未真机验证）；素材与参数限制同.sut目标；如绘画助手拒绝导入请改用.sut或ABR兼容目标。');
       if (reason[target]) lines.push('  说明：' + reason[target]);
       let lostTotal = 0, keptTotal = 0;
       brushList.forEach(function (b, i) {
@@ -2866,8 +2891,8 @@ Write-Host 'restart MediBang Paint Pro'
       });
       lines.push('  小结：写入参数 ' + keptTotal + ' 项，近似/未完整写入/丢失 ' + lostTotal + ' 项');
       if (requestedTarget === 'udongman') lines.push('  手动补全建议：通过子工具/工具组面板导入ABR后检查尺寸、间距与纹理，不把PS图案安装步骤视为优动漫原生流程。');
-      else if (requestedTarget === 'udongman_sut' && !brushList.every(function (b) { return rawSutGroup(b, brushList, opts); })) lines.push('  手动补全建议：重建的笔刷导入后在「笔尖形状」里选择想要的笔尖，压感等动态在「子工具详情」面板手动开启。');
-      else if (requestedTarget === 'udongman_mtd') lines.push('  手动补全建议：双击 .mtd 用绘画助手导入；笔尖为内置圆形，导入后在「笔尖形状」里更换；如绘画助手拒绝导入请改用 .sut 或 ABR 兼容目标。');
+      else if (requestedTarget === 'udongman_sut' && !brushList.every(function (b) { return rawSutGroup(b, brushList, opts); })) lines.push('  手动补全建议：重建的笔刷导入后核对素材、纹理强度/比例，压感等动态在「子工具详情」面板手动开启。');
+      else if (requestedTarget === 'udongman_mtd') lines.push('  手动补全建议：双击 .mtd 用绘画助手导入，核对素材及动态；如绘画助手拒绝导入请改用 .sut 或 ABR 兼容目标。');
       else if (MANUAL_ADVICE[target]) lines.push('  手动补全建议：' + MANUAL_ADVICE[target]);
       lines.push('');
     }

@@ -583,8 +583,12 @@
       const hasPattern = o.patternPng !== undefined;
       const hasParams = o.params !== undefined;
       const hasName = o.nodeName !== undefined;
-      if (!hasThumb && !hasPattern && !hasParams && !hasName) {
+      const hasRows = o.tableRows !== undefined;
+      if (!hasThumb && !hasPattern && !hasParams && !hasName && !hasRows) {
         throw new Error('sutWrite: overrides[' + i + '] 需要 thumbnailPng / patternPng / params / nodeName 之一');
+      }
+      if (hasRows && (!o.tableRows || typeof o.tableRows !== 'object' || Array.isArray(o.tableRows))) {
+        throw new Error('sutWrite: tableRows 必须是表名到记录数组的对象');
       }
       if (hasThumb) {
         if (!isPngBytes(o.thumbnailPng)) throw new Error('sutWrite: overrides[' + i + '].thumbnailPng 不是 PNG');
@@ -701,6 +705,23 @@
     /* --- replace thumbnails inside MaterialFile.FileData （无素材层的模板跳过） --- */
     const material = tableByName.MaterialFile;
     const list = normalizeOverrides(overrides);
+    // Explicit replacement is used only when creating new, owned material
+    // databases. Native parameter patches never supply this option.
+    for (const o of list) {
+      for (const name of Object.keys(o.tableRows || {})) {
+        const t = tableByName[name], rows = o.tableRows[name];
+        if (!t || !Array.isArray(rows)) throw new Error('sutWrite: 无效表记录替换 ' + name);
+        const seen = new Set();
+        t.rows = rows.map(function (r) {
+          if (!r || !Number.isSafeInteger(r.rowid) || r.rowid <= 0 || seen.has(r.rowid) ||
+              !Array.isArray(r.values) || r.values.length > t.columns.length) {
+            throw new Error('sutWrite: 无效记录 ' + name);
+          }
+          seen.add(r.rowid);
+          return { rowid: r.rowid, values: r.values.slice() };
+        });
+      }
+    }
     const needsMaterial = list.some(function (o) { return o.thumbnailPng !== undefined || o.patternPng !== undefined; });
     if (!material && needsMaterial) {
       throw new Error('sutWrite: 模板里没有 MaterialFile 表（无素材层），不能覆写缩略图/笔尖图案');

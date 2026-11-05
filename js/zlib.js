@@ -13,6 +13,24 @@
 
   const z = {
     inflate: function (bytes) { return getPako().inflate(bytes); },
+    // Fixed-size raster blocks must not expand an untrusted stream without a bound.
+    inflateLimited: function (bytes, limit) {
+      if (!Number.isSafeInteger(limit) || limit < 0) throw new Error('Invalid inflate limit');
+      const decoder = new (getPako().Inflate)({ chunkSize: Math.min(32768, Math.max(1, limit + 1)) });
+      let size = 0;
+      const chunks = [];
+      decoder.onData = function (chunk) {
+        size += chunk.length;
+        if (size > limit) throw new Error('Inflated data exceeds limit');
+        chunks.push(chunk);
+      };
+      decoder.push(bytes, true);
+      if (decoder.err || !decoder.ended) throw new Error(decoder.msg || 'Incomplete compressed data');
+      const out = new Uint8Array(size);
+      let offset = 0;
+      chunks.forEach(function (chunk) { out.set(chunk, offset); offset += chunk.length; });
+      return out;
+    },
     deflate: function (bytes, level) { return getPako().deflate(bytes, { level: level === undefined ? 9 : level }); },
     inflateRaw: function (bytes) { return getPako().inflateRaw(bytes); },
     deflateRaw: function (bytes, level) { return getPako().deflateRaw(bytes, { level: level === undefined ? 9 : level }); }

@@ -2,10 +2,11 @@
    用途：makeUdongmanSutPack 以此为模板做参数级覆写（Variant / Node）。
    为什么换掉旧模板（Astereacae 花朵素材版）：
    · 旧模板带 MaterialFile 素材层，所有导出共用同一素材 UUID，CSP 只会安装一次，
-     之后导入的笔刷都显示同一朵花；且素材层里的笔尖是 CELSYS 私有位流，无法程序化改像素。
+     之后导入的笔刷都显示同一朵花；旧实现尚未接入素材图块写入。
    · 本模板是 CSP 自己写出的新版结构（Variant 193 列，含 DualBrush/Spray/WaterEdge/HueChange 等），
      没有素材层 → 每次导入都是干净的新笔刷，不再共用素材，也不再有素材缓存造成的错乱。
-   代价：笔尖形状用 CSP 内置（圆形），没有素材笔尖；要真实素材笔尖请用「CSP .abr（兼容）」目标。 */
+   本模块保留计算圆头模板；v2.8.17有图素材改由cspMaterial生成独立身份和图块，
+   无图与原生保留/编辑路径仍沿用各自模板和原文件。 */
 (function (root) {
   'use strict';
   const isNode = typeof module !== 'undefined' && module.exports && typeof process !== 'undefined';
