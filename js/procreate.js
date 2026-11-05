@@ -406,6 +406,7 @@
     brush._rawNormalized = {};
     Object.keys(brush).forEach(function(key){const v=brush[key];if(key[0]!=='_' && (v===null || ['number','boolean','string'].indexOf(typeof v)>=0))brush._rawNormalized[key]=v;});
     brush._rawTipState=util.brushFingerprint({tip:brush.tip});
+    brush._rawDualTipState=util.brushFingerprint({tip:brush.dualTip});
     brush._rawGrainState=util.brushFingerprint({tip:brush._grainRgba});
     brush._rawBrushState=util.brushFingerprint(brush);
     brush._rawEntries=pool.filter(e=>!e.dir && e.name.startsWith(prefix)).map(e=>({name:e.name.slice(prefix.length),data:e.data()}));
@@ -492,10 +493,22 @@
     return { w: n, h: n, rgba };
   }
 
+  // Procreate's flip-jitter flags are random options, not fixed mirrors.
+  // Bake a requested fixed mirror into the resource without cropping its canvas.
+  function fixedTipFlip(tip, brush) {
+    if (!tip || (!brush.flipX && !brush.flipY)) return tip;
+    const w=tip.w,h=tip.h,rgba=new Uint8Array(tip.rgba.length);
+    for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+      const i=((brush.flipY?h-1-y:y)*w+(brush.flipX?w-1-x:x))*4;
+      rgba.set(tip.rgba.subarray(i,i+4),(y*w+x)*4);
+    }
+    return {w,h,rgba};
+  }
+
   function tipRGBA(brush, opts) {
     const tip = brush.tip;
     if (!tip) return synthRoundTip(brush, 256, opts);
-    if (tip.rgba) return { w: tip.w, h: tip.h, rgba: tip.rgba };
+    if (tip.rgba) return fixedTipFlip({ w: tip.w, h: tip.h, rgba: tip.rgba }, brush);
     if (tip.data) {
       const w = tip.w, h = tip.h, bpp = tip.bpp || 1;
       const rgba = new Uint8Array(w * h * 4);
@@ -503,7 +516,7 @@
         const a = bpp === 2 ? tip.data[i * 2] : tip.data[i];
         rgba[i * 4] = 255; rgba[i * 4 + 1] = 255; rgba[i * 4 + 2] = 255; rgba[i * 4 + 3] = a;
       }
-      return { w, h, rgba };
+      return fixedTipFlip({ w, h, rgba }, brush);
     }
     return null;
   }
@@ -772,7 +785,9 @@
     }
     return Object.assign({}, info, sub, {
       name: nameValue(),
-      tip: brush.dualTip,
+      // The parent dualTip can be a cross-format round fallback or an older
+      // snapshot. Until explicitly replaced, prefer the actual native child.
+      tip: sub._rawArchive && brush._rawDualTipState===util.brushFingerprint({tip:brush.dualTip}) ? sub.tip : brush.dualTip,
       sizePx: value('diameter','sizePx',brush.sizePx || 100),
       spacingPct: value('spacing','spacingPct',25),
       scatterOn: info.useScatter === undefined ? (sub.scatterOn === undefined ? !!info.scatterOn : !!sub.scatterOn) : !!info.useScatter,
@@ -800,17 +815,29 @@
     // 还原优先：源就是 Procreate 且没有改过参数时，原样复用 archive/Shape/Grain
     if (opts.fidelity !== false && brush._rawArchive && !opts.forceRebuild) {
       const entries = (brush._rawEntries||[]).filter(e=>!['Brush.archive','Shape.png','Grain.png','QuickLook/Thumbnail.png'].includes(e.name)&&!e.name.startsWith('Sub01/'));
-      const sameTip=brush._rawTipState===util.brushFingerprint({tip:brush.tip});
+      const samePixels=brush._rawTipState===util.brushFingerprint({tip:brush.tip});
+      const sameTip=samePixels && !brush.flipX && !brush.flipY;
       const keepRawShape=sameTip&&brush._rawShape;
       // 重生成 Shape.png 时像素已烘焙反转，archive 必须关掉以免二次反相；
       // 像素没变、只切换标志时则尊重新值，并继续复用原 Shape.png。
       let archiveChanges=null;
-      if(!keepRawShape&&brush.shapeInverted)archiveChanges={shapeInverted:false};
+      if(!keepRawShape&&!sameTip&&brush.tip)archiveChanges={shapeInverted:false};
       else if(keepRawShape&&!!brush.shapeInverted!==!!(brush._rawNormalized||{}).shapeInverted)
         archiveChanges={shapeInverted:!!brush.shapeInverted};
       entries.push({name:'Brush.archive',data:patchArchive(brush,opts,archiveChanges)});
       if(keepRawShape)entries.push({name:'Shape.png',data:new Uint8Array(brush._rawShape)});
-      else if(!sameTip && brush.tip)entries.push({name:'Shape.png',data:shapePng(tipRGBA(brush,opts),opts.maxTipSize||512).png});
+      else if(!sameTip && brush.tip){
+        let rebuilt=tipRGBA(brush,opts);
+        // The decoded pixels include the original inversion. If only scalar
+        // edits changed it, apply that delta before freezing it into Shape.
+        if(samePixels && !!brush.shapeInverted!==!!(brush._rawNormalized||{}).shapeInverted){
+          // Decode the original luminance and alpha together: complementing
+          // normalized coverage would fill originally transparent pixels.
+          const decoded=brush._rawShape && decodeShape({data:function(){return brush._rawShape;}},brush.shapeInverted);
+          if(decoded)rebuilt=fixedTipFlip(decoded,brush);
+        }
+        entries.push({name:'Shape.png',data:shapePng(rebuilt,opts.maxTipSize||512).png});
+      }
       const sameGrain=brush._rawGrainState===util.brushFingerprint({tip:brush._grainRgba});
       if(sameGrain && brush._rawGrain)entries.push({name:'Grain.png',data:new Uint8Array(brush._rawGrain)});
       else if(brush.hasTexture){const g=grainPng(brush);if(g)entries.push({name:'Grain.png',data:g});}

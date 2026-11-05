@@ -2052,7 +2052,10 @@
       // Raw Painter XML must not swallow explicit edits or export overrides.
       const source = b._painterRaw && !rawBrushUnchanged(b, opts)
         ? Object.assign({}, b, { _painterRaw: undefined }) : b;
-      try { return withTipRGBA(withExportSettings(source, opts), opts || {}); } catch (e) { return source; }
+      try {
+        const prepared = withTipRGBA(withExportSettings(source, opts), opts || {}, { nativeGeometry: true });
+        return withFixedTipFlips(prepared);
+      } catch (e) { return source; }
     });
     try {
       return { bytes: painter.writeLibrary(list, name || 'BrushConv'), count: list.length };
@@ -2073,6 +2076,8 @@
   }
 
   /** Attach a prepared RGBA tip to a copy of the brush.
+      - flags.nativeGeometry: synthesize a neutral tip when the target has
+        native angle/roundness fields;
       - flags.bake: squash the tip width by brush.roundness so formats without a
         roundness field (GBR/BRU/MDP/PRBR) still look oval;
       - flags.fit: scale the tip to brush.sizePx so pixel-sized brush formats
@@ -2080,7 +2085,7 @@
   function withTipRGBA(brush, opts, flags) {
     opts = opts || {};
     flags = flags || {};
-    let tip = tipToRGBA(brush) || synthTip(flags.transform
+    let tip = tipToRGBA(brush) || synthTip(flags.transform || flags.nativeGeometry
       ? Object.assign({}, brush, { angle: 0, roundness: 100 }) : brush, 256, opts);
     // 目标格式没有"双笔刷"时：把第二支笔尖按 alpha 混合进主笔尖，保留大致外观
     if (flags.dual !== false && opts.dualBake !== false && brush.dualOn && brush.dualTip && (brush.dualTip.rgba || brush.dualTip.data)) {
@@ -2113,6 +2118,13 @@
       w = nw; h = nh;
     }
     return Object.assign({}, brush, { tip: { w: w, h: h, rgba: rgba } });
+  }
+
+  // Keep angle/roundness for the target's native fields, bake only mirrors.
+  function withFixedTipFlips(brush) {
+    if ((!brush.flipX && !brush.flipY) || !brush.tip) return brush;
+    const tip = bakeTipTransform(tipToRGBA(brush), { flipX: brush.flipX, flipY: brush.flipY });
+    return Object.assign({}, brush, { tip });
   }
 
   /** One brush -> Infinite Painter .prbr */
@@ -2496,7 +2508,19 @@ Write-Host 'restart MediBang Paint Pro'
        (target === 'gbr' && brush._rawKind === 'gbr' && brush._rawFile && rawBrushUnchanged(brush, opts)) ||
        (target === 'myb' && brush._rawMyb && rawBrushUnchanged(brush, opts)));
     if (rawCache) rawCache.set(brush, raw);
+    const sub=brush.dualSubBrush;
+    if ((target==='brush'||target==='brushset') && key==='dualOn' && sub && sub._rawArchive && !sub.tip &&
+        brush._rawDualTipState===util.brushFingerprint({tip:brush.dualTip})) {
+      if(opts.fidelity===false||opts.forceRebuild)return '近似（副笔缺少原图，重建使用计算圆头）';
+      if(sub.flipX||sub.flipY)return '未完整写入（副笔缺少内置原图，引用已保留，固定翻转未写出）';
+      return '原生副笔引用保留（缺少副笔原图，笔触待验证）';
+    }
     if (raw) return '原样保留';
+    if (['brush','brushset','sai2','painter'].indexOf(target) >= 0 && (key === 'flipX' || key === 'flipY')) {
+      if ((target === 'brush' || target === 'brushset') && brush._rawArchive && !brush.tip && opts.fidelity !== false && !opts.forceRebuild)
+        return '未写出（缺少内置笔尖原图，无法烘焙固定翻转）';
+      return '近似（固定翻转已烘焙进笔尖资源，角度/圆度继续使用原生参数；笔触待验证）';
+    }
     if (target === 'png' && ['sizePx','spacingPct','opacity','pressureSize','pressureOpacity'].indexOf(key) >= 0)
       return '未写入PNG（此项仅能随附在参数说明中，导入图片后需手动设置）';
     if (['png','gobrush','medibang','mbini','gbr','gih'].indexOf(target) >= 0 && ['angle','roundness','flipX','flipY'].indexOf(key) >= 0)
@@ -2992,8 +3016,8 @@ Write-Host 'restart MediBang Paint Pro'
     const list = (brushList || []).map(function (source) {
       const b = withExportSettings(source, opts);
       try {
-        const tip = bakedTipFor(b, opts || {});
-        return Object.assign({}, b, { tip: { w: tip.w, h: tip.h, rgba: tip.rgba } });
+        const tip = bakedTipFor(Object.assign({}, b, { angle: 0, roundness: 100 }), opts || {});
+        return withFixedTipFlips(Object.assign({}, b, { tip: { w: tip.w, h: tip.h, rgba: tip.rgba } }));
       } catch (e) { return b; }
     });
     return sai2.makeSai2Pack(list, opts || {});
