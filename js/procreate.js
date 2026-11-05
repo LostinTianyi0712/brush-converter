@@ -583,6 +583,10 @@
       const g = brush._grainRgba;
       return png.encode(g.w, g.h, g.rgba);
     }
+    if (brush.grain && brush.grain.w > 0 && brush.grain.h > 0 && brush.grain.rgba && brush.grain.rgba.length === brush.grain.w * brush.grain.h * 4) {
+      const g = brush.grain;
+      return png.encode(g.w, g.h, g.rgba);
+    }
     if (brush._patternPixels && brush._patternPixels.w > 0) {
       const pp = brush._patternPixels, w = pp.w, h = pp.h;
       const out = new Uint8Array(w * h * 4);

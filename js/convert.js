@@ -600,6 +600,16 @@
     const rotNeeded = Math.abs(sin) > 0.001 || Math.abs(cos - 1) > 0.001;
     if (!rotNeeded && round >= 0.995 && !flipX && !flipY) return img;
     const w = img.w, h = img.h, src = img.rgba;
+    // A mirror changes pixel positions, not the brush canvas or its center.
+    // Cropping the alpha bounds here would enlarge sparse/off-center stamps.
+    if (!rotNeeded && round >= 0.995) {
+      const out = new Uint8Array(src.length);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const i = ((flipY ? h - 1 - y : y) * w + (flipX ? w - 1 - x : x)) * 4;
+        out.set(src.subarray(i, i + 4), (y * w + x) * 4);
+      }
+      return { w, h, rgba: out };
+    }
     // required half extents after squash+rotation of the canvas rect
     let maxX = 0, maxY = 0;
     const cx0 = (w - 1) / 2, cy0 = (h - 1) / 2;
@@ -1047,6 +1057,10 @@
     if (brush._grainRgba && brush._grainRgba.w > 0) {
       return { bytes: png.encode(brush._grainRgba.w, brush._grainRgba.h, brush._grainRgba.rgba), w: brush._grainRgba.w, h: brush._grainRgba.h };
     }
+    if (brush.grain && brush.grain.w > 0 && brush.grain.h > 0 && brush.grain.rgba && brush.grain.rgba.length === brush.grain.w * brush.grain.h * 4) {
+      const g = brush.grain;
+      return { bytes: png.encode(g.w, g.h, g.rgba), w: g.w, h: g.h };
+    }
     if (brush._patternPixels && brush._patternPixels.w > 0) {
       const pp = brush._patternPixels, w = pp.w, h = pp.h;
       const out = new Uint8Array(w * h * 4);
@@ -1084,6 +1098,18 @@
         gray[i]=inv?255-coverage:coverage;
       }
       return { w: w, h: h, gray: gray };
+    }
+    // Native GoPaint keeps its decoded, opaque RGB grain in a public field.
+    // Bridge the image rather than dropping it at the common texture boundary.
+    if (brush.grain && brush.grain.w > 0 && brush.grain.h > 0 && brush.grain.rgba) {
+      const g = brush.grain, gray = new Uint8Array(g.w * g.h);
+      if (g.rgba.length !== gray.length * 4) return null;
+      for (let i = 0; i < gray.length; i++) {
+        const o = i * 4, a = g.rgba[o + 3] / 255;
+        const v = Math.round((g.rgba[o] + g.rgba[o + 1] + g.rgba[o + 2]) / 3 * a + 255 * (1 - a));
+        gray[i] = inv ? 255 - v : v;
+      }
+      return { w: g.w, h: g.h, gray: gray };
     }
     return null;
   }
@@ -2054,7 +2080,8 @@
   function withTipRGBA(brush, opts, flags) {
     opts = opts || {};
     flags = flags || {};
-    let tip = tipToRGBA(brush) || synthTip(brush, 256, opts);
+    let tip = tipToRGBA(brush) || synthTip(flags.transform
+      ? Object.assign({}, brush, { angle: 0, roundness: 100 }) : brush, 256, opts);
     // 目标格式没有"双笔刷"时：把第二支笔尖按 alpha 混合进主笔尖，保留大致外观
     if (flags.dual !== false && opts.dualBake !== false && brush.dualOn && brush.dualTip && (brush.dualTip.rgba || brush.dualTip.data)) {
       tip = bakeDualTip(tip, brush);
@@ -2112,7 +2139,7 @@
   function makeMediBangIniPack(brushList, opts) {
     // 保证每支都有笔尖（程序笔刷也转成位图笔刷，否则缺少 .bs 脚本无法被 MediBang 识别）
     const list = (brushList || []).map(function (b) {
-      try { return withTipRGBA(withExportSettings(b, opts), opts || {}); } catch (e) { return b; }
+      try { return withTipRGBA(withExportSettings(b, opts), opts || {}, { transform: true }); } catch (e) { return b; }
     });
     return medibangIni.writeIniPack(list, opts || {});
   }
@@ -2120,7 +2147,7 @@
   function makeMediBangBrush(brush, opts) {
     opts = opts || {};
     brush = withExportSettings(brush, opts);
-    const b2 = withTipRGBA(brush, opts, { fit: true });
+    const b2 = withTipRGBA(brush, opts, { transform: true, fit: true });
     const w = b2.tip.w, h = b2.tip.h;
     const rgba = new Uint8Array(w * h * 4);
     for (let i = 0; i < w * h; i++) {
@@ -2139,7 +2166,7 @@
       'type=bitmap' + EOL +
       'group=-1' + EOL +
       'width=' + width + EOL +
-      'min=0' + EOL +
+      'min=' + Math.max(0, Math.min(width, Math.round(width * (brush.minSizeRatio === undefined ? 0 : brush.minSizeRatio)))) + EOL +
       'opacity=' + opacity + EOL +
       'pSize=' + (pressureSizeOn(brush) ? 'true' : 'false') + EOL +
       'pAlpha=' + (brush.pressureOpacity ? 'true' : 'false') + EOL +
@@ -2199,22 +2226,13 @@ Write-Host 'restart MediBang Paint Pro'
       MediBang Paint / Infinite Painter: create a custom brush from an image). */
   function makeTipPng(brush, opts) {
     opts = opts || {};
-    let img = tipToRGBA(brush);
-    if (!img) img = synthTip(brush, 256, opts);
-    if (brush.source === 'abr') img = bakeTipTransform(img, brush);
     const maxTip = Math.max(64, Math.min(2048, opts.maxTipSize || 512));
-    let w = img.w, h = img.h, rgba = img.rgba;
-    const maxSide = Math.max(w, h);
-    if (maxSide > maxTip) {
-      const s = maxTip / maxSide;
-      const nw = Math.max(1, Math.round(w * s)), nh = Math.max(1, Math.round(h * s));
-      rgba = png.resize(rgba, w, h, nw, nh);
-      w = nw; h = nh;
-    }
+    const adjusted = withExportSettings(brush, opts);
+    const img = withTipRGBA(adjusted, Object.assign({}, opts, { maxTipSize: maxTip }), { transform: true }).tip;
     return {
-      bytes: png.encode(w, h, png.toMaskRgba(rgba)),
-      w: w, h: h,
-      meta: { name: brush.name || 'brush', sizePx: brush.sizePx, spacingPct: brush.spacingPct, opacity: brush.opacity }
+      bytes: png.encode(img.w, img.h, png.toMaskRgba(img.rgba)),
+      w: img.w, h: img.h,
+      meta: { name: adjusted.name || 'brush', sizePx: adjusted.sizePx, spacingPct: adjusted.spacingPct, opacity: adjusted.opacity }
     };
   }
 
@@ -2245,7 +2263,7 @@ Write-Host 'restart MediBang Paint Pro'
       散布强度百分比: b.scatterOn ? num(b.scatterPct, 0, 0) : '',
       散布数量: b.scatterOn ? num(b.scatterCount, 1, 0) : '',
       纹理: b.hasTexture ? '有' : '无',
-      压感大小: b.pressureSize ? '是' : (b.pressure ? '是' : '否'),
+      压感大小: (b.pressureSize === undefined ? b.pressure : b.pressureSize) ? '是' : '否',
       压感不透明度: b.pressureOpacity ? '是' : '否',
       来源格式: b.source || ''
     };
@@ -2473,11 +2491,27 @@ Write-Host 'restart MediBang Paint Pro'
     const raw = rawCache && rawCache.has(brush) ? rawCache.get(brush) : !opts.forceRebuild && opts.fidelity !== false &&
       (((target === 'brush' || target === 'brushset') && procreate.unchanged(withExportSettings(brush,opts),opts)) ||
        (target === 'abr' && opts.preserveRaw !== false && brush._rawPreset && rawBrushUnchanged(brush,opts)) ||
-       (target === 'gobrush' && brush._rawGobrush && rawBrushUnchanged(brush, opts)) ||
+       (target === 'gobrush' && opts.noTextureBake !== true && brush._rawGobrush && rawBrushUnchanged(brush, opts)) ||
+       (target === 'painter' && brush._painterRaw && brush._painterRaw.xml && brush._painterRaw.nib && rawBrushUnchanged(brush, opts)) ||
        (target === 'gbr' && brush._rawKind === 'gbr' && brush._rawFile && rawBrushUnchanged(brush, opts)) ||
        (target === 'myb' && brush._rawMyb && rawBrushUnchanged(brush, opts)));
     if (rawCache) rawCache.set(brush, raw);
     if (raw) return '原样保留';
+    if (target === 'png' && ['sizePx','spacingPct','opacity','pressureSize','pressureOpacity'].indexOf(key) >= 0)
+      return '未写入PNG（此项仅能随附在参数说明中，导入图片后需手动设置）';
+    if (['png','gobrush','medibang','mbini','gbr','gih'].indexOf(target) >= 0 && ['angle','roundness','flipX','flipY'].indexOf(key) >= 0)
+      return '近似（静态几何已烘焙进笔尖图，旋转/圆度动态未等价写入）';
+    if (target === 'kbundle' && ['roundness','flipX','flipY'].indexOf(key) >= 0 &&
+        !(brush._rawXml && opts.fidelity !== false && !opts.forceRebuild) && brush.tip)
+      return '近似（采样笔尖圆度/翻转已烘焙，角度由原生字段表达）';
+    if (target === 'abr' && (key === 'flipX' || key === 'flipY')) return '参数映射（PS笔尖翻转字段，笔触待验证）';
+    if (['medibang','mbini'].indexOf(target) >= 0 && key === 'spacingPct') return '未写入（当前位图INI没有等价间距映射，需在目标软件手动设置）';
+    if (target === 'gobrush' && key === 'textureDepth' && brush.hasTexture) {
+      if (opts.noTextureBake === true) return '未写出（已关闭纹理输出）';
+      if (opts.grainMode === 'tip') return '近似（按选项用笔尖生成纹理，未保留独立原纹理）';
+      return textureGray(brush) ? '近似（真实grain图已写入，比例/混合/压力动态待标定）' : '未写出（缺少原纹理图，已关闭纹理层）';
+    }
+    if (target === 'painter' && key === 'textureDepth' && brush.hasTexture) return '未完整写入（只有XML深度，未打包独立Painter材质）';
     if (target === 'sut' || target === 'mtd') {
       if (key === 'textureDepth' && brush.hasTexture) return textureGray(brush)
         ? '近似（纹理已写入独立素材，强度/比例及混合需目标软件核对）' : '未写出（缺少可读纹理图）';
@@ -2554,7 +2588,6 @@ Write-Host 'restart MediBang Paint Pro'
         (key==='pressureSize' || key==='pressureOpacity')) return '参数映射（按导出设置关闭压感）';
     if(supported && opts.fidelity!==false && !opts.forceRebuild &&
       (((target==='brush'||target==='brushset')&&brush._rawArchive) || (target==='abr'&&opts.preserveRaw!==false&&brush._rawPreset)))return '原生参数局部更新（保留未知字段）';
-    if (target === 'kbundle' && key === 'roundness' && !brush._rawXml && brush.tip && brush.roundness !== undefined && brush.roundness !== 100) return '未完整写入（PNG采样笔尖圆度未独立映射）';
     if (target === 'myb' && (key === 'dualOn' || key === 'textureDepth')) return '丢失（MyPaint当前仅输出参数化笔尖）';
     if (target === 'abr' && key === 'smudgeOn') return '丢失（当前转换路径未映射）';
     if (target === 'abr' && key === 'taperOn') {
@@ -2576,7 +2609,7 @@ Write-Host 'restart MediBang Paint Pro'
     }
     if (key === 'textureDepth') {
       if (!brush.hasTexture) return '未启用';
-      const pixels = brush._rawGrain || brush._grainRgba || brush._patternPixels;
+      const pixels = brush._rawGrain || brush._grainRgba || brush._patternPixels || brush.grain;
       if (target === 'kbundle') {
         if (opts.noTextureBake === true) return '未写出（已关闭纹理输出）';
         if (!brush._rawXml || opts.forceRebuild || opts.fidelity === false) {
@@ -2627,6 +2660,8 @@ Write-Host 'restart MediBang Paint Pro'
       ['间距', 'spacingPct', function (v) { return (Math.round(v * 10) / 10) + '%'; }],
       ['角度', 'angle', function (v) { return Math.round(v) + '°'; }],
       ['圆度', 'roundness', function (v) { return Math.round(v) + '%'; }],
+      ['水平翻转', 'flipX', function () { return '开'; }],
+      ['垂直翻转', 'flipY', function () { return '开'; }],
       ['不透明度', 'opacity', function (v) { return Math.round(v * 100) + '%'; }],
       ['流量', 'flowPct', function (v) { return Math.round(v * 100) + '%'; }],
       ['硬度', 'hardness', function (v) { return Math.round(v * 100) + '%'; }],
@@ -2657,8 +2692,8 @@ Write-Host 'restart MediBang Paint Pro'
       kbundle: ['橡皮模式','尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','散布','纹理深度','混色/涂抹','颜色动态'],
       gbr: ['尺寸','间距','硬度'], gih: ['尺寸','间距','硬度'],
       myb: ['橡皮模式','尺寸','间距','角度','圆度','不透明度','硬度','最小直径','最小不透明度','大小随机','散布','混色/涂抹','颜色动态'],
-      painter: ['尺寸'], sai2: ['尺寸','间距','角度','圆度','不透明度','硬度','最小直径','最小不透明度'], png: ['尺寸','间距','角度','圆度','不透明度'],
-      medibang: ['尺寸','间距','不透明度'], mbini: ['尺寸','间距','不透明度'],
+      painter: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','大小随机','散布'], sai2: ['尺寸','间距','角度','圆度','不透明度','硬度','最小直径','最小不透明度'], png: ['尺寸','间距','角度','圆度','不透明度'],
+      medibang: ['尺寸','不透明度','最小直径','压感尺寸','压感不透明度'], mbini: ['尺寸','不透明度','最小直径','压感尺寸','压感不透明度'],
       gobrush: ['尺寸','间距','不透明度','最小直径','最小不透明度','流量','散布','纹理深度'],
       gopaint_set: ['尺寸','间距','不透明度','散布','纹理深度'], gopaint_abr: ['尺寸','间距','不透明度','纹理深度']
     };
@@ -2802,6 +2837,8 @@ Write-Host 'restart MediBang Paint Pro'
       ['间距', 'spacingPct', function (v) { return (Math.round(v * 10) / 10) + '%'; }],
       ['角度', 'angle', function (v) { return Math.round(v) + '°'; }],
       ['圆度', 'roundness', function (v) { return Math.round(v) + '%'; }],
+      ['水平翻转', 'flipX', function () { return '开'; }],
+      ['垂直翻转', 'flipY', function () { return '开'; }],
       ['不透明度', 'opacity', function (v) { return Math.round(v * 100) + '%'; }],
       ['流量', 'flowPct', function (v) { return Math.round(v * 100) + '%'; }],
       ['硬度', 'hardness', function (v) { return Math.round(v * 100) + '%'; }],
@@ -2834,8 +2871,8 @@ Write-Host 'restart MediBang Paint Pro'
       kbundle: ['橡皮模式','尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','散布','纹理','压感尺寸','压感不透明度','混色/涂抹','颜色动态'],
       gbr: ['尺寸','间距','硬度'], gih: ['尺寸','间距','硬度'],
       myb: ['橡皮模式','尺寸','间距','角度','圆度','不透明度','硬度','最小直径','最小不透明度','大小随机','散布','压感尺寸','压感不透明度','混色/涂抹','颜色动态'],
-      painter: ['尺寸'], sai2: ['尺寸','间距','角度','圆度','不透明度','硬度','最小直径','最小不透明度','压感尺寸','压感不透明度'], png: ['尺寸','间距','角度','圆度','不透明度'],
-      medibang: ['尺寸','间距','不透明度'], mbini: ['尺寸','间距','不透明度'],
+      painter: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','大小随机','散布'], sai2: ['尺寸','间距','角度','圆度','不透明度','硬度','最小直径','最小不透明度','压感尺寸','压感不透明度'], png: ['尺寸','间距','角度','圆度','不透明度'],
+      medibang: ['尺寸','不透明度','最小直径','压感尺寸','压感不透明度'], mbini: ['尺寸','不透明度','最小直径','压感尺寸','压感不透明度'],
       gobrush: ['尺寸','间距','不透明度','最小直径','最小不透明度','流量','散布','纹理'],
       gopaint_set: ['尺寸','间距','不透明度','散布','纹理'], gopaint_abr: ['尺寸','间距','不透明度','纹理']
     };
@@ -2848,7 +2885,7 @@ Write-Host 'restart MediBang Paint Pro'
       gbr: 'GIMP 格式只有「笔尖 + 间距 + 硬度」',
       gih: 'GIMP 管道格式只有「笔尖 + 间距 + 硬度」',
       myb: '当前MyPaint导出不写入自定义采样笔尖、双笔或纹理图；速度/倾斜未映射',
-      painter: 'Painter 笔刷格式只写了笔尖',
+      painter: 'Painter写出基础XML和有损JPEG笔尖；独立材质及复杂引擎未还原',
       sai2: 'SAI2已写BMP/INI及toolnrm的基础数值和压感开关；实际笔触待目标软件验证',
       png: 'PNG 只导出笔尖图 + 参数文本',
       medibang: 'MediBang 只写基础字段', mbini: 'MediBang 云笔刷只写基础字段',
@@ -2921,11 +2958,13 @@ Write-Host 'restart MediBang Paint Pro'
       '这些 PNG 是笔尖形状图（白底+透明度），可直接导入：',
       '  · MediBang Paint：素材/画笔 → 用图片新建自定义笔刷',
       '  · Infinite Painter：笔刷库 → 创建 → 以图片创建笔刷',
-      '尺寸 = 原笔刷设置的像素尺寸；间距/压感请在 App 内手动设置（文件里不带）。'
+      'PNG保留笔尖素材分辨率（受最大边长限制），不等于画笔绘画直径。',
+      '随附参数已应用整体尺寸倍数和间距覆盖；导入图片后请在目标软件手动设置尺寸、间距和压感。'
     ];
     entries.push({ name: '说明.txt', data: util.utf8Encode(lines.join('\n')) });
-    entries.push({ name: '笔刷参数.txt', data: util.utf8Encode(brushParamText(brushList)) });
-    entries.push({ name: '笔刷参数.json', data: util.utf8Encode(JSON.stringify(brushList.map(function (b) {
+    const adjusted = brushList.map(function (b) { return withExportSettings(b, opts); });
+    entries.push({ name: '笔刷参数.txt', data: util.utf8Encode(brushParamText(adjusted)) });
+    entries.push({ name: '笔刷参数.json', data: util.utf8Encode(JSON.stringify(adjusted.map(function (b) {
       const info = brushParamInfo(b); const obj = {}; for (const k in info) obj[k] = info[k] === '' ? null : info[k]; return obj;
     }), null, 2)) });
     return { bytes: zipMod.write(entries), count: brushList.length };
@@ -2936,9 +2975,14 @@ Write-Host 'restart MediBang Paint Pro'
     const list = (brushList || []).map(function (source) {
       const b = Object.assign({}, withExportSettings(source, opts));
       b._kritaPattern = b.hasTexture && !(opts && opts.noTextureBake === true) ? textureGray(b) : null;
-      if (!(b.dualOn && b.dualTip)) return b;
-      const tip = bakedTipFor(b, opts);
-      return Object.assign({}, b, { tip: { w: tip.w, h: tip.h, rgba: tip.rgba } });
+      if (b.dualOn && b.dualTip) b.tip = bakedTipFor(Object.assign({}, b, { angle: 0, roundness: 100 }), opts);
+      // Sampled Krita tips have a native angle but no common roundness/flip
+      // mapping. Bake only the latter and retain original XML on its raw path.
+      if (b.tip && !(b._rawXml && (!opts || (opts.fidelity !== false && !opts.forceRebuild)))) {
+        b.tip = bakeTipTransform(tipToRGBA(b), Object.assign({}, b, { angle: 0 }));
+        b.roundness = 100; b.flipX = false; b.flipY = false;
+      }
+      return b;
     });
     return krita.writeBundle(list, opts || {});
   }
@@ -2964,14 +3008,17 @@ Write-Host 'restart MediBang Paint Pro'
     opts = opts || {};
     const fileName = (sanitizeName(brush.name || 'brush', 0) || 'brush') + '.gobrush';
     // 还原优先：源就是 .gobrush 时原样输出
-    if (brush._rawGobrush && brush._rawGobrush.length && rawBrushUnchanged(brush, opts)) {
+    if (brush._rawGobrush && brush._rawGobrush.length && rawBrushUnchanged(brush, opts) && opts.noTextureBake !== true) {
       return { bytes: new Uint8Array(brush._rawGobrush), fileName:fileName, uuid:brush.gopaintUuid, count: 1, passthrough: true };
     }
-    let b2 = brush;
-    if (brush.dualOn && brush.dualTip) {
-      const tip = bakedTipFor(brush, opts);
-      b2 = Object.assign({}, brush, { tip: { w: tip.w, h: tip.h, rgba: tip.rgba } });
+    let b2 = withTipRGBA(brush, Object.assign({}, opts, { maxTipSize: opts.maxTipSize || 2048 }), { transform: true });
+    const texture = opts.noTextureBake === true ? null : textureGray(b2);
+    if (texture && (!b2.grain || b2.textureInverted)) {
+      const rgba = new Uint8Array(texture.w * texture.h * 4);
+      for (let i = 0; i < texture.gray.length; i++) rgba.set([texture.gray[i], texture.gray[i], texture.gray[i], 255], i * 4);
+      b2 = Object.assign({}, b2, { grain: { w: texture.w, h: texture.h, rgba: rgba } });
     }
+    b2 = Object.assign({}, b2, { hasTexture: !!brush.hasTexture && opts.noTextureBake !== true && (!!texture || opts.grainMode === 'tip') });
     const made = gobrushWrite.makeGobrush(b2, opts || {});
     return { bytes: made.bytes, fileName:fileName, uuid:made.uuid, count: 1 };
   }
@@ -2984,7 +3031,7 @@ Write-Host 'restart MediBang Paint Pro'
       (brushList.length && brushList.every(function (b) { return b.group === brushList[0].group; }) && brushList[0].group) || '笔刷组';
     const fileName = (sanitizeName(String(groupName), 0) || '笔刷组') + '.gobrushes';
     // 还原优先：整组来自同一个 .gobrushes 时原样输出
-    if (rawGroup && rawGroup.count === brushList.length && groupName === rawGroup.name &&
+    if (rawGroup && opts.noTextureBake !== true && rawGroup.count === brushList.length && groupName === rawGroup.name &&
         brushList.every(function (b, i) { return b._rawGoGroup === rawGroup && b._rawGoIndex === i && rawBrushUnchanged(b, opts); })) {
       return { bytes: new Uint8Array(rawGroup.bytes), fileName:fileName, count: brushList.length, passthrough: true };
     }
