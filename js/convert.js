@@ -2023,7 +2023,10 @@
     const painter = isNode ? require('./painterlib.js') : root.BC.painterlib;
     // 没有真实笔尖的笔刷先合成一个，保证每支都能生成 .nib
     const list = (brushList || []).map(function (b) {
-      try { return withTipRGBA(withExportSettings(b, opts), opts || {}); } catch (e) { return b; }
+      // Raw Painter XML must not swallow explicit edits or export overrides.
+      const source = b._painterRaw && !rawBrushUnchanged(b, opts)
+        ? Object.assign({}, b, { _painterRaw: undefined }) : b;
+      try { return withTipRGBA(withExportSettings(source, opts), opts || {}); } catch (e) { return source; }
     });
     try {
       return { bytes: painter.writeLibrary(list, name || 'BrushConv'), count: list.length };
@@ -2521,10 +2524,10 @@ Write-Host 'restart MediBang Paint Pro'
     }
     if (key === 'eraser' && target === 'kbundle' && brush.eraserAmount > 0 && brush.eraserAmount < 1) return '近似（连续橡皮强度映射为橡皮开关）';
     if (key === 'opacity' && target === 'sai2' && brush.opacity < 0.01) return '近似（当前SAI2写端浓度下限1%，不能视为完全透明）';
-    if (key === 'spacingPct' && ['kbundle','sai2','gbr','gih'].indexOf(target) >= 0 && !(target === 'kbundle' && brush._rawXml && opts.fidelity !== false && !opts.forceRebuild)) {
+    if (key === 'spacingPct' && ['kbundle','sai2','gbr','gih','myb'].indexOf(target) >= 0 && !(target === 'kbundle' && brush._rawXml && opts.fidelity !== false && !opts.forceRebuild)) {
       const spacing = opts.spacingOverride > 0 ? opts.spacingOverride : brush.spacingPct;
       const min = target === 'kbundle' ? (brush.tip ? 0.5 : 1) : 1;
-      const max = target === 'kbundle' ? 500 : 1000;
+      const max = target === 'kbundle' ? 500 : target === 'myb' ? 200 : 1000;
       if (spacing < min || spacing > max) return '近似（间距超出当前写端范围，已限制为' + min + '–' + max + '%）';
     }
     if (key === 'smudgeOn' && target === 'kbundle') return '未完整写入（当前重建使用像素画笔，未建立专用混色引擎）';

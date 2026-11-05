@@ -78,7 +78,7 @@
 
   function buildIni(brush) {
     const size = Math.max(1, Math.min(5000, Math.round(brush.sizePx || 40)));
-    const spacing = Math.max(1, Math.min(1000, Math.round((brush.spacingPct || 10))));
+    const spacing = Math.max(1, Math.min(1000, Math.round(brush.spacingPct === undefined ? 10 : brush.spacingPct)));
     const angle = Math.round((isFinite(brush.angle) ? brush.angle : 0));
     const ratio = Math.max(10, Math.min(100, Math.round(brush.roundness === undefined ? 100 : brush.roundness)));
     const opacity = Math.max(1, Math.min(100, Math.round((brush.opacity === undefined ? 1 : brush.opacity) * 100)));

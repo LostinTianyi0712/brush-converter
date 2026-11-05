@@ -21,7 +21,7 @@
   }
 
   function attr(attrs, name) {
-    const m = attrs.match(new RegExp(name + '="([^"]*)"'));
+    const m = attrs.match(new RegExp('(?:^|\\s)' + name + '="([^"]*)"'));
     return m ? m[1] : undefined;
   }
   function num(v, d) { const n = Number(v); return isFinite(n) ? n : d; }
@@ -39,7 +39,10 @@
       const lum = (img.rgba[i * 4] + img.rgba[i * 4 + 1] + img.rgba[i * 4 + 2]) / 3;
       if (lum > bg) bg = lum;
     }
-    const scale = bg > 8 ? 255 / bg : 1;
+    // A fully opaque black dab may cover every pixel: there is no background
+    // sample in that NIB. The generated NIB convention uses a 220-gray backing.
+    if (bg <= 8) bg = 220;
+    const scale = 255 / bg;
     for (let i = 0; i < n; i++) {
       const lum = (img.rgba[i * 4] + img.rgba[i * 4 + 1] + img.rgba[i * 4 + 2]) / 3;
       const a = Math.max(0, Math.min(255, Math.round((bg - lum) * scale)));
@@ -69,7 +72,7 @@
     return {
       sizePx: Math.round(sizePx),
       spacingPct: Math.max(1, Math.min(1000, Math.round(advance * 100 * 10) / 10)),
-      opacity: Math.max(0.01, Math.min(1, opacity)),
+      opacity: Math.max(0, Math.min(1, opacity)),
       flowPct: Math.max(0.01, Math.min(1, flow > 1 ? flow / 400 : flow)),
       minSizeRatio: Math.max(0, Math.min(1, minFrac)),
       minOpacityRatio: 0,
@@ -120,6 +123,7 @@
         _painterRaw: { xml: files[path], nib: files[nibPath] || null, category: category }
       }, params, { name: base, category: category, tip: tip }));
     }
+    brushes.forEach(function (b) { b._rawBrushState = util.brushFingerprint(b); });
     return {
       brushes: brushes,
       warnings: brushes.length ? [] : ['Painter 库里没有读到笔刷 XML']
@@ -130,7 +134,7 @@
   function brushXml(brush) {
     const radius = Math.max(1, (brush.sizePx || 40) / 2);
     const minFrac = brush.minSizeRatio === undefined ? 1 : brush.minSizeRatio;
-    const advance = Math.max(0.01, (brush.spacingPct || 25) / 100);
+    const advance = Math.max(0.01, (brush.spacingPct === undefined ? 25 : brush.spacingPct) / 100);
     const opacity = brush.opacity === undefined ? 1 : brush.opacity;
     const flow = (brush.flowPct === undefined ? 1 : brush.flowPct) * 400;
     const angle = brush.angle || 0;

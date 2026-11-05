@@ -105,7 +105,7 @@
       if (eq < 0) continue;
       const k = t.slice(0, eq).trim();
       const v = t.slice(eq + 1).trim();
-      out[k] = /^-?\d+(\.\d+)?$/.test(v) ? Number(v) : v;
+      out[k] = /^[+-]?\d+(\.\d+)?$/.test(v) ? Number(v) : v;
     }
     return out;
   }

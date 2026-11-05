@@ -1213,7 +1213,6 @@
         const folder = opts.groupBySource && rec.baseName ? BC.convert.sanitizeName(rec.baseName, 0, true) + '/' : '';
         for (const fmt of targets) {
           try {
-            if (fmt === 'brushset') continue;
             const co = commonOpts(rec);
             if (fmt === 'bru' && opts.bruEmbed !== false && b.dualTip && BC.convert.makeBru) {
               const made = BC.convert.makeBru(b, Object.assign({}, co, { embedSubTip: true }));
@@ -1239,7 +1238,9 @@
               ? BC.convert.makeAbrPack([b], co)
               : fmt === 'tpl' ? BC.convert.makeTplPack([b],co)
               : fmt === 'gopaint' ? BC.convert.makeGoPaintBrush(b, co)
+              : fmt === 'gopaint_set' ? BC.convert.makeGoPaintGroup([b], Object.assign({}, co, { groupName: b.name }))
               : fmt === 'gopaint_abr' ? BC.convert.makeGoPaintAbr([b], co)
+              : fmt === 'brushset' ? BC.convert.makeProcreateBrushset([b], co)
               : fmt === 'brush' ? BC.convert.makeProcreateBrush(b, co)
               : fmt === 'gbr' ? BC.convert.makeGbr(b, co)
               : fmt === 'myb' ? BC.convert.makeMyb(b, co)
@@ -1748,7 +1749,7 @@
   }
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.17';
+const APP_VERSION = '2.8.18';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;

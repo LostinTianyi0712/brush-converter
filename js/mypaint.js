@@ -148,7 +148,7 @@
   function writeMyb(brush) {
     const sizePx = Math.max(1, Math.min(4000, brush.sizePx || 40));
     const radius = sizePx / 2;
-    const spacingPct = Math.max(1, Math.min(200, brush.spacingPct || 10));
+    const spacingPct = Math.max(1, Math.min(200, brush.spacingPct === undefined ? 10 : brush.spacingPct));
     const dabs = 100 / (2 * spacingPct);
     const hardness = Math.max(0, Math.min(1, brush.hardness === undefined ? 0.7 : brush.hardness));
     const opacity = Math.max(0, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity));
