@@ -544,6 +544,8 @@
         const b = readBrushFolder(entries, prefix, opts.shapeResources, entryByName, entriesByFolder.get(folder));
         if (!b) continue;
         if (!b.name) b.name = /^[0-9A-Fa-f-]{20,}$/.test(folder) ? (setName + ' ' + autoIndex) : folder;
+        // 整包组名：导出 .brushset 时写回 brushset.plist（否则会退回第一支笔刷名）
+        b._brushsetName = setName;
         if (!b.tip) warnings.push(b.name + ': ' + (b.bundledShapePath ? '缺少内置笔尖原图 '+b.bundledShapePath+'；Procreate原生导出保留引用，跨软件圆头仅为近似' : '没有可解码Shape图；跨软件圆头仅为近似'));
         brushes.push(b);
       } catch (e) {

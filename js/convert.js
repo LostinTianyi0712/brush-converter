@@ -506,7 +506,10 @@
         b._rawBrushState = util.brushFingerprint(b);
       });
     }
-    return { kind, kindLabel: extLabel(kind), brushes: result.brushes, warnings: result.warnings || [] };
+    const out = { kind, kindLabel: extLabel(kind), brushes: result.brushes, warnings: result.warnings || [] };
+    // Procreate .brushset 的组名（brushset.plist 的 name）：导出时原样写回，避免退回第一支笔刷名
+    if (result.name !== undefined) out.name = result.name;
+    return out;
   }
 
   /** 异步解析：ABR 大文件会分片让出主线程并回报进度 */
