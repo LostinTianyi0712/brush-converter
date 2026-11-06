@@ -5,6 +5,29 @@
   const util = isNode ? require('./util.js') : root.BC.util;
 
   function Uid(value) { this.value = value; }
+  function Float32(value) { this.value = Number(value) || 0; }
+  function Float64(value) { this.value = Number(value) || 0; }
+
+  const INTEGER_ARCHIVE_KEYS = new Set([
+    'blendMode', 'burntEdgesBlendMode', 'burntEdgesBlendModeExtended',
+    'dualBlendMode', 'dualBlendModeExtended', 'dynamicsGlazeType',
+    'dynamicsRenderType', 'extendedBlend', 'extendedBlend2',
+    'grainBlendMode', 'grainBlendModeExtended', 'grainOrientation',
+    'grainRollMode', 'hoverFill', 'hoverOutline', 'mode',
+    'paintpassthru', 'pencilTaperMode', 'plotSpacingVersion',
+    'pressureTaperMode', 'shapeFilterMode', 'shapeOrientation',
+    'shapeRollMode', 'smudgeTaperMode', 'taperVersion',
+    'textureApplication', 'textureFilterMode', 'textureOrientation',
+    'version', 'wetEdgesBlendMode', 'wetEdgesBlendModeExtended'
+  ]);
+
+  function wrapKeyedNumber(key, value, objClass) {
+    if (key === 'NS.time') return new Float64(value);
+    if (INTEGER_ARCHIVE_KEYS.has(key)) return Math.round(value);
+    if (objClass && objClass !== 'SilicaBrush' && objClass !== 'ValkyrieBrush' && objClass !== 'ValkyrieBrushRollParameters') return value;
+    if (Number.isInteger(value) && (value < -10 || value > 1000)) return value;
+    return new Float32(value);
+  }
 
   function encodeInt(n) {
     const sizes = [1, 2, 4];
@@ -46,6 +69,18 @@
       return out;
     }
     if (typeof v === 'boolean') return new Uint8Array([v ? 0x09 : 0x08]);
+    if (v instanceof Float32) {
+      const out = new Uint8Array(5);
+      out[0] = 0x22;
+      new DataView(out.buffer).setFloat32(1, v.value, false);
+      return out;
+    }
+    if (v instanceof Float64) {
+      const out = new Uint8Array(9);
+      out[0] = 0x23;
+      new DataView(out.buffer).setFloat64(1, v.value, false);
+      return out;
+    }
     if (typeof v === 'number') {
       if (Number.isInteger(v)) return encodeInt(v);
       const out = new Uint8Array(9);
@@ -171,6 +206,7 @@
       if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'string') return pushArchived(v);
       if (Array.isArray(v) || typeof v === 'object') {
         const entries = [];
+        const slotIdx = pushArchived({ __dict: entries });
         let name, chain;
         if (Array.isArray(v) || Object.prototype.hasOwnProperty.call(v, 'NS.objects')) {
           name = key === 'points' ? 'NSMutableArray' : 'NSArray';
@@ -192,11 +228,12 @@
             if (k === '__class') continue;
             const value = v[k];
             const primitive = typeof value === 'number' || typeof value === 'boolean';
-            entries.push([add(k), primitive ? add(value) : refSlot(allocValue(value, k))]);
+            const encodedVal = typeof value === 'number' ? wrapKeyedNumber(k, value, name) : value;
+            entries.push([add(k), primitive ? add(encodedVal) : refSlot(allocValue(value, k))]);
           }
         }
         entries.push([add('$class'), classRef(name, chain)]);
-        return pushArchived({ __dict: entries });
+        return slotIdx;
       }
       throw new Error('bplist 不支持的值类型: ' + typeof v);
     }
@@ -253,6 +290,8 @@
       let ref;
       if(typeof value==='string'){
         archived.__array.push(add(value));ref=add(new Uid(archived.__array.length-1));
+      }else if(typeof value==='number'){
+        ref=add(wrapKeyedNumber(key,value));
       }else ref=add(value);
       const pair=root.__dict.find(e=>textAt(e[0])===key);
       if(pair)pair[1]=ref;else root.__dict.push([add(key),ref]);

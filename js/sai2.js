@@ -82,30 +82,42 @@
     const angle = Math.round((isFinite(brush.angle) ? brush.angle : 0));
     const ratio = Math.max(10, Math.min(100, Math.round(brush.roundness === undefined ? 100 : brush.roundness)));
     const opacity = Math.max(1, Math.min(100, Math.round((brush.opacity === undefined ? 1 : brush.opacity) * 100)));
+    const angleControl = (brush.bruRotationMode === 1 || brush.dynamicsControlAngle === 6) ? 1 : 0;
+    const angleJitter = Math.max(0, Math.min(100, Math.round(brush.source === 'abr' ? (brush.angleJitterDeg || 0) : ((brush.angleJitterDeg || 0) * 100 / 360))));
+    const sizeJitter = Math.max(0, Math.min(100, Math.round(brush.sizeJitterPct || 0)));
+    const scattering = brush.scatterOn ? Math.max(0, Math.min(1000, Math.round(brush.scatterPct || 0))) : 0;
+    const wxhJitter = Math.max(0, Math.min(100, Math.round(brush.roundnessJitterPct || 0)));
+    const count = Math.max(1, Math.min(16, Math.round(brush.scatterCount || 1)));
+    const countJitter = Math.max(0, Math.min(100, Math.round(brush.countJitterPct || 0)));
+    const allDir = brush.scatterBothAxes === false ? 0 : 1;
+    const colJitter = brush.colorDynamicsOn ? 1 : 0;
+    const hueJitter = brush.colorDynamicsOn ? Math.max(0, Math.min(100, Math.round((brush.colorJitterHue || 0) * 100))) : 0;
+    const satJitter = brush.colorDynamicsOn ? Math.max(0, Math.min(100, Math.round((brush.colorJitterSat || 0) * 100))) : 0;
+    const briJitter = brush.colorDynamicsOn ? Math.max(0, Math.min(100, Math.round((brush.colorJitterVal || 0) * 100))) : 0;
     const lines = [
       '; Converted by BrushConverter',
       '[Parameters]',
-      'AngleControl = 0',
+      'AngleControl = ' + angleControl,
       'Angle = ' + (angle >= 0 ? '+' : '') + angle,
-      'AngleJitter = 0',
+      'AngleJitter = ' + angleJitter,
       'Scaling = 100',
       'ShapeSize = ' + size,
-      'SizeJitter = 0',
+      'SizeJitter = ' + sizeJitter,
       'Spacing = ' + spacing,
-      'Scattering = 0',
+      'Scattering = ' + scattering,
       'WxHRatio = ' + ratio + ':100',
-      'WxHJitter = 0',
-      'Count = 1',
-      'CountJitter = 0',
-      'AllDirScattering = 0',
+      'WxHJitter = ' + wxhJitter,
+      'Count = ' + count,
+      'CountJitter = ' + countJitter,
+      'AllDirScattering = ' + allDir,
       'GaussianDistribution = 0',
       'AbsoluteSize = 0',
       'IntegerPosition = 0',
       'HighQualitySampling = 1',
-      'ColJitter = 0',
-      'HueJitter = 0',
-      'SaturationJitter = 0',
-      'BrightnessJitter = 0',
+      'ColJitter = ' + colJitter,
+      'HueJitter = ' + hueJitter,
+      'SaturationJitter = ' + satJitter,
+      'BrightnessJitter = ' + briJitter,
       'ApplyToEachShape = 0',
       'Opacity = ' + opacity,
       ''

@@ -1,4 +1,4 @@
-﻿/* Clip Studio Paint brush material: .sut = SQLite database.
+/* Clip Studio Paint brush material: .sut = SQLite database.
    Brush parameters live in the `Variant` table; the tip preview lives in
    MaterialFile.FileData (tar). Verified plain C2F tiles are readable;
    encrypted/unsupported native layers use an explicitly marked preview. */
@@ -113,6 +113,36 @@
     };
     out.dualBlendMode = out.dualCompositeMode;
     return out;
+  }
+
+  function readExtraCspFields(v, clamp) {
+    if (!v) return {};
+    const wetOn = !!v.BrushUseWaterEdge;
+    const wetAmt = wetOn && typeof v.BrushWaterEdgeAlphaPower === 'number' ? clamp(Math.abs(v.BrushWaterEdgeAlphaPower) / 100, 0, 1) : 0;
+    const waterOn = !!v.BrushUseWaterColor && (typeof v.BrushMixColor === 'number' ? v.BrushMixColor < 100 : false);
+    const waterMix = waterOn && typeof v.BrushMixColor === 'number' ? clamp((100 - v.BrushMixColor) / 100, 0, 1) : 0;
+    const smooth = v.BrushUseRevision && typeof v.BrushRevision === 'number' ? clamp(v.BrushRevision / 100, 0, 1) : 0;
+    const colOn = !!v.BrushChangePatternColor;
+    const hueJ = colOn && typeof v.BrushHueChange === 'number' ? clamp(Math.abs(v.BrushHueChange) / 360, 0, 1) : 0;
+    const satJ = colOn && typeof v.BrushSaturationChange === 'number' ? clamp(Math.abs(v.BrushSaturationChange) / 100, 0, 1) : 0;
+    const valJ = colOn && typeof v.BrushValueChange === 'number' ? clamp(Math.abs(v.BrushValueChange) / 100, 0, 1) : 0;
+    const sprayOn = !!v.BrushUseSpray && (Number(v.BrushSprayDensity) || 0) > 1;
+    const sprayCnt = sprayOn && typeof v.BrushSprayDensity === 'number' ? clamp(Math.round(v.BrushSprayDensity), 1, 16) : 1;
+    const texRot = typeof v.TextureRotate === 'number' && v.TextureRotate ? v.TextureRotate * Math.PI / 180 : 0;
+    return {
+      textureRotation: texRot,
+      wetEdgesOn: wetOn && wetAmt > 0.001,
+      wetEdgesAmount: wetAmt,
+      smudgeOn: waterOn && waterMix > 0.001,
+      smudgeAmount: waterMix,
+      smoothingStrength: smooth,
+      colorDynamicsOn: colOn && (hueJ > 0.001 || satJ > 0.001 || valJ > 0.001),
+      colorJitterHue: hueJ,
+      colorJitterSat: satJ,
+      colorJitterVal: valJ,
+      scatterOn: sprayOn,
+      scatterCount: sprayCnt
+    };
   }
 
   function parseSut(bytes, fileName) {
@@ -243,7 +273,7 @@
         cspVersion: version,
         // 回写原生 SUT 时用于定位这一支对应的 Variant 行（同一 SUT 的“当前/初始”副本）
         _rawSutVariantId: v.VariantID
-      }, readDualFields(v, clamp)));
+      }, readExtraCspFields(v, clamp), readDualFields(v, clamp)));
     });
     return { brushes: brushes, warnings: warnings };
   }
@@ -347,7 +377,7 @@
         minOpacityRatio: hasOpacityDynamics ? 0.3 : 1,
         source: 'csp-decrypted',
         cspVersion: json.manager && json.manager.Version
-      }, readDualFields(variant, clamp)));
+      }, readExtraCspFields(p, clamp), readDualFields(variant, clamp)));
     });
     return { brushes: brushes, warnings: warnings };
   }

@@ -1,4 +1,4 @@
-﻿/* PaintTool SAI 2 素材/笔刷读取
+/* PaintTool SAI 2 素材/笔刷读取
  *  - init 素材包：brushform.conf / brushtex.conf / papertex.conf / scatter.conf / bristle.conf
  *    每行 "序号,文件夹\文件.bmp"，纹理解码为笔尖/纹理
  *  - 笔刷 ini（scatter 笔刷）：[Parameters] 里的 Density / AngleControl / Angle / Blur ... 
@@ -115,6 +115,13 @@
     const density = p.Opacity === undefined ? (p.Density === undefined ? 100 : p.Density) : p.Opacity;
     const angle = p.Angle === undefined ? 0 : p.Angle;
     const base = String(fileName || 'sai2-brush').replace(/\.ini$/i, '').replace(/^.*[\\/]/, '');
+    const scatPct = Math.max(0, Math.min(1000, Number(p.Scattering) || 0));
+    const scatCnt = Math.max(1, Math.min(16, Math.round(Number(p.Count) || 1)));
+    const hueJ = Math.max(0, Math.min(1, (Number(p.HueJitter) || 0) / 100));
+    const satJ = Math.max(0, Math.min(1, (Number(p.SaturationJitter) || 0) / 100));
+    const briJ = Math.max(0, Math.min(1, (Number(p.BrightnessJitter) || 0) / 100));
+    const colOn = Number(p.ColJitter) > 0 || hueJ > 0.001 || satJ > 0.001 || briJ > 0.001;
+    const followsDir = Number(p.AngleControl) === 1;
     return {
       brushes: [{
         name: base.replace(/__/g, ' '),
@@ -128,8 +135,22 @@
         pressureOpacity: false,
         hardness: p.EdgeHardness === undefined ? 1 : Math.max(0, Math.min(1, p.EdgeHardness / 100)),
         angle: angle,
+        dynamicsControlAngle: followsDir ? 6 : undefined,
+        bruRotationMode: followsDir ? 1 : 0,
+        angleJitterDeg: Math.max(0, Math.min(360, (Number(p.AngleJitter) || 0) * 3.6)),
+        sizeJitterPct: Math.max(0, Math.min(100, Number(p.SizeJitter) || 0)),
         roundness: typeof p.WxHRatio==='string' && /^\d+(\.\d+)?:\d+(\.\d+)?$/.test(p.WxHRatio) && Number(p.WxHRatio.split(':')[1])>0
           ? Math.max(0,Math.min(100,100*Number(p.WxHRatio.split(':')[0])/Number(p.WxHRatio.split(':')[1]))) : 100,
+        roundnessJitterPct: Math.max(0, Math.min(100, Number(p.WxHJitter) || 0)),
+        scatterOn: scatPct > 0.01 || scatCnt > 1,
+        scatterPct: scatPct,
+        scatterCount: scatCnt,
+        countJitterPct: Math.max(0, Math.min(100, Number(p.CountJitter) || 0)),
+        scatterBothAxes: p.AllDirScattering === undefined ? true : Number(p.AllDirScattering) !== 0,
+        colorDynamicsOn: colOn,
+        colorJitterHue: hueJ,
+        colorJitterSat: satJ,
+        colorJitterVal: briJ,
         source: 'sai2',
         _sai2ini: p
       }],

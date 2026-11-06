@@ -1,4 +1,4 @@
-﻿/* MyPaint brush format: .myb (JSON settings document) */
+/* MyPaint brush format: .myb (JSON settings document) */
 (function (root) {
   'use strict';
   const isNode = typeof module !== 'undefined' && module.exports && typeof process !== 'undefined';
@@ -112,6 +112,14 @@
     if (smudge > 0) warnings.push('MyPaint 混色比例已读取；跨引擎混色效果仍需验证');
     if (eraser > 0) warnings.push('MyPaint 橡皮模式已读取；不支持该模式的目标需手动切换橡皮工具');
     if(num(settings,'dabs_per_second',0)>0)warnings.push('该 MyPaint 笔刷含按时间喷点，静态间距只按基础/实际半径采样密度估算');
+    const offsetRandom = Math.max(0, num(settings, 'offset_by_random', 0));
+    const scatterPct = clamp(offsetRandom * 100, 0, 1000);
+    const sizeJitterPct = clamp(Math.max(0, num(settings, 'radius_by_random', 0)) * 100, 0, 100);
+    const colorJitterHue = clamp(Math.abs(num(settings, 'change_color_h', 0)), 0, 1);
+    const colorJitterSat = clamp(Math.max(Math.abs(num(settings, 'change_color_hsl_s', 0)), Math.abs(num(settings, 'change_color_hsv_s', 0))), 0, 1);
+    const colorJitterVal = clamp(Math.max(Math.abs(num(settings, 'change_color_v', 0)), Math.abs(num(settings, 'change_color_l', 0))), 0, 1);
+    const colorDynamicsOn = colorJitterHue > 0.001 || colorJitterSat > 0.001 || colorJitterVal > 0.001;
+    const smoothingStrength = clamp(Math.max(0, num(settings, 'slow_tracking', 0)) / 2, 0, 1);
     const result = {
       brushes: [{
         name: name,
@@ -127,6 +135,14 @@
         minSizeRatio: minSizeRatio,
         pressureOpacity: opacityVaries,
         minOpacityRatio: minOpacityRatio,
+        scatterOn: scatterPct > 0.01,
+        scatterPct: scatterPct,
+        sizeJitterPct: sizeJitterPct,
+        colorDynamicsOn: colorDynamicsOn,
+        colorJitterHue: colorJitterHue,
+        colorJitterSat: colorJitterSat,
+        colorJitterVal: colorJitterVal,
+        smoothingStrength: smoothingStrength,
         smudgeOn: smudge > 0,
         smudgeAmount: clamp(smudge, 0, 1),
         eraser: eraser > 0,
@@ -183,7 +199,7 @@
       radius_by_random: setting(Math.max(0, Math.min(1, (brush.sizeJitterPct || 0) / 100))),
       radius_logarithmic: setting(Math.log(radius)),
       restore_color: setting(0.0),
-      slow_tracking: setting(0.0),
+      slow_tracking: setting(Math.max(0, Math.min(10, (brush.smoothingStrength || 0) * 2))),
       slow_tracking_per_dab: setting(0.0),
       smudge: setting(brush.smudgeOn ? Math.max(0, Math.min(1, brush.smudgeAmount === undefined ? 0.4 : brush.smudgeAmount)) : 0.0),
       smudge_length: setting(0.5),

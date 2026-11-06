@@ -58,7 +58,13 @@
         case 0x2: {
           const n = 1 << info;
           const dv = new DataView(bytes.buffer, bytes.byteOffset + p, Math.min(n, 8));
-          obj = n === 4 ? dv.getFloat32(0, false) : dv.getFloat64(0, false);
+          if (n === 4) {
+            const f32 = dv.getFloat32(0, false);
+            const dec = Number(f32.toPrecision(7));
+            obj = Math.fround(dec) === f32 ? dec : f32;
+          } else {
+            obj = dv.getFloat64(0, false);
+          }
           break;
         }
         case 0x3: {
@@ -139,7 +145,8 @@
         // resolve archived class name if present
         const classRef = rawGet(v, '$class');
         if (classRef !== undefined) {
-          const cls = readObject(classRef, 0);
+          let cls = readObject(classRef, 0);
+          if (cls && cls.$uid !== undefined) cls = objAt(cls.$uid);
           const cn = rawGet(cls, '$classname');
           if (cn !== undefined) out.__class = resolve(readObject(cn, 0), 0, stack);
         }

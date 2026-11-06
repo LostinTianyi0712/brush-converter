@@ -1,4 +1,4 @@
-﻿/* Krita paint-op preset (.kpp): PNG container carrying the preset XML in a
+/* Krita paint-op preset (.kpp): PNG container carrying the preset XML in a
    text chunk (key "preset") plus a 200x200 preview image.
 
    Krita 5 expects the modern preset schema:
@@ -202,6 +202,14 @@
     }
     const sizeDyn = pressureEnabled('PressureSize','SizeUseCurve','SizeSensor');
     const opDyn = pressureEnabled('PressureOpacity','OpacityUseCurve','OpacitySensor');
+    const sizeValHit = params.SizeValue;
+    const minSizeRatioVal = sizeDyn ? (sizeValHit && isFinite(sizeValHit.value) && sizeValHit.value > 0 && sizeValHit.value < 1 ? clamp(sizeValHit.value, 0.01, 1) : 0.2) : 1;
+    const scatterVal = params.ScatterValue && isFinite(params.ScatterValue.value) ? Math.max(0, params.ScatterValue.value) : 0;
+    const scatterFlag = params['Scatter/Enabled'] ? /^(true|1)$/i.test(params['Scatter/Enabled'].text.trim()) : (scatterVal > 0.001);
+    const scatterPctVal = scatterFlag ? clamp(scatterVal * 100, 0, 1000) : 0;
+    const scatterBothVal = params['Scatter/Y'] ? !/^(false|0)$/i.test(params['Scatter/Y'].text.trim()) : true;
+    const scatterCountVal = params['Scatter/Count'] && isFinite(params['Scatter/Count'].value) ? Math.max(1, Math.min(16, Math.round(params['Scatter/Count'].value))) : 1;
+    const colorRateVal = params.ColorRateValue && isFinite(params.ColorRateValue.value) ? clamp(params.ColorRateValue.value, 0, 1) : 0;
 
     const textureOn = !!(params['Texture/Pattern/Enabled'] && /^(true|1)$/i.test(params['Texture/Pattern/Enabled'].text));
     const textureInvert = !!(params['Texture/Pattern/Invert'] && /^(true|1)$/i.test(params['Texture/Pattern/Invert'].text));
@@ -308,9 +316,15 @@
         _grainRgba: grain,
         pressure: !!(sizeDyn || opDyn),
         pressureSize: !!sizeDyn,
-        minSizeRatio: sizeDyn ? 0.2 : 1,
+        minSizeRatio: minSizeRatioVal,
         pressureOpacity: !!opDyn,
         minOpacityRatio: opDyn ? 0.3 : 1,
+        scatterOn: scatterPctVal > 0.01 || scatterCountVal > 1,
+        scatterPct: scatterPctVal,
+        scatterBothAxes: scatterBothVal,
+        scatterCount: scatterCountVal,
+        smudgeOn: colorRateVal > 0.001,
+        smudgeAmount: colorRateVal,
         source: 'krita',
         eraser: !!(params.EraserMode && /^(true|1)$/i.test(params.EraserMode.text.trim())),
         paintop: paintop ? paintop[1] : ''
@@ -418,6 +432,12 @@
       ['EraserMode', 'string', cdata(brush.eraser ? 'true' : 'false')],
       ['OpacityValue', 'string', cdata(num(opacity, 1))],
       ['FlowValue', 'string', cdata(num(brush.flowPct === undefined ? 1 : brush.flowPct, 1))],
+      ['ColorRateValue', 'string', cdata(num(brush.smudgeOn ? Math.max(0, Math.min(1, brush.smudgeAmount === undefined ? 0.3 : brush.smudgeAmount)) : 0, 0))],
+      ['ScatterValue', 'string', cdata(num(brush.scatterOn ? Math.max(0, Math.min(10, (brush.scatterPct || 0) / 100)) : 0, 0))],
+      ['Scatter/Enabled', 'string', cdata(brush.scatterOn ? 'true' : 'false')],
+      ['Scatter/X', 'string', cdata('1')],
+      ['Scatter/Y', 'string', cdata(brush.scatterBothAxes === false ? '0' : '1')],
+      ['Scatter/Count', 'string', cdata(String(Math.max(1, Math.min(16, Math.round(brush.scatterCount || 1)))))],
       ['PaintOpSettings/ignoreSpacing', 'string', cdata('false')],
       ['Sharpness/softness', 'string', cdata(num(soft, 0))],
       ['PressureSize', 'string', cdata(pressureSize ? 'true' : 'false')],
@@ -425,7 +445,7 @@
       ['PressureSpacing', 'string', cdata('false')],
       ['SizeSensor', 'string', curve],
       ['SizeUseCurve', 'string', cdata('true')],
-      ['SizeValue', 'string', cdata(pressureSize ? num(0.2, 0.2) : '1')],
+      ['SizeValue', 'string', cdata(pressureSize ? num(Math.max(0.01, Math.min(1, brush.minSizeRatio === undefined ? 0.2 : brush.minSizeRatio)), 0.2) : '1')],
       ['OpacitySensor', 'string', curve],
       ['OpacityUseCurve', 'string', cdata('true')],
       ['requiredBrushFile', 'string', cdata('')],
@@ -626,8 +646,10 @@
     const pressureOpacity=!!brush.pressureOpacity;
     xml = setParam(xml,'PressureSize',String(pressureSize));
     xml = setParam(xml,'SizeUseCurve',String(pressureSize));
+    xml = setParam(xml,'SizeValue',(pressureSize ? Math.max(0.01, Math.min(1, brush.minSizeRatio === undefined ? 0.2 : brush.minSizeRatio)) : 1).toFixed(3));
     xml = setParam(xml,'PressureOpacity',String(pressureOpacity));
     xml = setParam(xml,'OpacityUseCurve',String(pressureOpacity));
+    xml = setParam(xml,'ColorRateValue',Math.max(0, Math.min(1, brush.smudgeOn ? (brush.smudgeAmount === undefined ? 0.3 : brush.smudgeAmount) : 0)).toFixed(3));
     if (brush.scatterOn) {
       xml = setParam(xml, 'ScatterValue', Math.max(0, Math.min(10, (brush.scatterPct || 0) / 100)).toFixed(3));
       xml = setParam(xml, 'Scatter/Enabled', 'true');
