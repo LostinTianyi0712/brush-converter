@@ -158,57 +158,34 @@
     const bundledShapePath = typeof params.bundledShapePath === 'string' && params.bundledShapePath !== '$null' ? params.bundledShapePath : '';
     let resolvedShapePath = '';
     let shapeFromLibrary = false;
-    if (!shapeEntry && bundledShapePath && !/(^|[\\/])(?:\.\.|QuickLook|Signature)([\\/]|$)|(^|[\\/])Grain\.png$/i.test(bundledShapePath)) {
+    const shapeInverted = params.shapeInverted === true;
+    let tipFromShape = decodeShape(shapeEntry, shapeInverted);
+    if (!tipFromShape && bundledShapePath && !/(^|[\\/])(?:\.\.|QuickLook|Signature)([\\/]|$)|(^|[\\/])Grain\.png$/i.test(bundledShapePath)) {
       // Resolve only an explicit source reference, never a thumbnail or Grain.
       const resource = find(bundledShapePath) || (entryByName ? entryByName.get(bundledShapePath) : entries.find(e=>e.name===bundledShapePath));
       if (resource) {
         try {
           const bytes=resource.data();
           const im=jpeg && jpeg.isJpeg(bytes) ? jpeg.decode(bytes) : png.decode(bytes);
-          const raw=jpeg && jpeg.isJpeg(bytes) ? png.encode(im.width,im.height,im.rgba) : bytes;
+          const raw=(jpeg && jpeg.isJpeg(bytes)) || im.width > 2048 || im.height > 2048 ? sourceShapePng(im.width,im.height,im.rgba) : bytes;
           shapeEntry={name:prefix+'Shape.png',data:()=>raw};
+          tipFromShape=decodeShape(shapeEntry,shapeInverted);
           resolvedShapePath=bundledShapePath;
         } catch(e) { /* retain the unresolved reference; no substitute image */ }
       }
       // 用户自带的内置笔尖图库（Procreate App 内置资源，导出笔刷包时不会被打包）
-      if (!shapeEntry && shapeResources) {
-        const base = String(bundledShapePath).split(/[\\/]/).pop().toLowerCase();
-        const stem = base.replace(/\.[a-z0-9]+$/i, '');
-        // 同名但扩展名不同也要能匹配（图库里常把 .jpg 转成 .png），逐个尝试直到能解码
-        const keys = [base, stem + '.png', stem + '.jpg', stem + '.jpeg', stem];
-        if (shapeResources.keys) {
-          for (const k of shapeResources.keys()) {
-            if (String(k).toLowerCase().replace(/\.[a-z0-9]+$/i, '') === stem) keys.push(k);
-          }
-        }
-        const seen = new Set();
-        for (const k of keys) {
-          if (seen.has(k)) continue;
-          seen.add(k);
-          const lib = shapeResources.get ? shapeResources.get(k) : shapeResources[k];
-          if (!lib) continue;
-          try {
-            if (lib.rgba && lib.w && lib.h && lib.rgba.length >= lib.w * lib.h * 4) {
-              // 已经解好的像素（浏览器/桌面用 canvas 解 progressive JPEG 后传进来）
-              shapeEntry = { name: prefix + 'Shape.png', data: () => sourceShapePng(lib.w, lib.h, lib.rgba) };
-            } else {
-              const bytes = lib.data ? lib.data() : lib;
-              const im = jpeg && jpeg.isJpeg(bytes) ? jpeg.decode(bytes) : png.decode(bytes);
-              const raw = (jpeg && jpeg.isJpeg(bytes)) || im.width > 2048 || im.height > 2048
-                ? sourceShapePng(im.width, im.height, im.rgba)
-                : bytes;
-              shapeEntry = { name: prefix + 'Shape.png', data: () => raw };
-            }
-            resolvedShapePath = bundledShapePath;
-            shapeFromLibrary = true;
-            break;
-          } catch (e2) { /* 这张解不开就换下一个候选 */ }
+      if (!tipFromShape && shapeResources) {
+        const image = lookupLibraryImage(bundledShapePath, shapeResources);
+        if (image) {
+          const raw = sourceShapePng(image.w, image.h, image.rgba);
+          shapeEntry = { name: prefix + 'Shape.png', data: () => raw };
+          tipFromShape = decodeShape(shapeEntry, shapeInverted);
+          resolvedShapePath = bundledShapePath;
+          shapeFromLibrary = true;
         }
       }
     }
     const grainEntry = find('Grain.png');
-    const shapeInverted = params.shapeInverted === true;
-    const tipFromShape = decodeShape(shapeEntry, shapeInverted);
     // Grain is an independent texture, never a substitute for a bundled Shape.
     const tipFromGrain = null;
     const tip = tipFromShape || tipFromGrain;
@@ -887,8 +864,9 @@
       return !!(h&&h.bitDepth===8&&h.colorType===0&&h.width>=1&&h.height>=1&&h.width<=2048&&h.height<=2048&&(!grain||h.width===h.height));
     }
     return opts.fidelity!==false && !opts.forceRebuild && isValidNativeArchive(brush._rawArchive) &&
-      !brush.shapeFromLibrary && !brush.grainFromLibrary &&
+      !brush.resolvedShapePath && !brush.shapeFromLibrary && !brush.grainFromLibrary &&
       imageKept(brush._rawShape,false) && imageKept(brush._rawGrain,true) &&
+      (!brush.dualSubBrush || unchanged(brush.dualSubBrush, opts)) &&
       brush._rawBrushState===util.brushFingerprint(brush) &&
       brush._rawGrainState===util.brushFingerprint({tip:brush._grainRgba});
   }
@@ -1017,7 +995,8 @@
       else if(keepRawShape&&!!brush.shapeInverted!==!!(brush._rawNormalized||{}).shapeInverted)
         archiveChanges={shapeInverted:!!brush.shapeInverted};
       if(normalizedShape && normalizedShape.inverted!==!!brush.shapeInverted)archiveChanges={shapeInverted:normalizedShape.inverted};
-      if(brush._rawGrain&&brush._rawGrain.length===0)archiveChanges=Object.assign({},archiveChanges,{grainDepth:0});
+      const recoveredGrain = brush.grainFromLibrary && brush._grainRgba;
+      if(brush._rawGrain&&brush._rawGrain.length===0&&!recoveredGrain)archiveChanges=Object.assign({},archiveChanges,{grainDepth:0});
       entries.push({name:'Brush.archive',data:patchArchive(brush,opts,archiveChanges)});
       if(keepRawShape)entries.push({name:'Shape.png',data:normalizedShape.bytes});
       else if((!sameTip && brush.tip) || (!rawShape && !brush.bundledShapePath)){
@@ -1033,7 +1012,7 @@
         entries.push({name:'Shape.png',data:shapePng(rebuilt,opts.maxTipSize||512).png});
       }
       const sameGrain=brush._rawGrainState===util.brushFingerprint({tip:brush._grainRgba});
-      if(sameGrain && brush._rawGrain && brush._rawGrain.length)entries.push({name:'Grain.png',data:normalizeRawGrain(brush._rawGrain)});
+      if(sameGrain && !recoveredGrain && brush._rawGrain && brush._rawGrain.length)entries.push({name:'Grain.png',data:normalizeRawGrain(brush._rawGrain)});
       else if(brush.hasTexture){const g=grainPng(brush);if(g)entries.push({name:'Grain.png',data:g});}
       if(brush.dualOn && brush.dualTip)zip.read(writeBrush(subBrush(),opts)).forEach(e=>entries.push({name:'Sub01/'+e.name,data:e.data()}));
       const originalThumb = !brush.tip && (brush._rawEntries || []).find(e=>e.name==='QuickLook/Thumbnail.png');

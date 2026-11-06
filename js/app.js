@@ -663,6 +663,14 @@
     return rec;
   }
 
+  function libraryResourceCount(brush, force) {
+    if (!brush) return 0;
+    let count = brush.bundledShapePath && (force || !brush.tip) ? 1 : 0;
+    if (brush.bundledGrainPath && (force || !brush._grainRgba)) count++;
+    if (brush.dualSubBrush) count += libraryResourceCount(brush.dualSubBrush, force);
+    return count;
+  }
+
   function adoptParsed(rec, bytes, parsed, displayName) {
     rec.sizeBytes = bytes ? bytes.length : 0;
     rec.pkgId = BC.util.uid();
@@ -680,9 +688,8 @@
     rec.origBrushes = parsed.brushes.length;
     rec.parseName = displayName || rec.name;
     // 原始字节只在解析时需要：释放它，几百支的批量解析能省下大量内存。
-    // 例外：Procreate 包里有「引用了内置 shape 但包里没这张图」的笔刷时留一份，
-    // 这样用户之后才加载内置笔尖图库时能立刻原地补回（#282），不必重新导入。
-    const waitingShape = parsed.kind === 'procreate' && parsed.brushes.some(function (b) { return !b.tip && b.bundledShapePath; });
+    // 内置资源引用需保留原始输入，后加载/换图库才能补回主副笔尖和纹理。
+    const waitingShape = parsed.kind === 'procreate' && parsed.brushes.some(function (b) { return libraryResourceCount(b, true) > 0; });
     rec.bytes = waitingShape && bytes ? bytes : null;
   }
 
@@ -1920,7 +1927,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.26';
+const APP_VERSION = '2.8.27';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2335,7 +2342,7 @@ const APP_VERSION = '2.8.26';
         updateShapeLibText();
         const fixed = await reparseWithShapeLib();
         pushLog('图库包已加载 ' + map.size + ' 张 / ' + Math.round(got.bytes.length / 1048576) + 'MB / ' + state.shapeLibLabel);
-        if (fixed) toast('图库已生效：已给现有笔刷补回 ' + fixed + ' 支真图笔尖', 8000);
+        if (fixed) toast('图库已生效：补回 ' + fixed + ' 处笔尖/纹理原图', 8000);
         if (got.bytes.length > 120 * 1048576) {
           toast('已加载原图库包（' + Math.round(got.bytes.length / 1048576) + 'MB）。内存紧张时（手机/低配）请改用「精简512」包', 12000);
         }
@@ -2498,6 +2505,7 @@ const APP_VERSION = '2.8.26';
     if (!map.size) { toast('图库里没有 PNG/JPG：请选择包含内置笔尖图的 ZIP 或文件夹', 8000); return false; }
     if (converted) pushLog('图库里有 ' + converted + ' 张 progressive JPEG 已用 canvas 解出并转存为灰度 PNG');
     if (undecoded) pushLog('图库有 ' + undecoded + ' 张解不开：' + undecodedNames.slice(0, 12).join(', '));
+    forceReparse = !!forceReparse || !!state.shapeLib;
     state.shapeLib = map;
     state.shapeLibBytes = inputBytes;
     state.shapeLibBuiltIn = false; // 用户自己选的图库优先于内置（通常是原始高分辨率图）
@@ -2506,8 +2514,8 @@ const APP_VERSION = '2.8.26';
     updateShapeLibText();
     refreshShapeLibStoreUI(); // 桌面：手动导入后也要显示「图库已装载」和删除按钮
     const fixed = await reparseWithShapeLib(forceReparse);
-    toast('图库已加载 ' + map.size + ' 张' + (fixed ? '；已给现有笔刷补回 ' + fixed + ' 支真图笔尖'
-      : (forceReparse ? '；现有笔刷的笔尖已按新图库重建' : '；缺 shape 的笔刷重新导入后会补回真图')), 12000);
+    toast('图库已加载 ' + map.size + ' 张' + (fixed ? '；补回 ' + fixed + ' 处笔尖/纹理原图'
+      : '；未匹配到新的缺失原图'), 8000);
     return true;
   }
 
@@ -2520,40 +2528,68 @@ const APP_VERSION = '2.8.26';
   /* #282：图库是后加载的，用户不该为此重新导入一遍笔刷——
      把「当时留着原始字节的 Procreate 记录」原地重新解析一次，卡片立刻从合成圆头变成图库补回。 */
   let relibRunning = false;
+  let relibAgain = false;
+  let relibForce = false;
   async function reparseWithShapeLib(force) {
-    if (relibRunning || !state.shapeLib) return 0;
-    const targets = state.files.filter(function (rec) {
-      return rec.bytes && rec.brushes && rec.brushes.some(function (b) {
-        // force（图库升级精简→原图）：凡引用内置资源的都重建，不管现在缺不缺 tip
-        return b.bundledShapePath && (force || !b.tip);
-      });
-    });
-    if (!targets.length) return 0;
-    relibRunning = true;
-    let fixed = 0;
-    try {
-      for (let i = 0; i < targets.length; i++) {
-        const rec = targets[i];
-        const before = rec.brushes.filter(function (b) { return !b.tip; }).length;
-        setProgress(0.05 + 0.9 * (i / targets.length), '用图库补回笔尖：' + rec.name);
-        await sleep(0);
-        rec.warnings = (rec.warnings || []).filter(function (w) { return String(w).indexOf('内置笔尖原图') < 0; });
-        rec.brushes = null;
-        try {
-          await parseRecord(rec, rec.parseName || rec.name, rec.bytes);
-        } catch (e) {
-          pushLog('图库重解析失败 ' + rec.name + '：' + (e && e.message ? e.message : e));
-        }
-        const after = (rec.brushes || []).filter(function (b) { return !b.tip; }).length;
-        fixed += Math.max(0, before - after);
-        render();
+    if (!state.shapeLib) return 0;
+    relibForce = relibForce || !!force;
+    if (relibRunning) { relibAgain = true; return relibRunning; }
+    relibRunning = (async function () {
+      // 先让出一次，确保无目标时也不会在 Promise 赋值前清空运行标记。
+      await sleep(0);
+      let fixed = 0;
+      try {
+        do {
+          relibAgain = false;
+          const library = state.shapeLib;
+          const refreshAll = relibForce;
+          relibForce = false;
+          const targets = state.files.filter(function (rec) {
+            return rec.bytes && rec.brushes && rec.brushes.some(function (b) {
+              return libraryResourceCount(b, refreshAll) > 0;
+            });
+          });
+          for (let i = 0; i < targets.length; i++) {
+            const rec = targets[i];
+            const before = rec.brushes.reduce(function (n, b) { return n + libraryResourceCount(b, false); }, 0);
+            setProgress(0.05 + 0.9 * (i / targets.length), '用图库补回原图：' + rec.name);
+            await sleep(0);
+            if (state.files.indexOf(rec) < 0) continue;
+            const staged = Object.assign({}, rec, { warnings: [], brushes: null, error: null });
+            try {
+              await parseRecord(staged, rec.parseName || rec.name, rec.bytes);
+              // 旧图库的异步结果不得覆盖新图库；最后一次刷新必须执行。
+              if (state.shapeLib !== library) { relibAgain = true; relibForce = true; break; }
+              if (staged.error || !staged.brushes || staged.brushes.length !== rec.brushes.length ||
+                  staged.brushes.some(function (b, n) { return b.name !== rec.brushes[n].name; })) {
+                throw new Error(staged.error || '笔刷列表变化，已保留原结果');
+              }
+              if (state.files.indexOf(rec) < 0) continue;
+              staged.brushes.forEach(function (b, n) { b.enabled = rec.brushes[n].enabled; });
+              staged.warnings = Array.from(new Set((rec.warnings || []).filter(function (w) {
+                return String(w).indexOf('内置笔尖原图') < 0;
+              }).concat(staged.warnings || [])));
+              ['sizeBytes','baseName','kind','kindLabel','warnings','brushes','origBrushes','parseName','bytes','error'].forEach(function (key) {
+                if (Object.prototype.hasOwnProperty.call(staged, key)) rec[key] = staged[key];
+              });
+            } catch (e) {
+              pushLog('图库重解析失败 ' + rec.name + '：' + (e && e.message ? e.message : e));
+              continue;
+            }
+            const after = rec.brushes.reduce(function (n, b) { return n + libraryResourceCount(b, false); }, 0);
+            fixed += Math.max(0, before - after);
+            render();
+          }
+        } while (relibAgain && state.shapeLib);
+      } finally {
+        relibRunning = false;
+        relibForce = false;
+        setProgress(null);
       }
-    } finally {
-      relibRunning = false;
-      setProgress(null);
-    }
-    updateShapeLibText();
-    return fixed;
+      updateShapeLibText();
+      return fixed;
+    })();
+    return relibRunning;
   }
   /* #301：网页版一键下载图库包并自动导入。
      选项区的常驻按钮和缺图笔刷提示里的指引按钮共用这一个流程：
@@ -3433,6 +3469,6 @@ const APP_VERSION = '2.8.26';
     apply(scrollTop());
   })();
 
-  $('#ver').textContent = 'v' + APP_VERSION + ' · 修复 Procreate / Photoshop / 画世界Pro 参数与双笔刷互转 · 纯本地';
+  $('#ver').textContent = 'v' + APP_VERSION;
   render();
 })();

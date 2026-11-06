@@ -652,3 +652,9 @@ main {
 .badge.abr { background: #e8f0ff; color: #2563eb; }
 
 .footer-tools { display:flex; align-items:center; gap:12px; flex-shrink:0; }
+/* Settings explanations stay inside the existing collapsed panel. */
+.settings-help { padding: 0 4px; color: var(--muted, #64748b); font-size: 13px; line-height: 1.65; }
+.settings-help p { margin: 10px 0; }
+.settings-help a { color: var(--primary, #2563eb); text-decoration: underline; }
+.license-notice { margin: 10px 0; }
+.license-notice pre { max-height: 60vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 monospace; }
