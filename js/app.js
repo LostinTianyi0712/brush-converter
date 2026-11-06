@@ -13,7 +13,7 @@
 
   const state = { files: [], converting: false, activeJob: false, saving: false, cancelRequested: false,
     // #262 导入中也能「清空」：用 token 让正在跑的导入循环立即停手，不再把卡片塞回来
-    importToken: 0, importing: 0, lastWarnings: [] };
+    importToken: 0, importing: 0, lastWarnings: [], searchQuery: '', filterKind: 'all' };
   function isBusy() { return state.converting || state.activeJob || state.saving; }
   function isImporting() { return state.importing > 0; }
 
@@ -277,6 +277,42 @@
     btnConvert.textContent = total
       ? outText + '（已选 ' + total + ' 支 · ' + fmtLabel + '）'
       : (allBrushes.length ? '请至少勾选 1 支笔刷' : outText);
+    updatePreviewToolbar(allBrushes.length, total);
+  }
+
+  function matchesBrushFilter(b) {
+    if (!b) return false;
+    const fk = state.filterKind || 'all';
+    if (fk === 'dual' && !b.dualOn) return false;
+    if (fk === 'textured' && !(b.hasTexture || b.hasGrain || b._grainRgba || b._patternPixels)) return false;
+    if (fk === 'synth' && b.tipSource !== 'synth') return false;
+    const q = String(state.searchQuery || '').trim().toLowerCase();
+    if (q) {
+      const name = String(b.name || '未命名').toLowerCase();
+      const dualName = b.dualBrush && b.dualBrush.name ? String(b.dualBrush.name).toLowerCase() : '';
+      if (name.indexOf(q) < 0 && dualName.indexOf(q) < 0) return false;
+    }
+    return true;
+  }
+
+  function updatePreviewToolbar(totalCount, selectedCount) {
+    const tb = $('#previewToolbar');
+    const sum = $('#previewSummary');
+    if (!tb) return;
+    if (totalCount === undefined) {
+      const all = state.files.reduce(function (acc, f) { return acc.concat(f.brushes || []); }, []);
+      totalCount = all.length;
+      selectedCount = all.filter(function (b) { return b.enabled !== false; }).length;
+    }
+    tb.hidden = !state.files.length || !totalCount;
+    if (sum) {
+      sum.textContent = '共 ' + state.files.length + ' 个文件 · 已选 ' + selectedCount + ' / ' + totalCount + ' 支';
+    }
+    const busy = isBusy();
+    const invBtn = $('#btnInvertSel');
+    if (invBtn) invBtn.disabled = busy;
+    const searchEl = $('#brushSearch');
+    if (searchEl) searchEl.disabled = busy;
   }
 
   /* 预览绘制排队：只画进入可视区域的卡片，每帧少量 */
@@ -344,7 +380,9 @@
     if (b.pressure) tags.push('<span class="tag">压感</span>');
     if (b.tipSource === 'synth') tags.push('<span class="tag gray">合成圆头</span>');
     if (b.shapeFromLibrary) tags.push('<span class="tag">图库补回</span>');
-    if (b.hasGrain) tags.push('<span class="tag gray">纹理略</span>');
+    if (b.hasTexture && (b._grainRgba || b._patternPixels)) tags.push('<span class="tag teal">纹理</span>');
+    else if (b.hasGrain) tags.push('<span class="tag gray">纹理略</span>');
+    if (b.scatterOn && (b.scatterPct || 0) > 0) tags.push('<span class="tag">散布</span>');
     if (b.dualOn) {
       const di = b.dualBrush || {};
       const dt = '双笔刷：' + (di.name || '第二支笔尖') + ' · ' + (di.blend || '') +
@@ -358,18 +396,26 @@
     const toggle = document.createElement('label');
     toggle.className = 'tog';
     toggle.innerHTML = '<input type="checkbox" ' + (b.enabled === false ? '' : 'checked') + '><span>转换</span>';
-    toggle.querySelector('input').disabled = isBusy();
-    toggle.querySelector('input').onchange = e => {
-      b.enabled = e.target.checked;
-      item.classList.toggle('off', !e.target.checked);
+    const inputEl = toggle.querySelector('input');
+    inputEl.disabled = isBusy();
+    const applyToggle = checked => {
+      b.enabled = checked;
+      inputEl.checked = checked;
+      item.classList.toggle('off', !checked);
       updateConvertButton();
       refreshSelAllLabel();
+      if (typeof updatePrecheck === 'function') { clearTimeout(state._precheckT); state._precheckT = setTimeout(updatePrecheck, 120); }
     };
+    inputEl.onchange = e => applyToggle(e.target.checked);
+    item.addEventListener('click', e => {
+      if (isBusy() || toggle.contains(e.target)) return;
+      applyToggle(!inputEl.checked);
+    });
     item.appendChild(tipCv);
     item.appendChild(info);
     item.appendChild(toggle);
     const uiKey = (rec.pkgId || ('f' + fi)) + ':' + bi;
-    state.__brushUI.set(uiKey, { item: item, input: toggle.querySelector('input'), brush: b });
+    state.__brushUI.set(uiKey, { item: item, input: inputEl, brush: b });
     return item;
   }
 
@@ -391,17 +437,27 @@
     emptyEl.style.display = state.files.length ? 'none' : 'block';
     updateConvertButton();
     if (typeof updatePrecheck === 'function') { clearTimeout(state._precheckT); state._precheckT = setTimeout(updatePrecheck, 120); }
+    const filtering = (state.filterKind && state.filterKind !== 'all') || String(state.searchQuery || '').trim().length > 0;
 
     state.files.forEach((rec, fi) => {
       const card = document.createElement('div');
       card.className = 'file-card card';
       const head = document.createElement('div');
       head.className = 'file-head';
+      const matchedIndices = [];
+      if (rec.brushes && rec.brushes.length && filtering) {
+        for (let bi = 0; bi < rec.brushes.length; bi++) {
+          if (matchesBrushFilter(rec.brushes[bi])) matchedIndices.push(bi);
+        }
+      }
+      const countText = rec.brushes
+        ? (filtering ? '匹配 ' + matchedIndices.length + ' / ' + rec.brushes.length + ' 支' : rec.brushes.length + ' 支笔刷')
+        : (rec.error ? '出错' : '解析中…');
       head.innerHTML = `
         <div class="fname" title="${esc(rec.name)}">${esc(rec.name)}</div>
         <div class="badge ${rec.error ? 'err' : (rec.kind || 'parsing')}">${rec.error ? '无法识别' : (rec.kind ? (rec.kindLabel || rec.kind) : (rec.parsing ? '解析中…' : '待解析'))}</div>
         <div class="fmeta">${rec.sizeBytes ? fmtSize(rec.sizeBytes) : (rec.bytes ? fmtSize(rec.bytes.length) : '')}</div>
-        <div class="fmeta">${rec.brushes ? rec.brushes.length + ' 支笔刷' : (rec.error ? '出错' : '解析中…')}${rec.parseMs ? ' · ' + (rec.parseMs >= 1000 ? (rec.parseMs / 1000).toFixed(1) + 's' : rec.parseMs + 'ms') : ''}</div>
+        <div class="fmeta">${countText}${rec.parseMs ? ' · ' + (rec.parseMs >= 1000 ? (rec.parseMs / 1000).toFixed(1) + 's' : rec.parseMs + 'ms') : ''}</div>
         ${rec.brushes && rec.brushes.length ? '<button class="btn tiny ghost selall" title="全选本文件笔刷">全选</button><button class="btn tiny ghost selnone" title="取消本文件笔刷">清空</button>' : ''}
         <button class="btn tiny ghost remove" title="移除">✕</button>`;
       head.querySelector('.remove').onclick = () => {
@@ -412,11 +468,13 @@
         updateConvertButton();
       };
       if (head.querySelector('.selall')) head.querySelector('.selall').onclick = () => {
-        rec.brushes.forEach(b => { b.enabled = true; });
+        if (filtering) matchedIndices.forEach(bi => { rec.brushes[bi].enabled = true; });
+        else rec.brushes.forEach(b => { b.enabled = true; });
         syncSelectionUI();
       };
       if (head.querySelector('.selnone')) head.querySelector('.selnone').onclick = () => {
-        rec.brushes.forEach(b => { b.enabled = false; });
+        if (filtering) matchedIndices.forEach(bi => { rec.brushes[bi].enabled = false; });
+        else rec.brushes.forEach(b => { b.enabled = false; });
         syncSelectionUI();
       };
       card.appendChild(head);
@@ -500,29 +558,63 @@
         card.appendChild(wr);
       }
       if (rec.brushes && rec.brushes.length) {
-        const grid = document.createElement('div');
-        grid.className = 'grid';
-        const LIMIT = 60;
-        // #273：展开状态记在记录上，任何 render（改目标格式、勾选等）都不会把它折叠回 60 支
-        let shown = Math.max(LIMIT, Math.min(rec.brushes.length, rec._shown || LIMIT));
-        appendBrushItems(grid, rec, fi, 0, shown);
-        card.appendChild(grid);
-        if (rec.brushes.length > shown) {
-          const more = document.createElement('button');
-          more.className = 'btn ghost show-more';
-          const upd = function () {
-            more.textContent = '显示更多（已显示 ' + shown + ' / ' + rec.brushes.length + ' 支）';
-            if (shown >= rec.brushes.length) more.style.display = 'none';
-          };
-          upd();
-          more.onclick = function () {
-            const next = Math.min(rec.brushes.length, shown + 80);
-            appendBrushItems(grid, rec, fi, shown, next - shown);
-            shown = next;
-            rec._shown = next;
+        if (filtering) {
+          if (matchedIndices.length) {
+            const grid = document.createElement('div');
+            grid.className = 'grid';
+            for (const bi of matchedIndices) grid.appendChild(makeBrushItem(rec, rec.brushes[bi], bi, fi));
+            card.appendChild(grid);
+          } else {
+            const emptyMatch = document.createElement('div');
+            emptyMatch.className = 'filter-empty';
+            emptyMatch.textContent = '本文件内没有符合当前筛选/搜索条件的笔刷';
+            card.appendChild(emptyMatch);
+          }
+        } else {
+          const grid = document.createElement('div');
+          grid.className = 'grid';
+          const LIMIT = 60;
+          // #273：展开状态记在记录上，任何 render（改目标格式、勾选等）都不会把它折叠回 60 支
+          let shown = Math.max(LIMIT, Math.min(rec.brushes.length, rec._shown || LIMIT));
+          appendBrushItems(grid, rec, fi, 0, shown);
+          card.appendChild(grid);
+          if (rec.brushes.length > shown) {
+            const bar = document.createElement('div');
+            bar.className = 'show-more-bar';
+            const more = document.createElement('button');
+            more.className = 'btn ghost show-more';
+            const expandAll = document.createElement('button');
+            expandAll.className = 'btn tiny ghost';
+            expandAll.textContent = '全部展开';
+            const upd = function () {
+              more.textContent = '显示更多（已显示 ' + shown + ' / ' + rec.brushes.length + ' 支）';
+              if (shown >= rec.brushes.length) {
+                more.style.display = 'none';
+                expandAll.style.display = 'none';
+                bar.style.display = 'none';
+              } else if (rec.brushes.length - shown <= 80) {
+                expandAll.style.display = 'none';
+              }
+            };
             upd();
-          };
-          card.appendChild(more);
+            more.onclick = function () {
+              const next = Math.min(rec.brushes.length, shown + 80);
+              appendBrushItems(grid, rec, fi, shown, next - shown);
+              shown = next;
+              rec._shown = next;
+              upd();
+            };
+            expandAll.onclick = function () {
+              const next = rec.brushes.length;
+              appendBrushItems(grid, rec, fi, shown, next - shown);
+              shown = next;
+              rec._shown = next;
+              upd();
+            };
+            bar.appendChild(more);
+            bar.appendChild(expandAll);
+            card.appendChild(bar);
+          }
         }
       }
       filesEl.appendChild(card);
@@ -532,7 +624,33 @@
 
   /* ---------------- loading ---------------- */
   function kindLabel(kind) {
-    return { abr: 'Photoshop ABR', tpl:'Photoshop TPL', procreate: 'Procreate', bru: '画世界Pro BRU', zip: '压缩包' }[kind] || '未知';
+    return {
+      abr: 'Photoshop ABR',
+      tpl: 'Photoshop TPL',
+      procreate: 'Procreate',
+      bru: '画世界Pro BRU',
+      zip: '压缩包',
+      sut: 'CSP / 优动漫 SUT',
+      mtd: '优动漫 MTD',
+      udongman: '优动漫 ABR',
+      gobrush: '天生会画 GoBrush',
+      gobrushSet: '天生会画笔刷组',
+      kbundle: 'Krita BUNDLE',
+      kpp: 'Krita KPP',
+      gbr: 'GIMP GBR',
+      gih: 'GIMP GIH',
+      myb: 'MyPaint MYB',
+      painter: 'Corel Painter',
+      painterlib: 'Painter 笔刷库',
+      mdp: 'MediBang MDP',
+      mbini: 'MediBang INI',
+      mbini_set: 'MediBang 云笔刷包',
+      sai2pack: 'SAI2 素材包',
+      sai2ini: 'SAI2 笔刷 INI',
+      sai2tool: 'SAI2 toolnrm',
+      pat: 'Photoshop PAT',
+      'csp-decrypted': 'CSP 解密目录'
+    }[kind] || '未知';
   }
 
   function makeRecord(name, bytes) {
@@ -546,7 +664,8 @@
     rec.pkgId = BC.util.uid();
     rec.baseName = (displayName || rec.name).replace(/\.[^.]+$/, '').split('/').pop();
     rec.kind = parsed.kind;
-    rec.kindLabel = kindLabel(parsed.kind);
+    const mappedLabel = kindLabel(parsed.kind);
+    rec.kindLabel = mappedLabel !== '未知' ? mappedLabel : (parsed.kindLabel || '未知');
     rec.warnings = (rec.warnings || []).concat(parsed.warnings || []);
     rec.brushes = parsed.brushes.map(b => {
       const copy = Object.assign({}, b);
@@ -870,6 +989,8 @@
       case 'abr': return 'Photoshop笔刷';
       case 'tpl': return 'Photoshop工具预设';
       case 'udongman': return '优动漫笔刷';
+      case 'udongman_sut': return '优动漫SUT笔刷';
+      case 'udongman_mtd': return '优动漫MTD笔刷';
       case 'gopaint_abr': return '天生会画ABR';
       case 'brushset': case 'brush': return 'Procreate笔刷';
       case 'kbundle': return 'Krita笔刷';
@@ -1748,8 +1869,54 @@
     };
   }
 
+  /* ---------------- 笔刷预览搜索 / 特征筛选 / 反选 ---------------- */
+  (function initPreviewToolbar() {
+    const searchEl = $('#brushSearch');
+    const invBtn = $('#btnInvertSel');
+    const pills = Array.prototype.slice.call(document.querySelectorAll('.pt-pill[data-filter]'));
+    let searchTimer = null;
+    if (searchEl) {
+      searchEl.addEventListener('input', function () {
+        const val = searchEl.value || '';
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(function () {
+          if (state.searchQuery === val) return;
+          state.searchQuery = val;
+          render();
+        }, 120);
+      });
+    }
+    pills.forEach(function (pill) {
+      pill.addEventListener('click', function () {
+        if (isBusy()) return;
+        const fk = pill.getAttribute('data-filter') || 'all';
+        if (state.filterKind === fk) return;
+        state.filterKind = fk;
+        pills.forEach(function (p) { p.classList.toggle('active', p === pill); });
+        render();
+      });
+    });
+    if (invBtn) {
+      invBtn.addEventListener('click', function () {
+        if (isBusy()) return;
+        const filtering = (state.filterKind && state.filterKind !== 'all') || String(state.searchQuery || '').trim().length > 0;
+        const list = [];
+        state.files.forEach(function (rec) {
+          (rec.brushes || []).forEach(function (b) {
+            if (!filtering || matchesBrushFilter(b)) list.push(b);
+          });
+        });
+        if (!list.length) { toast('当前没有可反选的笔刷'); return; }
+        list.forEach(function (b) { b.enabled = b.enabled === false; });
+        syncSelectionUI();
+        const onCount = list.filter(function (b) { return b.enabled !== false; }).length;
+        toast('已反选（当前选中 ' + onCount + ' / ' + list.length + ' 支）');
+      });
+    }
+  })();
+
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.21';
+const APP_VERSION = '2.8.22';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;

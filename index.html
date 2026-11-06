@@ -267,7 +267,22 @@
     </section>
 
     <div class="step-head step-head-tight">
-      <div class="step-title"><h2>笔刷预览</h2><p class="step-sub">点击笔刷名可取消勾选，转换时跳过</p></div>
+      <div class="step-title"><h2>笔刷预览</h2><p class="step-sub">点击笔刷卡片或笔刷名可取消勾选，支持搜索与特征筛选</p></div>
+    </div>
+    <div id="previewToolbar" class="preview-toolbar card" hidden>
+      <div class="pt-left">
+        <span id="previewSummary" class="pt-summary">共 0 个文件 · 已选 0 / 0 支</span>
+        <div class="pt-filters" role="group" aria-label="筛选笔刷">
+          <button type="button" class="pt-pill active" data-filter="all">全部</button>
+          <button type="button" class="pt-pill" data-filter="dual">双笔刷</button>
+          <button type="button" class="pt-pill" data-filter="textured">含纹理</button>
+          <button type="button" class="pt-pill" data-filter="synth">合成圆头</button>
+        </div>
+      </div>
+      <div class="pt-right">
+        <input id="brushSearch" class="pt-search" type="search" placeholder="搜索笔刷名称…" autocomplete="off">
+        <button id="btnInvertSel" type="button" class="btn tiny ghost" title="反选当前列表中的笔刷">反选</button>
+      </div>
     </div>
     <section id="files" class="files"></section>
     <section id="empty" class="empty">还没有加载文件</section>
