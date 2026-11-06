@@ -1616,7 +1616,10 @@
         if (!brush) continue;
         // 原生 SUT 被改过：先在原文件上原位改参数，保住笔尖/纹理/动态；
         // 只在结构不支持（旧版本列缺失、强制重建、切换压感）时才退回模板重建。
-        const nat = (!opts.forceRebuild && opts.fidelity !== false &&
+        // CSP 没有「固定翻转」字段：源带 flipX/flipY 时必须重建（把镜像烘进素材像素），
+        // 原位改写会保留原来的笔尖像素，翻转等于没写。
+        const hasFlip = !!(brush.flipX || brush.flipY);
+        const nat = (!hasFlip && !opts.forceRebuild && opts.fidelity !== false &&
           !/^(on|off)$/.test(String(opts.pressureMode || ''))) ? nativeSutMembers(rawBrush, srcList) : null;
         if (nat && preserved.has(nat.group)) continue;
         const base0 = sanitizeName(nat && nat.group.count > 1 ? (nat.group.name || brush.name) : (brush.name || 'brush'), 0) || 'brush';
@@ -1633,7 +1636,12 @@
             patchFails.push((rawBrush && rawBrush.name || '未命名') + '：' + e.message);
           }
         }
-        const tip = tipToRGBA(brush);
+        let tip = tipToRGBA(brush);
+        // 固定翻转烘进笔尖素材（CSP 侧没有翻转开关，素材像素就是唯一载体）
+        if (tip && hasFlip) {
+          const flipped = withFixedTipFlips({ tip: { w: tip.w, h: tip.h, rgba: tip.rgba }, flipX: !!brush.flipX, flipY: !!brush.flipY });
+          tip = tipToRGBA(flipped);
+        }
         if (tip) cspMaterial.validateSource(tip.w,tip.h,tip.rgba,4);
         if (brush.hasTexture) {
           const pp=brush._patternPixels,g=brush._grainRgba;
@@ -2121,10 +2129,13 @@
   }
 
   // Keep angle/roundness for the target's native fields, bake only mirrors.
+  // NOTE: the flags are cleared after baking — the mirror is now in the pixels, so any
+  // later bakeTipTransform/withTipRGBA on this copy must not mirror a second time
+  // (double mirror == no mirror). Krita path already cleared them explicitly.
   function withFixedTipFlips(brush) {
     if ((!brush.flipX && !brush.flipY) || !brush.tip) return brush;
     const tip = bakeTipTransform(tipToRGBA(brush), { flipX: brush.flipX, flipY: brush.flipY });
-    return Object.assign({}, brush, { tip });
+    return Object.assign({}, brush, { tip, flipX: false, flipY: false });
   }
 
   /** One brush -> Infinite Painter .prbr */
@@ -2516,6 +2527,11 @@ Write-Host 'restart MediBang Paint Pro'
       return '原生副笔引用保留（缺少副笔原图，笔触待验证）';
     }
     if (raw) return '原样保留';
+    if ((target === 'sut' || target === 'mtd') && (key === 'flipX' || key === 'flipY')) {
+      // CSP 没有「固定翻转」字段；带翻转的源会被强制重建，把镜像烘进主笔尖素材像素。
+      if (!brush.tip) return '未写出（缺少笔尖图，内置圆形笔尖没有翻转）';
+      return '近似（固定翻转已烘焙进主笔尖素材，笔触待验证）';
+    }
     if (['brush','brushset','sai2','painter'].indexOf(target) >= 0 && (key === 'flipX' || key === 'flipY')) {
       if ((target === 'brush' || target === 'brushset') && brush._rawArchive && !brush.tip && opts.fidelity !== false && !opts.forceRebuild)
         return '未写出（缺少内置笔尖原图，无法烘焙固定翻转）';
