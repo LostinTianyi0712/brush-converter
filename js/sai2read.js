@@ -16,28 +16,44 @@
   function isBmp(bytes) { return bytes && bytes.length > 26 && bytes[0] === 0x42 && bytes[1] === 0x4d; }
   function isPng(bytes) { return bytes && bytes.length > 8 && bytes[0] === 0x89 && bytes[1] === 0x50; }
 
+  function decodeText(bytes) {
+    if (typeof TextDecoder !== 'undefined' && bytes && bytes.length >= 2) {
+      if (bytes[0] === 255 && bytes[1] === 254) return new TextDecoder('utf-16le').decode(bytes).replace(/^\uFEFF/, '');
+      if (bytes[0] === 254 && bytes[1] === 255) return new TextDecoder('utf-16be').decode(bytes).replace(/^\uFEFF/, '');
+    }
+    const text = util.utf8Decode(bytes).replace(/^\uFEFF/, '');
+    if (text.indexOf('\uFFFD') >= 0 && typeof TextDecoder !== 'undefined') {
+      try { return new TextDecoder('shift_jis').decode(bytes); } catch (e) { /* retain UTF8 result */ }
+    }
+    return text;
+  }
+
   /* BMP -> {w,h,gray}（支持 8 位调色板 / 24 位 / 32 位，含自底向上与自顶向下） */
   function decodeBmp(bytes) {
-    if (!isBmp(bytes)) return null;
+    if (!isBmp(bytes) || bytes.length < 54) return null;
     const offBits = u32(bytes, 10);
     const headerSize = u32(bytes, 14);
     const w = u32(bytes, 18) | 0;
     let h = u32(bytes, 22) | 0;
     const bpp = u16(bytes, 28);
     const compression = u32(bytes, 30);
-    if (compression !== 0 || w <= 0 || h === 0) return null;
+    if (headerSize < 40 || 14 + headerSize > bytes.length || u16(bytes, 26) !== 1 ||
+        compression !== 0 || w <= 0 || h === 0 || [8, 24, 32].indexOf(bpp) < 0) return null;
     const topDown = h < 0;
     h = Math.abs(h);
+    const rowSize = Math.ceil(bpp * w / 32) * 4;
+    if (!Number.isSafeInteger(w * h) || w * h > 16 * 1024 * 1024 ||
+        offBits < 14 + headerSize || offBits + rowSize * h > bytes.length) return null;
+    const colors = bpp === 8 ? (u32(bytes, 46) || 256) : 0;
+    if (colors > 256 || (colors && 14 + headerSize + colors * 4 > offBits)) return null;
     const gray = new Uint8Array(w * h);
     const palette = [];
     if (bpp === 8) {
-      const colors = u32(bytes, 46) || 256;
       for (let i = 0; i < colors; i++) {
         const o = 14 + headerSize + i * 4;
         palette.push([bytes[o + 2], bytes[o + 1], bytes[o]]);
       }
     }
-    const rowSize = Math.floor((bpp * w + 31) / 32) * 4;
     for (let y = 0; y < h; y++) {
       const srcRow = topDown ? y : (h - 1 - y);
       const rowOff = offBits + srcRow * rowSize;
@@ -45,7 +61,8 @@
         let r = 0, g = 0, b = 0;
         if (bpp === 8) {
           const idx = bytes[rowOff + x];
-          const p = palette[idx] || [idx, idx, idx];
+          const p = palette[idx];
+          if (!p) return null;
           r = p[0]; g = p[1]; b = p[2];
         } else if (bpp === 24) {
           const o = rowOff + x * 3;
@@ -74,7 +91,13 @@
     if (isPng(bytes)) {
       try {
         const img = png.decode(bytes);
-        return { w: img.width, h: img.height, rgba: png.toMaskRgba(img.rgba) };
+        const rgba = png.toMaskRgba(img.rgba);
+        let alphaMask = false;
+        for (let i = 3; i < img.rgba.length; i += 4) if (img.rgba[i] !== 255) { alphaMask = true; break; }
+        // Native grayscale assets use white as coverage; transparent PNGs carry
+        // their coverage in alpha (including black RGB under visible pixels).
+        if (!alphaMask) for (let i = 0; i < rgba.length; i += 4) rgba[i + 3] = Math.round((img.rgba[i] + img.rgba[i + 1] + img.rgba[i + 2]) / 3);
+        return { w: img.width, h: img.height, rgba: rgba };
       } catch (e) { return null; }
     }
     return null;
@@ -85,15 +108,16 @@
     let entries;
     try { entries = knownEntries || zip.read(bytes); } catch (e) { return false; }
     if(entries.some(e => /(^|\/)(brushform|brushtex|papertex|scatter|bristle|blotmap)\.conf$/i.test(e.name)))return true;
+    if(entries.some(e => !e.dir && /(^|[\\/])toolnrm$/i.test(e.name) && isToolnrm(e.data())))return true;
     const names=new Set(entries.filter(e=>!e.dir).map(e=>e.name.replace(/\\/g,'/').toLowerCase()));
     return entries.some(e=>!e.dir&&/\.ini$/i.test(e.name)&&
       ['.bmp','.png'].some(ext=>names.has(e.name.replace(/\\/g,'/').replace(/\.ini$/i,ext).toLowerCase()))&&isBrushIni(e.data()));
   }
 
   function isBrushIni(bytes) {
-    if (!bytes || bytes.length < 40 || bytes.length > 1024 * 1024) return false;
-    const head = util.utf8Decode(bytes.subarray(0, Math.min(4096, bytes.length)));
-    return /\[Parameters\]/i.test(head) && /(Density|AngleControl)/i.test(head);
+    if (!bytes || bytes.length < 20 || bytes.length > 1024 * 1024 || zip.isZip(bytes)) return false;
+    const head = decodeText(bytes.subarray(0, Math.min(4096, bytes.length)));
+    return /\[Parameters\]/i.test(head) && /(?:^|\r?\n)\s*(?:Density|AngleControl|Angle|AngleJitter|Scaling|ShapeSize|SizeJitter|Spacing|Scattering|WxHRatio|WxHJitter|Count|CountJitter|AllDirScattering|GaussianDistribution|AbsoluteSize|IntegerPosition|HighQualitySampling|ColJitter|HueJitter|SaturationJitter|BrightnessJitter|ApplyToEachShape|Opacity|EdgeHardness)\s*=/i.test(head);
   }
 
   function parseIniParams(text) {
@@ -111,23 +135,23 @@
   }
 
   function parseBrushIni(bytes, fileName) {
-    const p = parseIniParams(util.utf8Decode(bytes));
+    const p = parseIniParams(decodeText(bytes));
     const density = p.Opacity === undefined ? (p.Density === undefined ? 100 : p.Density) : p.Opacity;
     const angle = p.Angle === undefined ? 0 : p.Angle;
     const base = String(fileName || 'sai2-brush').replace(/\.ini$/i, '').replace(/^.*[\\/]/, '');
     const scatPct = Math.max(0, Math.min(1000, Number(p.Scattering) || 0));
-    const scatCnt = Math.max(1, Math.min(16, Math.round(Number(p.Count) || 1)));
+    const scatCnt = Math.max(1, Math.min(20, Math.round(Number(p.Count) || 1)));
     const hueJ = Math.max(0, Math.min(1, (Number(p.HueJitter) || 0) / 100));
     const satJ = Math.max(0, Math.min(1, (Number(p.SaturationJitter) || 0) / 100));
     const briJ = Math.max(0, Math.min(1, (Number(p.BrightnessJitter) || 0) / 100));
     const colOn = Number(p.ColJitter) > 0 || hueJ > 0.001 || satJ > 0.001 || briJ > 0.001;
-    const followsDir = Number(p.AngleControl) === 1;
+    const followsDir = p.AngleControl === undefined || Number(p.AngleControl) === 1;
     return {
       brushes: [{
-        name: base.replace(/__/g, ' '),
+        name: base,
         tip: null,
-        sizePx: p.ShapeSize === undefined ? 40 : Math.max(1, Math.min(5000, p.ShapeSize)),
-        spacingPct: p.Spacing === undefined ? 10 : Math.max(0, Math.min(1000, p.Spacing)),
+        sizePx: p.ShapeSize === undefined ? 100 : Math.max(1, Math.min(5000, p.ShapeSize)),
+        spacingPct: p.Spacing === undefined ? 25 : Math.max(0, Math.min(1000, p.Spacing)),
         opacity: Math.max(0, Math.min(1, density / 100)),
         minSizeRatio: 0,
         minOpacityRatio: 0,
@@ -146,7 +170,7 @@
         scatterPct: scatPct,
         scatterCount: scatCnt,
         countJitterPct: Math.max(0, Math.min(100, Number(p.CountJitter) || 0)),
-        scatterBothAxes: p.AllDirScattering === undefined ? true : Number(p.AllDirScattering) !== 0,
+        scatterBothAxes: p.AllDirScattering === undefined ? false : Number(p.AllDirScattering) !== 0,
         colorDynamicsOn: colOn,
         colorJitterHue: hueJ,
         colorJitterSat: satJ,
@@ -163,13 +187,14 @@
              prsfeel/szmin/dpmin/dpmax/quality/blend/water/stretch/bfval/txval/
              brfnam/texnam/brsize/brsizesc/smooth/edgehdns */
   function isToolnrm(bytes) {
-    if (!bytes || bytes.length < 40 || bytes.length > 4 * 1024 * 1024) return false;
-    const head = util.utf8Decode(bytes.subarray(0, Math.min(bytes.length, 8192)));
+    if (!bytes || bytes.length < 40 || bytes.length > 4 * 1024 * 1024 || zip.isZip(bytes)) return false;
+    const head = decodeText(bytes.subarray(0, Math.min(bytes.length, 8192)));
     return /brsize\s*=/.test(head) && /(szmin|depth|drawmode)\s*=/.test(head);
   }
 
   function parseToolnrm(bytes) {
-    const text = util.utf8Decode(bytes);
+    const text = decodeText(bytes);
+    const hasSections = /^\s*\[[^\]\r\n]+\]/m.test(text);
     const lines = text.split(String.fromCharCode(10));
     const records = [];
     let cur = {};
@@ -181,7 +206,7 @@
     };
     for (const raw of lines) {
       const t = raw.trim();
-      if (!t) { flush(); continue; }
+      if (!t) { if (!hasSections) flush(); continue; }
       if (t.charAt(0) === ';' || t.charAt(0) === '#') continue;
       if (t.charAt(0) === '[') { flush(); started = true; cur.__section = t.slice(1, -1); continue; }
       const eq = t.indexOf('=');
@@ -224,84 +249,121 @@
   }
 
   function parsePack(bytes, fileName) {
-    const entries = zip.read(bytes);
-    const files = {};
-    const confs = {};
-    for (const e of entries) {
-      if (e.dir) continue;
-      const data = e.data();
-      files[e.name] = data;
-      files[e.name.replace(/^.*\//, '')] = data;
-      const m = e.name.match(/(^|\/)(brushform|brushtex|papertex|scatter|bristle|blotmap)\.conf$/i);
-      if (m) confs[m[2].toLowerCase()] = data;
+    const entries = zip.read(bytes), files = new Map(), confs = [], brushes = [], warnings = [];
+    const consumedShapes = new Set(), consumedTextures = new Set(), consumedIni = new Set();
+    const key = name => String(name).replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+    const folder = name => key(name).replace(/[^/]+$/, '');
+    const stem = name => key(name).replace(/^.*\//, '').replace(/\.(bmp|png|ini)$/i, '');
+    for (const entry of entries) {
+      if (entry.dir) continue;
+      if (!files.has(key(entry.name))) files.set(key(entry.name), entry);
+      const m = key(entry.name).match(/(^|\/)(brushform|brushtex|papertex|scatter|bristle|blotmap)\.conf$/);
+      if (m) confs.push({category:m[2], entry:entry});
     }
-    const brushes = [];
-    // Scatter export ZIPs contain a paired INI/image, not a conf library.
-    // Keep the image and toolnrm settings together instead of expanding them
-    // into unrelated placeholders and discarding the bitmap as an unknown file.
-    if(!Object.keys(confs).length){
-      const paths=new Map(entries.filter(e=>!e.dir).map(e=>[e.name.replace(/\\/g,'/').toLowerCase(),e]));
-      const toolEntry=entries.find(e=>/(^|\/)toolnrm$/i.test(e.name));
-      const tools=toolEntry?parseToolnrm(toolEntry.data()).brushes:[];
-      const toolNames=new Map(),usedNames=new Set();
-      for(const tool of tools){
-        const base=String(tool.name||'brush').replace(/[\\/:*?"<>|]/g,'_').slice(0,60)||'brush';
-        let name=base,k=2;while(usedNames.has(name.toLowerCase()))name=base+'_'+k++;
-        usedNames.add(name.toLowerCase());toolNames.set(name.toLowerCase(),tool);
+    function resolveImage(ref, prefix, role, allowUniqueName) {
+      if (!ref) return null;
+      const path = key(ref).replace(/^"|"$/g, '');
+      const candidates = [], suffixes = /\.(bmp|png)$/.test(path) ? [''] : ['.bmp','.png'];
+      const dirs = role === 'texture' ? ['brushtex/',''] : ['', 'scatter/', 'brushfom/brshape/', 'brshape/', 'blotmap/'];
+      for (const base of [prefix, '']) for (const dir of dirs) for (const ext of suffixes) candidates.push(base + dir + path + ext);
+      for (const candidate of candidates) if (files.has(candidate)) return files.get(candidate);
+      if (allowUniqueName) {
+        const matches = entries.filter(e => !e.dir && /\.(bmp|png)$/i.test(e.name) && key(e.name).indexOf(prefix) === 0 && stem(e.name) === stem(path));
+        if (matches.length === 1) return matches[0];
       }
-      for(const entry of entries){
-        if(entry.dir||!/\.ini$/i.test(entry.name)||!isBrushIni(entry.data()))continue;
-        const key=entry.name.replace(/\\/g,'/').replace(/\.ini$/i,'').toLowerCase();
-        const imageEntry=paths.get(key+'.bmp')||paths.get(key+'.png');if(!imageEntry)continue;
-        const img=decodeImage(imageEntry.data());if(!img)continue;
-        const b=parseBrushIni(entry.data(),entry.name).brushes[0],meta=toolNames.get(key.replace(/^.*\//,''));
-        if(meta){
-          const record=meta._sai2tool;
-          const fields={name:['name'],sizePx:['brsize','brsizesc'],opacity:['depth'],minSizeRatio:['szmin'],minOpacityRatio:['dpmin'],
-            pressureSize:['f_prs2sz'],pressureOpacity:['f_prs2dp'],hardness:['edgehdns'],smudgeOn:['blend'],smudgeAmount:['blend'],
-            wetEdgesOn:['water'],wetEdgesAmount:['water'],smoothingStrength:['smooth']};
-          for(const field of Object.keys(fields))
-            if(fields[field].some(key=>record[key]!==undefined && String(record[key]).trim()!==''))b[field]=meta[field];
+      return null;
+    }
+    function attachTexture(brush, record, prefix) {
+      if (!record.texnam) return;
+      const entry = resolveImage(record.texnam, prefix, 'texture', false);
+      let image = null;
+      if (entry) {
+        if (isBmp(entry.data())) {
+          const gray = decodeBmp(entry.data());
+          if (gray) {
+            const rgba = new Uint8Array(gray.w * gray.h * 4);
+            for (let i = 0; i < gray.gray.length; i++) rgba.set([gray.gray[i],gray.gray[i],gray.gray[i],255],i*4);
+            image = {w:gray.w,h:gray.h,rgba:rgba};
+          }
+        } else if (isPng(entry.data())) {
+          try { const im=png.decode(entry.data()); image={w:im.width,h:im.height,rgba:im.rgba}; } catch (e) { /* reported below */ }
         }
-        b.tip=img;brushes.push(b);
+      }
+      if (!image) { warnings.push('缺少或无法解码纹理 ' + record.texnam); return; }
+      consumedTextures.add(key(entry.name));
+      brush._grainRgba = image; brush.hasTexture = true; brush.textureName = record.texnam;
+      brush.textureDepth = record.txval === undefined ? 1 : Math.max(0,Math.min(1,Number(record.txval)/100));
+    }
+    function finish(brush, imageEntry, iniEntry, meta, prefix) {
+      if (meta) {
+        const record = meta._sai2tool;
+        const fields = {name:['name'],sizePx:['brsize','brsizesc'],opacity:['depth'],minSizeRatio:['szmin'],minOpacityRatio:['dpmin'],
+          pressureSize:['f_prs2sz'],pressureOpacity:['f_prs2dp'],hardness:['edgehdns'],smudgeOn:['blend'],smudgeAmount:['blend'],
+          wetEdgesOn:['water'],wetEdgesAmount:['water'],smoothingStrength:['smooth']};
+        for (const field of Object.keys(fields)) if (fields[field].some(k=>record[k]!==undefined && String(record[k]).trim()!=='')) brush[field]=meta[field];
+        brush._sai2tool = record;
+        attachTexture(brush, record, prefix);
+      }
+      brush._sai2SourceSize = brush.sizePx;
+      brush._sai2SourceRoundness = brush.roundness;
+      if (imageEntry) {
+        brush.tip = decodeImage(imageEntry.data());
+        const ratio = brush._sai2ini && String(brush._sai2ini.WxHRatio || '').split(':').map(Number);
+        if (brush.tip && ratio && ratio.length === 2 && ratio.every(Number.isFinite) && ratio[0] > ratio[1] && ratio[1] > 0) {
+          // The common roundness field compresses width. A wide native pattern
+          // instead compresses height, so carry that geometry in the mask.
+          const original = brush.tip, h = Math.max(1,Math.round(original.h*ratio[1]/ratio[0]));
+          const top = Math.floor((original.h-h)/2), rgba = new Uint8Array(original.rgba.length).fill(255);
+          for(let n=3;n<rgba.length;n+=4)rgba[n]=0;
+          for(let y=0;y<h;y++)for(let x=0;x<original.w;x++)rgba[((top+y)*original.w+x)*4+3]=original.rgba[(Math.floor(y*original.h/h)*original.w+x)*4+3];
+          brush._sai2AspectOriginalTip=original;
+          brush.tip={w:original.w,h:original.h,rgba:rgba};
+          brush._sai2AspectTipState=util.brushFingerprint({tip:brush.tip});
+        }
+        if (brush.tip) consumedShapes.add(key(imageEntry.name));
+        else warnings.push('无法解码笔尖 ' + imageEntry.name);
+      } else warnings.push('缺少笔尖配图 ' + (iniEntry ? iniEntry.name : brush.name));
+      if (iniEntry) consumedIni.add(key(iniEntry.name));
+      brushes.push(brush);
+    }
+    // A tool's explicit shape reference belongs to its own package directory.
+    for (const toolEntry of entries.filter(e=>!e.dir && /(^|[\\/])toolnrm$/i.test(e.name))) {
+      const tools = parseToolnrm(toolEntry.data()).brushes, prefix = folder(toolEntry.name), used = new Set();
+      for (const meta of tools) {
+        const base = String(meta.name||'brush').replace(/[\\/:*?"<>|]/g,'_').slice(0,60)||'brush';
+        let fallback=base,n=2;while(used.has(fallback.toLowerCase()))fallback=base+'_'+n++;used.add(fallback.toLowerCase());
+        const ref = meta._sai2tool.brfnam;
+        const imageEntry = resolveImage(ref || fallback, prefix, 'shape', !ref);
+        const iniEntry = imageEntry && files.get(key(imageEntry.name).replace(/\.(bmp|png)$/i,'.ini'));
+        const validIni = iniEntry && isBrushIni(iniEntry.data()) ? iniEntry : null;
+        const brush = validIni ? parseBrushIni(validIni.data(),validIni.name).brushes[0] : Object.assign({},meta);
+        finish(brush,imageEntry,validIni,meta,prefix);
       }
     }
-    for (const cat of Object.keys(confs)) {
-      const text = util.utf8Decode(confs[cat]);
-      for (const line of text.split(/\r?\n/)) {
-        const t = line.trim();
-        if (!t) continue;
-        const comma = t.indexOf(',');
-        if (comma < 0) continue;
-        const slot = t.slice(0, comma).trim();
-        const path = t.slice(comma + 1).trim().replace(/\\/g, '/');
-        const data = files[path] || files[path.replace(/^.*\//, '')];
-        if (!data) continue;
-        const img = decodeImage(data);
-        if (!img) continue;
-        const base = path.replace(/^.*\//, '').replace(/\.[^.]+$/, '');
-        brushes.push({
-          name: cat + ' ' + base,
-          tip: img,
-          sizePx: Math.max(img.w, img.h),
-          spacingPct: 100,
-          opacity: 1,
-          minSizeRatio: 0,
-          minOpacityRatio: 0,
-          pressureSize: true,
-          hardness: 1,
-          angle: 0,
-          roundness: 100,
-          hasTexture: true,
-          source: 'sai2',
-          _sai2: { category: cat, slot: slot, file: path }
-        });
+    for (const entry of entries) {
+      if (entry.dir || consumedIni.has(key(entry.name)) || !/\.ini$/i.test(entry.name) || !isBrushIni(entry.data())) continue;
+      const path = key(entry.name).replace(/\.ini$/i,'');
+      const imageEntry = files.get(path+'.bmp') || files.get(path+'.png');
+      finish(parseBrushIni(entry.data(),entry.name).brushes[0],imageEntry,entry,null,folder(entry.name));
+    }
+    for (const conf of confs) {
+      for (const line of decodeText(conf.entry.data()).split(/\r?\n/)) {
+        const t=line.trim(), comma=t.indexOf(',');if(!t||/^[;#]/.test(t)||comma<0)continue;
+        const path=t.slice(comma+1).trim().replace(/^"|"$/g,'').replace(/\\/g,'/');
+        const entry=files.get(folder(conf.entry.name)+key(path))||files.get(key(path));
+        if(!entry){warnings.push('缺少素材 '+path);continue;}
+        if(consumedShapes.has(key(entry.name))||consumedTextures.has(key(entry.name)))continue;
+        if(conf.category==='brushtex'||conf.category==='papertex'){
+          warnings.push('独立纹理 '+path+' 未绑定工具，未作为笔尖生成笔刷');continue;
+        }
+        const tip=decodeImage(entry.data());if(!tip){warnings.push('无法解码素材 '+path);continue;}
+        consumedShapes.add(key(entry.name));
+        brushes.push({name:entry.name.replace(/^.*[\\/]/,'').replace(/\.[^.]+$/,''),tip:tip,sizePx:Math.max(tip.w,tip.h),spacingPct:100,
+          opacity:1,minSizeRatio:0,minOpacityRatio:0,pressureSize:true,hardness:1,angle:0,roundness:100,hasTexture:false,source:'sai2',
+          _sai2:{category:conf.category,slot:t.slice(0,comma).trim(),file:path}});
       }
     }
-    return {
-      brushes: brushes,
-      warnings: brushes.length ? [] : ['SAI2 素材包里没有读到可用纹理（检查 conf 与 bmp 是否齐全）']
-    };
+    return {brushes:brushes,warnings:warnings.concat(brushes.length?[]:['SAI2素材包没有可转换笔刷；请同时提供形状/工具及其引用素材'])};
   }
 
   const api = { isSai2Pack, isBrushIni, isToolnrm, parseToolnrm, parsePack, parseBrushIni, decodeBmp };

@@ -2635,7 +2635,13 @@ Write-Host 'restart MediBang Paint Pro'
       if (adjusted.sizePx > limit) return '近似（超过Procreate当前间距下的尺寸上限，已缩小至上限）';
     }
     if (key === 'eraser' && target === 'kbundle' && brush.eraserAmount > 0 && brush.eraserAmount < 1) return '近似（连续橡皮强度映射为橡皮开关）';
-    if (key === 'opacity' && target === 'sai2' && brush.opacity < 0.01) return '近似（当前SAI2写端浓度下限1%，不能视为完全透明）';
+    if (target === 'sai2' && ['opacity','minSizeRatio','minOpacityRatio','hardness','pressureSize','pressureOpacity'].indexOf(key) >= 0) return opts.pressure === false && (key === 'pressureSize' || key === 'pressureOpacity')
+      ? '兼容参数（按导出设置关闭压感；toolnrm旁带文本，不是新版原生工具预设）'
+      : '兼容参数（toolnrm旁带文本，需在SAI2工具中设置；不是新版原生工具预设）';
+    if (target === 'sai2' && brush.scatterOn === false && ['scatterCount','countJitterPct'].indexOf(key) >= 0) return '未启用';
+    if (key === 'scatterCount' && (target === 'brush' || target === 'brushset') && brush.scatterCount > 16) return '近似（目标写端最多16个笔尖，数量已限制为16）';
+    if (target === 'sai2' && key === 'angleJitterDeg') return '近似（转换为SAI2角度随机百分比，实际角度范围待原生标定）';
+    if (target !== 'sai2' && key === 'roundness' && brush._sai2AspectOriginalTip) return '近似（原始横扁宽高比已烘焙进笔尖，像素取样存在舍入）';
     if (key === 'spacingPct' && ['kbundle','sai2','gbr','gih','myb'].indexOf(target) >= 0 && !(target === 'kbundle' && brush._rawXml && opts.fidelity !== false && !opts.forceRebuild)) {
       const spacing = opts.spacingOverride > 0 ? opts.spacingOverride : brush.spacingPct;
       const min = target === 'kbundle' ? (brush.tip ? 0.5 : 1) : 1;
@@ -2688,6 +2694,8 @@ Write-Host 'restart MediBang Paint Pro'
     if (key === 'textureDepth') {
       if (!brush.hasTexture) return '未启用';
       const pixels = brush._rawGrain || brush._grainRgba || brush._patternPixels || brush.grain;
+      if (target === 'sai2') return opts.noTextureBake === true ? '未写出（已关闭纹理输出）'
+        : (textureGray(brush) ? '配套纹理BMP（需在SAI2手动选择纹理，未自动绑定新版工具预设）' : '未写出（缺少原纹理图）');
       if (target === 'kbundle') {
         if (opts.noTextureBake === true) return '未写出（已关闭纹理输出）';
         if (!brush._rawXml || opts.forceRebuild || opts.fidelity === false) {
@@ -2727,6 +2735,14 @@ Write-Host 'restart MediBang Paint Pro'
   }
 
   /* 生成「参数对比页」HTML（原参数 vs 目标格式支持情况 + 笔尖缩略图），无需外部样本 */
+  function sai2ReportFields(fields, target) {
+    if (target !== 'sai2') return fields;
+    const pct = function (v) { return Math.round(v) + '%'; };
+    const ratio = function (v) { return Math.round(v * 100) + '%'; };
+    return fields.concat([['数量随机','countJitterPct',pct],['圆度随机','roundnessJitterPct',pct],
+      ['色相随机','colorJitterHue',ratio],['饱和度随机','colorJitterSat',ratio],['亮度随机','colorJitterVal',ratio]]);
+  }
+
   function buildCompareHtml(brushList, target, meta) {
     const targetLabel = target === 'udongman' ? '优动漫 / CSP（ABR兼容）' : target === 'udongman_sut' ? '优动漫 / CSP 原生 .sut（实验）' : target === 'udongman_mtd' ? '优动漫 / .mtd 绘画助手包（实验）' : target;
     const rawCache = new WeakMap();
@@ -2770,7 +2786,7 @@ Write-Host 'restart MediBang Paint Pro'
       kbundle: ['橡皮模式','尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','散布','纹理深度','混色/涂抹','颜色动态'],
       gbr: ['尺寸','间距','硬度'], gih: ['尺寸','间距','硬度'],
       myb: ['橡皮模式','尺寸','间距','角度','圆度','不透明度','硬度','最小直径','最小不透明度','大小随机','散布','混色/涂抹','颜色动态'],
-      painter: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','大小随机','散布'], sai2: ['尺寸','间距','角度','圆度','不透明度','硬度','最小直径','最小不透明度'], png: ['尺寸','间距','角度','圆度','不透明度'],
+      painter: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','大小随机','散布'], sai2: ['尺寸','间距','角度','圆度','不透明度','硬度','最小直径','最小不透明度','大小随机','角度随机','散布','散布数量','数量随机','圆度随机','颜色动态','色相随机','饱和度随机','亮度随机','纹理深度'], png: ['尺寸','间距','角度','圆度','不透明度'],
       medibang: ['尺寸','不透明度','最小直径','压感尺寸','压感不透明度'], mbini: ['尺寸','不透明度','最小直径','压感尺寸','压感不透明度'],
       gobrush: ['尺寸','间距','不透明度','最小直径','最小不透明度','流量','散布','纹理深度'],
       gopaint_set: ['尺寸','间距','不透明度','散布','纹理深度'], gopaint_abr: ['尺寸','间距','不透明度','纹理深度']
@@ -2823,7 +2839,7 @@ Write-Host 'restart MediBang Paint Pro'
       out.push('<div class="card">');
       out.push('<div class="tip">' + thumb(b) + '<div>' + esc(b.name || ('笔刷 ' + (idx + 1))) + '</div></div>');
       out.push('<table><tr><th>参数</th><th>原值</th><th>状态</th></tr>');
-      for (const f of fields) {
+      for (const f of sai2ReportFields(fields, target)) {
         const v = b[f[1]];
         if (v === undefined || v === null || v === '' || v === false) continue;
         let text = f[2] ? f[2](v) : String(v);
@@ -2859,7 +2875,7 @@ Write-Host 'restart MediBang Paint Pro'
     gih: '不透明度/圆度：在 GIMP 管道画笔选项里手动设',
     myb: '当前仅输出参数化圆形/椭圆笔尖，不写入自定义采样笔尖、双笔或纹理图；速度/倾斜需手动配置',
     painter: '笔尖/半径：Painter 里按 PNG/nib 手动微调；双笔刷：已合成近似',
-    sai2: 'BMP/INI和toolnrm已写基础数值与压感开关；完整toolsettings及目标软件笔触仍需核对',
+    sai2: 'BMP/INI是形状素材；toolnrm是兼容参数文本，不是新版.saitdat原生预设。工具尺寸/浓度/压感与配套纹理需在SAI2中设置',
     png: '仅笔尖图 + 参数文本，需在目标软件里手动建笔刷',
     medibang: '位图笔刷导入后可在 MediBang 里调间距/压感',
     mbini: '复制到 CloudAlpaca 后重启；程序笔刷已转成位图笔刷',
@@ -2949,7 +2965,7 @@ Write-Host 'restart MediBang Paint Pro'
       kbundle: ['橡皮模式','尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','散布','纹理','压感尺寸','压感不透明度','混色/涂抹','颜色动态'],
       gbr: ['尺寸','间距','硬度'], gih: ['尺寸','间距','硬度'],
       myb: ['橡皮模式','尺寸','间距','角度','圆度','不透明度','硬度','最小直径','最小不透明度','大小随机','散布','压感尺寸','压感不透明度','混色/涂抹','颜色动态'],
-      painter: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','大小随机','散布'], sai2: ['尺寸','间距','角度','圆度','不透明度','硬度','最小直径','最小不透明度','压感尺寸','压感不透明度'], png: ['尺寸','间距','角度','圆度','不透明度'],
+      painter: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','大小随机','散布'], sai2: ['尺寸','间距','角度','圆度','不透明度','硬度','最小直径','最小不透明度','压感尺寸','压感不透明度','大小随机','角度随机','散布','散布数量','数量随机','圆度随机','颜色动态','色相随机','饱和度随机','亮度随机','纹理深度'], png: ['尺寸','间距','角度','圆度','不透明度'],
       medibang: ['尺寸','不透明度','最小直径','压感尺寸','压感不透明度'], mbini: ['尺寸','不透明度','最小直径','压感尺寸','压感不透明度'],
       gobrush: ['尺寸','间距','不透明度','最小直径','最小不透明度','流量','散布','纹理'],
       gopaint_set: ['尺寸','间距','不透明度','散布','纹理'], gopaint_abr: ['尺寸','间距','不透明度','纹理']
@@ -2964,7 +2980,7 @@ Write-Host 'restart MediBang Paint Pro'
       gih: 'GIMP 管道格式只有「笔尖 + 间距 + 硬度」',
       myb: '当前MyPaint导出不写入自定义采样笔尖、双笔或纹理图；速度/倾斜未映射',
       painter: 'Painter写出基础XML和有损JPEG笔尖；独立材质及复杂引擎未还原',
-      sai2: 'SAI2已写BMP/INI及toolnrm的基础数值和压感开关；实际笔触待目标软件验证',
+      sai2: 'SAI2输出BMP/INI及配套纹理；toolnrm仅为兼容参数文本，新版原生.saitdat工具预设尚未验证',
       png: 'PNG 只导出笔尖图 + 参数文本',
       medibang: 'MediBang 只写基础字段', mbini: 'MediBang 云笔刷只写基础字段',
       gobrush: '天生会画保留原样单支，重建映射主要数值和已知独立压力曲线；原生笔触待验证',
@@ -2987,10 +3003,10 @@ Write-Host 'restart MediBang Paint Pro'
       if (requestedTarget === 'udongman_sut') lines.push(brushList.every(function (b) { return rawSutGroup(b, brushList, opts); }) ? '  兼容说明：原生 SUT 完整选择且未改动，整个文件原样保留。' : '  兼容说明：原生SUT导出（实验）；未改动的完整原生SUT可原样保留；重建时有图主笔尖/纹理写入单色素材，无笔尖图时用内置圆形；压感等动态、彩色和复杂混合尚未还原。');
       if (requestedTarget === 'udongman_mtd') lines.push('  兼容说明：.mtd=zip+sut绘画助手素材包（实验，未真机验证）；素材与参数限制同.sut目标；如绘画助手拒绝导入请改用.sut或ABR兼容目标。');
       if (reason[target]) lines.push('  说明：' + reason[target]);
-      let lostTotal = 0, keptTotal = 0;
+      let lostTotal = 0, keptTotal = 0, manualTotal = 0;
       brushList.forEach(function (b, i) {
-        const has = [], lost = [];
-        for (const f of fields) {
+        const has = [], lost = [], manual = [];
+        for (const f of sai2ReportFields(fields, target)) {
           const v = b[f[1]];
           const present = v !== undefined && v !== null && v !== '' && v !== false;
           if (!present) continue;
@@ -3000,14 +3016,16 @@ Write-Host 'restart MediBang Paint Pro'
           const status = conversionStatus(b, target, f[1], keep.indexOf(f[0]) >= 0, opts, rawCache);
           if (status === '未启用') continue;
           const entry = f[0] + '(' + text + ')：' + status;
-          if (/^(原样|原生|参数映射)/.test(status)) { has.push(entry); keptTotal++; }
+          if (/^(兼容参数|配套)/.test(status)) { manual.push(entry); manualTotal++; }
+          else if (/^(原样|原生|参数映射)/.test(status)) { has.push(entry); keptTotal++; }
           else { lost.push(entry); lostTotal++; }
         }
         lines.push('  ' + (i + 1) + '. ' + (b.name || '未命名'));
         lines.push('     写入：' + (has.length ? has.join('、') : '（基础字段）'));
         if (lost.length) lines.push('     丢失：' + lost.join('、'));
+        if (manual.length) lines.push('     旁带/手动设置：' + manual.join('、'));
       });
-      lines.push('  小结：写入参数 ' + keptTotal + ' 项，近似/未完整写入/丢失 ' + lostTotal + ' 项');
+      lines.push('  小结：写入参数 ' + keptTotal + ' 项，近似/未完整写入/丢失 ' + lostTotal + ' 项' + (manualTotal ? '，另有旁带/手动设置 ' + manualTotal + ' 项' : ''));
       if (requestedTarget === 'udongman') lines.push('  手动补全建议：通过子工具/工具组面板导入ABR后检查尺寸、间距与纹理，不把PS图案安装步骤视为优动漫原生流程。');
       else if (requestedTarget === 'udongman_sut' && !brushList.every(function (b) { return rawSutGroup(b, brushList, opts); })) lines.push('  手动补全建议：重建的笔刷导入后核对素材、纹理强度/比例，压感等动态在「子工具详情」面板手动开启。');
       else if (requestedTarget === 'udongman_mtd') lines.push('  手动补全建议：双击 .mtd 用绘画助手导入，核对素材及动态；如绘画助手拒绝导入请改用 .sut 或 ABR 兼容目标。');
@@ -3071,7 +3089,8 @@ Write-Host 'restart MediBang Paint Pro'
       const b = withExportSettings(source, opts);
       try {
         const tip = bakedTipFor(Object.assign({}, b, { angle: 0, roundness: 100 }), opts || {});
-        return withFixedTipFlips(Object.assign({}, b, { tip: { w: tip.w, h: tip.h, rgba: tip.rgba } }));
+        const texture = !(opts && opts.noTextureBake) && b.hasTexture ? textureGray(b) : null;
+        return withFixedTipFlips(Object.assign({}, b, { tip: { w: tip.w, h: tip.h, rgba: tip.rgba }, _sai2Texture: texture }));
       } catch (e) { return b; }
     });
     return sai2.makeSai2Pack(list, opts || {});

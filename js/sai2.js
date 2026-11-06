@@ -63,34 +63,37 @@
   // SAI2 uses square shapes. Pad the original canvas instead of cropping it
   // or deleting disconnected components that may be deliberate brush fibres.
   function squareAndSize(g, target) {
-    const side=Math.max(g.w,g.h), padded=new Uint8Array(side*side);
+    const side=Math.max(g.w,g.h);
     const left=Math.floor((side-g.w)/2),top=Math.floor((side-g.h)/2);
-    for(let y=0;y<g.h;y++)padded.set(g.data.subarray(y*g.w,(y+1)*g.w),(top+y)*side+left);
     const n=Math.max(8,Math.min(500,Math.round(target||64)));
-    if(n===side)return {w:n,h:n,data:padded};
     const out=new Uint8Array(n*n);
     for(let y=0;y<n;y++)for(let x=0;x<n;x++){
-      const sx=Math.min(side-1,Math.floor(x*side/n)),sy=Math.min(side-1,Math.floor(y*side/n));
-      out[y*n+x]=padded[sy*side+sx];
+      const sx=Math.floor(x*side/n)-left,sy=Math.floor(y*side/n)-top;
+      if(sx>=0&&sy>=0&&sx<g.w&&sy<g.h)out[y*n+x]=g.data[sy*g.w+sx];
     }
     return {w:n,h:n,data:out};
   }
 
   function buildIni(brush) {
-    const size = Math.max(1, Math.min(5000, Math.round(brush.sizePx || 40)));
+    const raw = brush._sai2ini || {};
+    const nativeValue = function (key, fallback) { return raw[key] === undefined ? fallback : raw[key]; };
+    const patternSize = Number(raw.AbsoluteSize) === 1 && Number.isFinite(Number(raw.ShapeSize))
+      ? Number(raw.ShapeSize) * (brush._sai2SourceSize > 0 ? brush.sizePx / brush._sai2SourceSize : 1) : brush.sizePx;
+    const size = Math.max(1, Math.min(5000, Math.round(patternSize || 40)));
     const spacing = Math.max(1, Math.min(1000, Math.round(brush.spacingPct === undefined ? 10 : brush.spacingPct)));
-    const angle = Math.round((isFinite(brush.angle) ? brush.angle : 0));
-    const ratio = Math.max(10, Math.min(100, Math.round(brush.roundness === undefined ? 100 : brush.roundness)));
-    const opacity = Math.max(1, Math.min(100, Math.round((brush.opacity === undefined ? 1 : brush.opacity) * 100)));
-    const angleControl = (brush.bruRotationMode === 1 || brush.dynamicsControlAngle === 6) ? 1 : 0;
+    const angle = ((Math.round(isFinite(brush.angle) ? brush.angle : 0) + 180) % 360 + 360) % 360 - 180;
+    const ratio = Math.max(1, Math.min(100, Math.round(brush.roundness === undefined ? 100 : brush.roundness)));
+    const nativeRatio = raw.WxHRatio && brush.roundness === brush._sai2SourceRoundness ? raw.WxHRatio : ratio + ':100';
+    const opacity = Math.max(0, Math.min(100, Math.round((brush.opacity === undefined ? 1 : brush.opacity) * 100)));
+    const angleControl = (brush.bruRotationMode === 1 || brush.dynamicsControlAngle === 6) ? 1 : nativeValue('AngleControl', 0);
     const angleJitter = Math.max(0, Math.min(100, Math.round(brush.source === 'abr' ? (brush.angleJitterDeg || 0) : ((brush.angleJitterDeg || 0) * 100 / 360))));
     const sizeJitter = Math.max(0, Math.min(100, Math.round(brush.sizeJitterPct || 0)));
     const scattering = brush.scatterOn ? Math.max(0, Math.min(1000, Math.round(brush.scatterPct || 0))) : 0;
     const wxhJitter = Math.max(0, Math.min(100, Math.round(brush.roundnessJitterPct || 0)));
-    const count = Math.max(1, Math.min(16, Math.round(brush.scatterCount || 1)));
-    const countJitter = Math.max(0, Math.min(100, Math.round(brush.countJitterPct || 0)));
+    const count = brush.scatterOn === false ? 1 : Math.max(1, Math.min(20, Math.round(brush.scatterCount || 1)));
+    const countJitter = brush.scatterOn === false ? 0 : Math.max(0, Math.min(100, Math.round(brush.countJitterPct || 0)));
     const allDir = brush.scatterBothAxes === false ? 0 : 1;
-    const colJitter = brush.colorDynamicsOn ? 1 : 0;
+    const colJitter = brush.colorDynamicsOn ? nativeValue('ColJitter', 0) : 0;
     const hueJitter = brush.colorDynamicsOn ? Math.max(0, Math.min(100, Math.round((brush.colorJitterHue || 0) * 100))) : 0;
     const satJitter = brush.colorDynamicsOn ? Math.max(0, Math.min(100, Math.round((brush.colorJitterSat || 0) * 100))) : 0;
     const briJitter = brush.colorDynamicsOn ? Math.max(0, Math.min(100, Math.round((brush.colorJitterVal || 0) * 100))) : 0;
@@ -100,25 +103,25 @@
       'AngleControl = ' + angleControl,
       'Angle = ' + (angle >= 0 ? '+' : '') + angle,
       'AngleJitter = ' + angleJitter,
-      'Scaling = 100',
+      'Scaling = ' + nativeValue('Scaling', 100),
       'ShapeSize = ' + size,
       'SizeJitter = ' + sizeJitter,
       'Spacing = ' + spacing,
       'Scattering = ' + scattering,
-      'WxHRatio = ' + ratio + ':100',
+      'WxHRatio = ' + nativeRatio,
       'WxHJitter = ' + wxhJitter,
       'Count = ' + count,
       'CountJitter = ' + countJitter,
       'AllDirScattering = ' + allDir,
-      'GaussianDistribution = 0',
-      'AbsoluteSize = 0',
-      'IntegerPosition = 0',
-      'HighQualitySampling = 1',
+      'GaussianDistribution = ' + nativeValue('GaussianDistribution', 0),
+      'AbsoluteSize = ' + nativeValue('AbsoluteSize', 0),
+      'IntegerPosition = ' + nativeValue('IntegerPosition', 0),
+      'HighQualitySampling = ' + nativeValue('HighQualitySampling', brush._sai2ini ? 0 : 1),
       'ColJitter = ' + colJitter,
       'HueJitter = ' + hueJitter,
       'SaturationJitter = ' + satJitter,
       'BrightnessJitter = ' + briJitter,
-      'ApplyToEachShape = 0',
+      'ApplyToEachShape = ' + nativeValue('ApplyToEachShape', 0),
       'Opacity = ' + opacity,
       ''
     ];
@@ -129,54 +132,67 @@
     return String(name || 'brush').replace(/[\\/:*?"<>|]/g, '_').slice(0, 60) || 'brush';
   }
 
-  function makeSai2Brush(brush) {
-    const tip = tipGray(brush.tip);
+  function makeSai2Brush(brush, opts) {
+    opts = opts || {};
+    const restoreAspect = brush._sai2AspectOriginalTip && brush.roundness === brush._sai2SourceRoundness &&
+      brush._sai2AspectTipState === util.brushFingerprint({tip:brush.tip});
+    const tip = tipGray(restoreAspect ? brush._sai2AspectOriginalTip : brush.tip);
     if (!tip) throw new Error('该笔刷没有笔尖形状，无法写成 SAI2 笔刷形状 BMP');
-    const target = Math.max(8, Math.min(500, Math.round(brush.sizePx || 40)));
+    const target = Math.max(8, Math.min(500, Math.max(tip.w, tip.h), opts.maxTipSize || 500));
     const g = squareAndSize(tip, target);
     const bmp = encodeBmp8(g.w, g.h, g.data);
-    const ini = buildIni(brush);
+    const iniBrush = brush._sai2AspectOriginalTip && !restoreAspect ? Object.assign({},brush,{
+      _sai2ini:Object.assign({},brush._sai2ini,{WxHRatio:(brush.roundness===undefined?100:brush.roundness)+':100'})
+    }) : brush;
+    const ini = buildIni(iniBrush);
     const name = sanitize(brush.name);
+    const files = [{name: name + '.bmp', data: bmp}, {name: name + '.ini', data: ini}];
+    if (brush._sai2Texture) {
+      const t = brush._sai2Texture;
+      files.push({name: 'brushtex/' + name + '_纹理.bmp', data: encodeBmp8(t.w, t.h, t.gray)});
+    }
     return {
-      files: [
-        { name: name + '.bmp', data: bmp },
-        { name: name + '.ini', data: ini }
-      ],
+      files: files,
       name: name
     };
   }
 
-  function makeSai2Pack(brushList) {
+  function makeSai2Pack(brushList, opts) {
     const zip = isNode ? require('./zip.js') : root.BC.zip;
     const files = [];
-    const used = {};
+    const used = new Set();
+    const completed = [];
     const warnings = [];
     let madeCount = 0;
     for (const brush of brushList || []) {
       let made;
-      try { made = makeSai2Brush(brush); }
+      try { made = makeSai2Brush(brush, opts); }
       catch (e) { warnings.push((brush.name || '未命名') + '：' + e.message); continue; }
       let base = made.name, i = 2;
-      while (used[base.toLowerCase()]) { base = made.name + '_' + i; i++; }
-      used[base.toLowerCase()] = true;
+      while (used.has(base.toLowerCase())) { base = made.name + '_' + i; i++; }
+      used.add(base.toLowerCase());
+      completed.push(Object.assign({}, brush, {sai2ShapeName:base,sai2TextureName:brush._sai2Texture?base+'_纹理':''}));
       madeCount++;
       for (const f of made.files) {
         const ext = f.name.slice(f.name.lastIndexOf('.'));
-        files.push({ name: base + ext, data: f.data });
+        files.push({ name: f.name.indexOf('brushtex/') === 0 ? 'brushtex/' + base + '_纹理.bmp' : base + ext, data: f.data });
       }
     }
     // 笔刷预设 INI（toolnrm）：保留 SAI2 的尺寸/浓度/最小直径/压感开关
-    try { files.push({ name: 'toolnrm', data: writeToolnrm(brushList) }); } catch (e) { warnings.push('toolnrm 生成失败：' + e.message); }
+    try { files.push({ name: 'toolnrm', data: writeToolnrm(completed) }); } catch (e) { warnings.push('toolnrm 兼容参数生成失败：' + e.message); }
     files.push({
       name: '说明.txt',
       data: util.utf8Encode(
         'SAI2 笔刷（scatter brush）导入说明\r\n' +
         '==============================\r\n' +
-        '1. 找到 SAI2 的 scatter brush 文件夹（通常在 SAI2 安装目录或用户目录下，\r\n' +
-        '   名字类似 tool\\scatterbrush / scatterbrush）。\r\n' +
+        '1. 新版 SAI2 通常使用「文档\\SYSTEMAX Software Development\\SAIv2\\settings\\scatter」。\r\n' +
+        '   文档可能位于 OneDrive；旧版才使用安装目录中的 scatter。\r\n' +
         '2. 把本包里的每个 <名字>.bmp 和对应 <名字>.ini 一起放进该文件夹。\r\n' +
         '3. 重启 SAI2，在笔刷设置里选择 scatter brush（散布笔刷）即可看到新增笔刷。\r\n' +
-        '说明：SAI2 没有单文件笔刷格式，必须 bmp + ini 成对放入同一文件夹。\r\n'
+        '4. 如有 brushtex 子目录，把其中纹理 BMP 放入上述 settings\\brushtex，再在工具中手动选择纹理。\r\n' +
+        '5. toolnrm 是兼容参数记录，供查阅尺寸/浓度/压感；不要拿它覆盖 SAI2 用户设置。\r\n' +
+        '   新版原生工具是 custool\\nrm\\*.saitdat，另需组登记；本包没有自动安装或替换这些预设。\r\n' +
+        '说明：BMP/INI 是形状素材，不会自动创建完整工具。工具当前尺寸、浓度和压感需按参数记录设置。\r\n'
       )
     });
     return { bytes: zip.write(files), count: madeCount, warnings: warnings };
@@ -188,7 +204,7 @@
     const out = ['; SAI2 brush presets (toolnrm) - generated by brushconv', ''];
     (brushes || []).forEach(function (b, i) {
       const size = Math.max(1, Math.min(5000, Math.round(b.sizePx || 30)));
-      const depth = Math.max(1, Math.min(100, Math.round((b.opacity === undefined ? 1 : b.opacity) * 100)));
+      const depth = Math.max(0, Math.min(100, Math.round((b.opacity === undefined ? 1 : b.opacity) * 100)));
       const szmin = Math.max(0, Math.min(100, Math.round((b.minSizeRatio === undefined ? 0 : b.minSizeRatio) * 100)));
       out.push('[' + (i + 1) + ']');
       out.push('id=' + (i + 1));
@@ -213,9 +229,9 @@
       out.push('water=' + Math.round((b.wetEdgesAmount === undefined ? 0 : b.wetEdgesAmount) * 100));
       out.push('stretch=90');
       out.push('bfval=50');
-      out.push('txval=50');
-      out.push('brfnam=' + (b.textureName || ''));
-      out.push('texnam=' + (b.textureName || ''));
+      out.push('txval=' + Math.max(0,Math.min(100,Math.round((b.textureDepth===undefined?1:b.textureDepth)*100))));
+      out.push('brfnam=' + (b.sai2ShapeName || ''));
+      out.push('texnam=' + (b.sai2TextureName || ''));
       out.push('smooth=' + Math.round((b.smoothingStrength === undefined ? 0 : b.smoothingStrength) * 100));
       out.push('edgehdns=' + Math.round((b.hardness === undefined ? 1 : b.hardness) * 100));
       out.push('f_keepopac=0');
