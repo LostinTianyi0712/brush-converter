@@ -203,12 +203,12 @@
     const sizeDyn = pressureEnabled('PressureSize','SizeUseCurve','SizeSensor');
     const opDyn = pressureEnabled('PressureOpacity','OpacityUseCurve','OpacitySensor');
     const sizeValHit = params.SizeValue;
-    const minSizeRatioVal = sizeDyn ? (sizeValHit && isFinite(sizeValHit.value) && sizeValHit.value > 0 && sizeValHit.value < 1 ? clamp(sizeValHit.value, 0.01, 1) : 0.2) : 1;
+    const minSizeRatioVal = sizeDyn ? (sizeValHit && isFinite(sizeValHit.value) && sizeValHit.value > 0 && sizeValHit.value <= 1 ? clamp(sizeValHit.value, 0.01, 1) : 0.2) : 1;
     const scatterVal = params.ScatterValue && isFinite(params.ScatterValue.value) ? Math.max(0, params.ScatterValue.value) : 0;
     const scatterFlag = params['Scatter/Enabled'] ? /^(true|1)$/i.test(params['Scatter/Enabled'].text.trim()) : (scatterVal > 0.001);
     const scatterPctVal = scatterFlag ? clamp(scatterVal * 100, 0, 1000) : 0;
     const scatterBothVal = params['Scatter/Y'] ? !/^(false|0)$/i.test(params['Scatter/Y'].text.trim()) : true;
-    const scatterCountVal = params['Scatter/Count'] && isFinite(params['Scatter/Count'].value) ? Math.max(1, Math.min(16, Math.round(params['Scatter/Count'].value))) : 1;
+    const scatterCountVal = scatterFlag && params['Scatter/Count'] && isFinite(params['Scatter/Count'].value) ? Math.max(1, Math.min(16, Math.round(params['Scatter/Count'].value))) : 1;
     const colorRateVal = params.ColorRateValue && isFinite(params.ColorRateValue.value) ? clamp(params.ColorRateValue.value, 0, 1) : 0;
 
     const textureOn = !!(params['Texture/Pattern/Enabled'] && /^(true|1)$/i.test(params['Texture/Pattern/Enabled'].text));

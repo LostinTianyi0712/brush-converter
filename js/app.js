@@ -419,9 +419,12 @@
     return item;
   }
 
-  function appendBrushItems(grid, rec, fi, start, count) {
-    const end = Math.min(rec.brushes.length, start + count);
-    for (let bi = start; bi < end; bi++) grid.appendChild(makeBrushItem(rec, rec.brushes[bi], bi, fi));
+  function appendBrushItems(grid, rec, fi, start, count, indices) {
+    const end = Math.min(indices ? indices.length : rec.brushes.length, start + count);
+    for (let i = start; i < end; i++) {
+      const bi = indices ? indices[i] : i;
+      grid.appendChild(makeBrushItem(rec, rec.brushes[bi], bi, fi));
+    }
   }
 
   function render() {
@@ -558,27 +561,26 @@
         card.appendChild(wr);
       }
       if (rec.brushes && rec.brushes.length) {
-        if (filtering) {
-          if (matchedIndices.length) {
-            const grid = document.createElement('div');
-            grid.className = 'grid';
-            for (const bi of matchedIndices) grid.appendChild(makeBrushItem(rec, rec.brushes[bi], bi, fi));
-            card.appendChild(grid);
-          } else {
-            const emptyMatch = document.createElement('div');
-            emptyMatch.className = 'filter-empty';
-            emptyMatch.textContent = '本文件内没有符合当前筛选/搜索条件的笔刷';
-            card.appendChild(emptyMatch);
-          }
+        const visibleCount = filtering ? matchedIndices.length : rec.brushes.length;
+        if (!visibleCount) {
+          const emptyMatch = document.createElement('div');
+          emptyMatch.className = 'filter-empty';
+          emptyMatch.textContent = '本文件内没有符合当前筛选/搜索条件的笔刷';
+          card.appendChild(emptyMatch);
         } else {
           const grid = document.createElement('div');
           grid.className = 'grid';
           const LIMIT = 60;
           // #273：展开状态记在记录上，任何 render（改目标格式、勾选等）都不会把它折叠回 60 支
-          let shown = Math.max(LIMIT, Math.min(rec.brushes.length, rec._shown || LIMIT));
-          appendBrushItems(grid, rec, fi, 0, shown);
+          const filterKey = JSON.stringify([state.filterKind || 'all', state.searchQuery || '']);
+          if (filtering && rec._filteredKey !== filterKey) {
+            rec._filteredKey = filterKey;
+            rec._filteredShown = LIMIT;
+          }
+          let shown = Math.min(visibleCount, Math.max(LIMIT, (filtering ? rec._filteredShown : rec._shown) || LIMIT));
+          appendBrushItems(grid, rec, fi, 0, shown, filtering ? matchedIndices : null);
           card.appendChild(grid);
-          if (rec.brushes.length > shown) {
+          if (visibleCount > shown) {
             const bar = document.createElement('div');
             bar.className = 'show-more-bar';
             const more = document.createElement('button');
@@ -587,28 +589,30 @@
             expandAll.className = 'btn tiny ghost';
             expandAll.textContent = '全部展开';
             const upd = function () {
-              more.textContent = '显示更多（已显示 ' + shown + ' / ' + rec.brushes.length + ' 支）';
-              if (shown >= rec.brushes.length) {
+              more.textContent = '显示更多（已显示 ' + shown + ' / ' + visibleCount + ' 支）';
+              if (shown >= visibleCount) {
                 more.style.display = 'none';
                 expandAll.style.display = 'none';
                 bar.style.display = 'none';
-              } else if (rec.brushes.length - shown <= 80) {
+              } else if (visibleCount - shown <= 80) {
                 expandAll.style.display = 'none';
               }
             };
             upd();
             more.onclick = function () {
-              const next = Math.min(rec.brushes.length, shown + 80);
-              appendBrushItems(grid, rec, fi, shown, next - shown);
+              const next = Math.min(visibleCount, shown + 80);
+              appendBrushItems(grid, rec, fi, shown, next - shown, filtering ? matchedIndices : null);
               shown = next;
-              rec._shown = next;
+              if (filtering) rec._filteredShown = next;
+              else rec._shown = next;
               upd();
             };
             expandAll.onclick = function () {
-              const next = rec.brushes.length;
-              appendBrushItems(grid, rec, fi, shown, next - shown);
+              const next = visibleCount;
+              appendBrushItems(grid, rec, fi, shown, next - shown, filtering ? matchedIndices : null);
               shown = next;
-              rec._shown = next;
+              if (filtering) rec._filteredShown = next;
+              else rec._shown = next;
               upd();
             };
             bar.appendChild(more);
@@ -1916,7 +1920,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.25';
+const APP_VERSION = '2.8.26';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;

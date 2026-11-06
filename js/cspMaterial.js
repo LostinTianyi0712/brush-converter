@@ -202,7 +202,15 @@
   /* The first dATA chunk of many native files encrypts only the first 5120 bytes
      of the inner SQLite file; the remaining chunks are plaintext and keep every
      page at its original offset, so b-tree leaf pages can be scanned directly. */
-  function varint(b,p){let v=0;for(let i=0;i<8;i++){const c=b[p+i];v=v*128+(c&127);if(c<128)return [v,p+i+1];}return [v*256+b[p+8],p+9];}
+  function varint(b,p,end){
+    const limit=end===undefined?b.length:end;let v=0;
+    for(let i=0;i<9;i++){
+      if(p+i>=limit)throw Error('Truncated material varint');
+      const c=b[p+i];v=i===8?v*256+c:v*128+(c&127);
+      if(!Number.isSafeInteger(v))throw Error('Oversized material varint');
+      if(i===8||c<128)return [v,p+i+1];
+    }
+  }
   function serialLen(s){if(s<=4)return s;if(s===5)return 6;if(s===6||s===7)return 8;if(s>=12)return (s-(s%2?13:12))/2;return 0;}
   function scanRows(body){
     for(const ps of [1024,4096,2048,8192]){
@@ -214,26 +222,32 @@
         for(let c=0;c<cells;c++){
           try{
             const co=(body[base+8+c*2]<<8)|body[base+9+c*2];if(co<8||co>=ps)continue;
-            let q=varint(body,base+co);const total=q[0];q=varint(body,q[1]);let at=q[1];
+            let q=varint(body,base+co,base+ps);const total=q[0];q=varint(body,q[1],base+ps);let at=q[1];
+            if(total>body.length)continue;
             const maxLocal=ps-35;let local=total;
             if(total>maxLocal){const m=Math.floor((ps-12)*32/255)-23;local=m+((total-m)%(ps-4));if(local>maxLocal)local=m;}
             if((at-base)+local>ps)continue;
             const parts=[body.subarray(at,at+local)];let rem=total-local;
             if(rem>0){
-              let ov=util.u32(body,at+local),guard=0;
-              while(rem>0&&ov>=1&&ov<=pages&&guard++<pages){const o=(ov-1)*ps,take=Math.min(rem,ps-4);parts.push(body.subarray(o+4,o+4+take));rem-=take;ov=util.u32(body,o);}
+              if(at+local+4>base+ps)continue;
+              let ov=util.u32(body,at+local);const seen=new Set();
+              while(rem>0&&ov>=1&&ov<=pages&&!seen.has(ov)){seen.add(ov);const o=(ov-1)*ps,take=Math.min(rem,ps-4);parts.push(body.subarray(o+4,o+4+take));rem-=take;ov=util.u32(body,o);}
             }
             if(rem!==0)continue;
             const rec=parts.length===1?parts[0]:util.concat(parts);
             const hl=varint(rec,0),kinds=[];let hp=hl[1];
-            while(hp<hl[0]){const s=varint(rec,hp);kinds.push(s[0]);hp=s[1];}
-            if(kinds.length!==6)continue;
+            if(hl[0]<hp||hl[0]>rec.length)continue;
+            while(hp<hl[0]&&kinds.length<6){const s=varint(rec,hp,hl[0]);kinds.push(s[0]);hp=s[1];}
+            if(hp!==hl[0]||kinds.length!==6)continue;
             let bp=hl[0];const vals=[];
             kinds.forEach(function(k){
+              const length=serialLen(k);
+              if(k===10||k===11||!Number.isSafeInteger(length)||length<0||bp+length>rec.length)throw Error('Invalid material record');
               if(k<=6&&k>=1){let n=0;const len=serialLen(k);for(let i=0;i<len;i++)n=n*256+rec[bp+i];vals.push(n);bp+=len;}
               else if(k>=12){const len=serialLen(k);vals.push(rec.subarray(bp,bp+len));bp+=len;}
               else{vals.push(k===8?0:k===9?1:null);if(k===7)bp+=8;}
             });
+            if(bp!==rec.length)continue;
             if(vals[4] instanceof Uint8Array&&vals[5] instanceof Uint8Array)rows.push({MainId:vals[1],Attribute:vals[4],BlockData:vals[5]});
           }catch(e){/* damaged cell: keep scanning */}
         }

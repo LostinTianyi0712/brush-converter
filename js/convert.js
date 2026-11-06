@@ -979,12 +979,9 @@
       bruDualSubBrush: brush.bruDualSubBrush,
       bruDualEnabled: brush.bruDualEnabled,
       embeddedSubPng: brush.embeddedSubPng,
-      pkgId: brush.pkgId,
       bruLinkTemplate: brush.bruLinkTemplate,
-      bruDualEnabled: brush.bruDualEnabled,
       dualBlendMode: brush.dualBlendMode === undefined ? (brush.dualBrush && brush.dualBrush.blend) : brush.dualBlendMode,
       bruDualBlendMode: brush.bruDualBlendMode,
-      bruDualSubBrush: brush.bruDualSubBrush,
       oldTexId: brush.oldTexId,
       _rawMeta: opts.fidelity !== false && !opts.forceRebuild ? brush._rawMeta : undefined,
       _rawOriginalName:brush._rawState && brush._rawState.name
@@ -1517,10 +1514,11 @@
     p.BrushOpacityEffector = sutEffectorBlob(!!brush.pressureOpacity, num(brush.minOpacityRatio, 0.3));
     // Taper: BrushUseIn / BrushUseOut toggle fade-in / fade-out (lengths in px-like units).
     {
-      p.BrushUseIn = brush.taperOn ? 1 : 0;
-      p.BrushUseOut = brush.taperOn ? 1 : 0;
-      if (brush.taperOn && num(brush.taperStartLength, 0) > 0) p.BrushInLength = clamp(Math.round(brush.taperStartLength * 10) / 10, 0, 1000);
-      if (brush.taperOn && num(brush.taperEndLength, 0) > 0) p.BrushOutLength = clamp(Math.round(brush.taperEndLength * 10) / 10, 0, 1000);
+      const explicitEnds = brush.taperStartLength !== undefined || brush.taperEndLength !== undefined;
+      p.BrushUseIn = brush.taperOn && (!explicitEnds || num(brush.taperStartLength, 0) > 0) ? 1 : 0;
+      p.BrushUseOut = brush.taperOn && (!explicitEnds || num(brush.taperEndLength, 0) > 0) ? 1 : 0;
+      if (brush.taperStartLength !== undefined) p.BrushInLength = clamp(Math.round(num(brush.taperStartLength, 0) * 10) / 10, 0, 1000);
+      if (brush.taperEndLength !== undefined) p.BrushOutLength = clamp(Math.round(num(brush.taperEndLength, 0) * 10) / 10, 0, 1000);
     }
     /* 双笔刷（副笔）：参考样本 sample_ceshi2.sut（UseDualBrush=1 / DualSize=30 / DualFlow=31 /
        DualHardness=80 / DualInterval=100 / DualSizeUnit=0），单位与主笔一致（0=px）。
@@ -1594,6 +1592,17 @@
         const same = (a instanceof Uint8Array && b instanceof Uint8Array)
           ? (a.length === b.length && a.every(function (v, i) { return v === b[i]; })) : a === b;
         if (!same) changes[key] = a;
+      });
+      // Minimum changes do not replace the original curve or other controls.
+      ['BrushSizeEffector', 'BrushOpacityEffector'].forEach(function (key) {
+        const native = row[key], changed = changes[key];
+        if (!(native instanceof Uint8Array) || native.length < 16 || !(changed instanceof Uint8Array)) return;
+        const src = new DataView(native.buffer, native.byteOffset, native.byteLength);
+        const next = new DataView(changed.buffer, changed.byteOffset, changed.byteLength);
+        if ((src.getUint32(8, false) & 16) !== (next.getUint32(8, false) & 16)) return;
+        const patched = new Uint8Array(native);
+        new DataView(patched.buffer).setUint32(12, next.getUint32(12, false), false);
+        changes[key] = patched;
       });
       if (changes.BrushSize !== undefined) changes.BrushSizeUnit = after.BrushSizeUnit;
       if (changes.DualSize !== undefined) changes.DualSizeUnit = after.DualSizeUnit;

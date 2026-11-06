@@ -190,12 +190,12 @@
           try {
             if (lib.rgba && lib.w && lib.h && lib.rgba.length >= lib.w * lib.h * 4) {
               // 已经解好的像素（浏览器/桌面用 canvas 解 progressive JPEG 后传进来）
-              shapeEntry = { name: prefix + 'Shape.png', data: () => shapePng(luminanceToTip({ width: lib.w, height: lib.h, rgba: lib.rgba }, false), 2048).png };
+              shapeEntry = { name: prefix + 'Shape.png', data: () => sourceShapePng(lib.w, lib.h, lib.rgba) };
             } else {
               const bytes = lib.data ? lib.data() : lib;
               const im = jpeg && jpeg.isJpeg(bytes) ? jpeg.decode(bytes) : png.decode(bytes);
               const raw = (jpeg && jpeg.isJpeg(bytes)) || im.width > 2048 || im.height > 2048
-                ? shapePng(luminanceToTip(im, false), 2048).png
+                ? sourceShapePng(im.width, im.height, im.rgba)
                 : bytes;
               shapeEntry = { name: prefix + 'Shape.png', data: () => raw };
             }
@@ -691,11 +691,16 @@
     };
   }
 
+  // Source lookup must retain its alpha separately from luminance until the
+  // archive's inversion is applied. Gray normalization happens in the writer.
+  function sourceShapePng(w, h, rgba) {
+    const scale=Math.min(1,2048/Math.max(w,h));
+    const width=Math.max(1,Math.round(w*scale)),height=Math.max(1,Math.round(h*scale));
+    return png.encode(width,height,png.resize(rgba,w,h,width,height));
+  }
+
   function encodeNormalizedGrain(w, h, rgba) {
-    // Keep synthetic <=4px (or non-grayscale 8x8) unit-test fixtures exact;
-    // normalize real textures to square <=2048 8-bit grayscale so ValkyrieStitcher never NSAsserts.
-    if (w <= 4 && h <= 4) return png.encode(w, h, rgba);
-    if (w <= 8 && h <= 8 && (rgba[0] !== rgba[1] || rgba[3] !== 255)) return png.encode(w, h, rgba);
+    // Every texture follows the same square, <=2048px grayscale resource rule.
     const side = Math.max(1, Math.min(2048, Math.max(w, h)));
     const buf = (w === side && h === side) ? rgba : png.resize(rgba, w, h, side, side);
     const gray = new Uint8Array(side * side);
@@ -711,7 +716,7 @@
   function normalizeRawGrain(rawBytes) {
     if (!rawBytes || !rawBytes.length) return null;
     const hdr = readPngHeader(rawBytes);
-    if (hdr && ((hdr.width <= 4 && hdr.height <= 4) || (hdr.width === hdr.height && hdr.width >= 1 && hdr.width <= 2048 && hdr.bitDepth === 8 && hdr.colorType === 0))) {
+    if (hdr && hdr.width === hdr.height && hdr.width >= 1 && hdr.width <= 2048 && hdr.bitDepth === 8 && hdr.colorType === 0) {
       return new Uint8Array(rawBytes);
     }
     try {
@@ -722,17 +727,17 @@
     }
   }
 
-  function normalizeRawShape(rawBytes, maxSize) {
+  function normalizeRawShape(rawBytes, maxSize, inverted) {
     if (!rawBytes || !rawBytes.length) return null;
     const hdr = readPngHeader(rawBytes);
-    if (hdr && hdr.width >= 1 && hdr.height >= 1 && hdr.width <= 2048 && hdr.height <= 2048 && hdr.bitDepth === 8 && (hdr.colorType === 0 || (hdr.width <= 16 && hdr.height <= 16 && hdr.colorType === 6))) {
-      return new Uint8Array(rawBytes);
+    if (hdr && hdr.width >= 1 && hdr.height >= 1 && hdr.width <= 2048 && hdr.height <= 2048 && hdr.bitDepth === 8 && hdr.colorType === 0) {
+      return { bytes: new Uint8Array(rawBytes), inverted: !!inverted };
     }
     try {
       const im = jpeg && jpeg.isJpeg(rawBytes) ? jpeg.decode(rawBytes) : png.decode(rawBytes);
-      return shapePng(luminanceToTip(im, false), maxSize || 2048).png;
+      return { bytes: shapePng(luminanceToTip(im, inverted), maxSize || 2048).png, inverted: false };
     } catch (e) {
-      return new Uint8Array(rawBytes);
+      return { bytes: new Uint8Array(rawBytes), inverted: !!inverted };
     }
   }
 
@@ -777,7 +782,6 @@
       maxSize: sizeParams.maxSize,
       minSize: sizeParams.minSize,
       maxOpacity: Math.max(0, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity)),
-      minOpacity: 0,
       paintOpacity: 1,
       // Procreate 间距允许 >100%（印章笔样本 121%），不要钳到 100
       plotSpacing: Math.max(0, Math.min(10, (brush.spacingPct === undefined ? 10 : brush.spacingPct) / 100)),
@@ -877,7 +881,14 @@
 
   function unchanged(brush,opts) {
     opts=opts||{};
+    function imageKept(bytes,grain) {
+      if(!bytes)return true;
+      const h=readPngHeader(bytes);
+      return !!(h&&h.bitDepth===8&&h.colorType===0&&h.width>=1&&h.height>=1&&h.width<=2048&&h.height<=2048&&(!grain||h.width===h.height));
+    }
     return opts.fidelity!==false && !opts.forceRebuild && isValidNativeArchive(brush._rawArchive) &&
+      !brush.shapeFromLibrary && !brush.grainFromLibrary &&
+      imageKept(brush._rawShape,false) && imageKept(brush._rawGrain,true) &&
       brush._rawBrushState===util.brushFingerprint(brush) &&
       brush._rawGrainState===util.brushFingerprint({tip:brush._grainRgba});
   }
@@ -996,16 +1007,20 @@
       const entries = (brush._rawEntries||[]).filter(e=>!['Brush.archive','Shape.png','Grain.png','QuickLook/Thumbnail.png'].includes(e.name)&&!e.name.startsWith('Sub01/')&&!e.name.startsWith('Reset/'));
       const samePixels=brush._rawTipState===util.brushFingerprint({tip:brush.tip});
       const sameTip=samePixels && !brush.flipX && !brush.flipY;
-      const keepRawShape=sameTip&&brush._rawShape;
+      const rawShape=brush._rawShape&&brush._rawShape.length?brush._rawShape:null;
+      const keepRawShape=sameTip&&rawShape;
+      const normalizedShape=keepRawShape ? normalizeRawShape(brush._rawShape,opts.maxTipSize||2048,brush.shapeInverted) : null;
       // 重生成 Shape.png 时像素已烘焙反转，archive 必须关掉以免二次反相；
       // 像素没变、只切换标志时则尊重新值，并继续复用原 Shape.png。
       let archiveChanges=null;
-      if(!keepRawShape&&!sameTip&&brush.tip)archiveChanges={shapeInverted:false};
+      if(!keepRawShape&&((!sameTip&&brush.tip)||(!rawShape&&!brush.bundledShapePath)))archiveChanges={shapeInverted:false};
       else if(keepRawShape&&!!brush.shapeInverted!==!!(brush._rawNormalized||{}).shapeInverted)
         archiveChanges={shapeInverted:!!brush.shapeInverted};
+      if(normalizedShape && normalizedShape.inverted!==!!brush.shapeInverted)archiveChanges={shapeInverted:normalizedShape.inverted};
+      if(brush._rawGrain&&brush._rawGrain.length===0)archiveChanges=Object.assign({},archiveChanges,{grainDepth:0});
       entries.push({name:'Brush.archive',data:patchArchive(brush,opts,archiveChanges)});
-      if(keepRawShape)entries.push({name:'Shape.png',data:normalizeRawShape(brush._rawShape,opts.maxTipSize||2048)});
-      else if((!sameTip && brush.tip) || (!brush._rawShape && !brush.bundledShapePath)){
+      if(keepRawShape)entries.push({name:'Shape.png',data:normalizedShape.bytes});
+      else if((!sameTip && brush.tip) || (!rawShape && !brush.bundledShapePath)){
         let rebuilt=tipRGBA(brush,opts);
         // The decoded pixels include the original inversion. If only scalar
         // edits changed it, apply that delta before freezing it into Shape.
@@ -1018,7 +1033,7 @@
         entries.push({name:'Shape.png',data:shapePng(rebuilt,opts.maxTipSize||512).png});
       }
       const sameGrain=brush._rawGrainState===util.brushFingerprint({tip:brush._grainRgba});
-      if(sameGrain && brush._rawGrain)entries.push({name:'Grain.png',data:normalizeRawGrain(brush._rawGrain)});
+      if(sameGrain && brush._rawGrain && brush._rawGrain.length)entries.push({name:'Grain.png',data:normalizeRawGrain(brush._rawGrain)});
       else if(brush.hasTexture){const g=grainPng(brush);if(g)entries.push({name:'Grain.png',data:g});}
       if(brush.dualOn && brush.dualTip)zip.read(writeBrush(subBrush(),opts)).forEach(e=>entries.push({name:'Sub01/'+e.name,data:e.data()}));
       const originalThumb = !brush.tip && (brush._rawEntries || []).find(e=>e.name==='QuickLook/Thumbnail.png');
