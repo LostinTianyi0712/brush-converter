@@ -115,8 +115,20 @@
     return out;
   }
 
+  /* Effector blob header (big-endian u32): [0]=header size, [1]=240/496,
+     [2]=flags (0x10 = pressure on; 0 = off — every Variant stores a blob even when
+     dynamics are off), [3]=minimum percent. Samples: 三角 ok.sut (size 16/57,
+     opacity 16/47), SAH_BrushSmear.sut (size 16/20), sample_ceshi2.sut (size 144/10). */
+  function readEffector(blob) {
+    if (!(blob instanceof Uint8Array) || blob.length < 16) return { pressure: false, min: 1 };
+    const dv = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
+    const flags = dv.getUint32(8, false), min = dv.getUint32(12, false);
+    return { pressure: (flags & 0x10) !== 0, min: clamp(min / 100, 0, 1) };
+  }
+
   function readExtraCspFields(v, clamp) {
     if (!v) return {};
+    const taperIn = !!v.BrushUseIn, taperOut = !!v.BrushUseOut;
     const wetOn = !!v.BrushUseWaterEdge;
     const wetAmt = wetOn && typeof v.BrushWaterEdgeAlphaPower === 'number' ? clamp(Math.abs(v.BrushWaterEdgeAlphaPower) / 100, 0, 1) : 0;
     const waterOn = !!v.BrushUseWaterColor && (typeof v.BrushMixColor === 'number' ? v.BrushMixColor < 100 : false);
@@ -130,6 +142,9 @@
     const sprayCnt = sprayOn && typeof v.BrushSprayDensity === 'number' ? clamp(Math.round(v.BrushSprayDensity), 1, 16) : 1;
     const texRot = typeof v.TextureRotate === 'number' && v.TextureRotate ? v.TextureRotate * Math.PI / 180 : 0;
     return {
+      taperOn: taperIn || taperOut,
+      taperStartLength: taperIn && typeof v.BrushInLength === 'number' ? v.BrushInLength : 0,
+      taperEndLength: taperOut && typeof v.BrushOutLength === 'number' ? v.BrushOutLength : 0,
       textureRotation: texRot,
       wetEdgesOn: wetOn && wetAmt > 0.001,
       wetEdgesAmount: wetAmt,
@@ -167,7 +182,7 @@
         let files = [];
         try { files = readTar(mf.FileData); } catch (e) { continue; }
         const entry = {tip:null, mask:null, approximate:false};
-        const layer = files.filter(function(f){return /data\/material_\d+\.layer$/i.test(f.name);})[0];
+        const layer = files.filter(function(f){return /data\/material(?:_\d+)?\.layer$/i.test(f.name);})[0];
         if (layer && cspMaterial) {
           try {
             const image = cspMaterial.read(layer.data), rgba = new Uint8Array(image.w*image.h*4);
@@ -216,7 +231,10 @@
     }
     const uniqueVariants = [];
     const seenSig = {};
-    for (const v of variantTable.rows) {
+    /* 未初始化的骨架行（如 NodeInitVariantID 指向的备份槽：BrushSize/Opacity 全为 NULL）
+       不是笔刷，不能当成第二支（「三角 ok」曾因此读成 #1/#2）。 */
+    const usable = variantTable.rows.filter(function (v) { return !(v.BrushSize == null && v.Opacity == null); });
+    for (const v of (usable.length ? usable : variantTable.rows)) {
       const s = variantSignature(v);
       if (seenSig[s]) continue;
       seenSig[s] = true;
@@ -247,8 +265,10 @@
       const hardness = typeof v.BrushHardness === 'number' ? clamp(v.BrushHardness / 100, 0, 1) : 1;
       const thickness = typeof v.BrushThickness === 'number' ? clamp(v.BrushThickness, 1, 100) : 100;
       const rotation = typeof v.BrushRotation === 'number' ? v.BrushRotation : 0;
-      const hasSizeDynamics = !!(v.BrushSizeEffector && v.BrushSizeEffector.length);
-      const hasOpacityDynamics = !!(v.BrushOpacityEffector && v.BrushOpacityEffector.length);
+      const sizeFx = readEffector(v.BrushSizeEffector);
+      const opacityFx = readEffector(v.BrushOpacityEffector);
+      const hasSizeDynamics = sizeFx.pressure;
+      const hasOpacityDynamics = opacityFx.pressure;
       brushes.push(Object.assign({
         name: variantTotal > 1 ? baseName + ' #' + (idx + 1) : baseName,
         tip: tip,
@@ -266,9 +286,9 @@
         roundness: thickness,
         pressure: hasSizeDynamics || hasOpacityDynamics,
         pressureSize: hasSizeDynamics,
-        minSizeRatio: hasSizeDynamics ? 0.2 : 1,
+        minSizeRatio: hasSizeDynamics ? sizeFx.min : 1,
         pressureOpacity: hasOpacityDynamics,
-        minOpacityRatio: hasOpacityDynamics ? 0.3 : 1,
+        minOpacityRatio: hasOpacityDynamics ? opacityFx.min : 1,
         source: 'csp',
         cspVersion: version,
         // 回写原生 SUT 时用于定位这一支对应的 Variant 行（同一 SUT 的“当前/初始”副本）

@@ -127,54 +127,46 @@
     if(options.tip)attach(options.tip,'tip');if(options.texture)attach(options.texture,'texture');
     return writer.buildSut(seed.get('sut'),{params:params,nodeName:options.name,tableRows:{MaterialFile:materials}});
   }
-  // Only the independently verified plain C2F / single-colour tile layout.
-  // Encrypted or other native layouts remain on the explicit preview fallback.
-  function read(layer){
-    const magic=[137,67,50,70,13,10,26,10];
-    if(!(layer instanceof Uint8Array)||!magic.every(function(v,i){return layer[i]===v;}))throw Error('Unsupported material container');
-    let pos=8;const payload=[];
-    while(pos<layer.length){
-      if(pos+12>layer.length)throw Error('Truncated C2F header');
-      const n=le32(layer,pos),end=pos+8+n;
-      if(end+4>layer.length||util.crc32(layer.subarray(pos+4,end))!==le32(layer,end))throw Error('Invalid C2F chunk');
-      const type=util.utf8Decode(layer.subarray(pos+4,pos+8));
-      if(type==='dATA'){
-        if(n<2||layer[pos+8]!==0||layer[pos+9]!==0)throw Error('Encrypted material');
-        payload.push(layer.subarray(pos+10,end));
-      }
-      pos=end+4;
-    }
-    const body=util.concat(payload);
-    if(!sql.isSqlite(body))throw Error('Material is not plain SQLite');
-    const db=sql.read(body),off=sql.getTable(db,'Offscreen');
-    const row=off&&off.rows.filter(function(r){return r.MainId===7;})[0];
-    if(!row)throw Error('Missing raster');
-    function reader(data){
-      let at=0;
-      return {take:function(n){if(!Number.isSafeInteger(n)||n<0||at+n>data.length)throw Error('Truncated material raster');const b=data.subarray(at,at+n);at+=n;return b;},
-        u32:function(){return util.u32(this.take(4),0);},
-        name:function(){const b=this.take(this.u32()*2);let s='';for(let i=0;i<b.length;i+=2)s+=String.fromCharCode(util.u16(b,i));return s;},
-        position:function(){return at;},length:data.length};
-    }
+  /* Supported native tile layouts (Parameter[4,6,8,10,12]); coverage is always the
+     first 65536-byte plane of a 256x256 tile.
+       33/4/65536/1024/256 : coverage + 4 colour planes (colour must be empty)
+       17/1/65536/256/256  : coverage + 1 secondary plane (verified: plane 0 = coverage)
+        1/0/0/0/256        : coverage only */
+  function tileBytes(p){
+    if(p[4]===33&&p[6]===4&&p[8]===65536&&p[10]===1024&&p[12]===256)return 327680;
+    if(p[4]===17&&p[6]===1&&p[8]===65536&&p[10]===256&&p[12]===256)return 131072;
+    if(p[4]===1&&p[6]===0&&p[8]===0&&p[10]===0&&p[12]===256)return 65536;
+    return 0;
+  }
+  function reader(data){
+    let at=0;
+    return {take:function(n){if(!Number.isSafeInteger(n)||n<0||at+n>data.length)throw Error('Truncated material raster');const b=data.subarray(at,at+n);at+=n;return b;},
+      u32:function(){return util.u32(this.take(4),0);},
+      name:function(){const b=this.take(this.u32()*2);let s='';for(let i=0;i<b.length;i+=2)s+=String.fromCharCode(util.u16(b,i));return s;},
+      position:function(){return at;},length:data.length};
+  }
+  function decodeRaster(row){
     const attr=reader(row.Attribute);
     if(attr.u32()!==16)throw Error('Unsupported raster attributes');
     const lens=[attr.u32(),attr.u32(),attr.u32()],sections={};
     lens.forEach(function(n){const part=reader(attr.take(n)),key=part.name(),values=[];while(part.position()<part.length)values.push(part.u32());sections[key]=values;});
     const p=sections.Parameter||[],w=p[0],h=p[1],bx=p[2],by=p[3];dimensions(w,h);
-    if(attr.position()!==attr.length||bx!==Math.ceil(w/256)||by!==Math.ceil(h/256)||p[4]!==33||p[6]!==4||p[8]!==65536||p[10]!==1024||p[12]!==256)throw Error('Unsupported raster layout');
-    const mask=new Uint8Array(w*h),r=reader(row.BlockData),statuses=[],checks=[],sizes=[];
+    const raw0=tileBytes(p);
+    if(attr.position()!==attr.length||bx!==Math.ceil(w/256)||by!==Math.ceil(h/256)||!raw0)throw Error('Unsupported raster layout');
+    const mask=new Uint8Array(w*h),r=reader(row.BlockData),statuses=[],checks=[],sizes=[];let presentCount=0;
     for(let i=0;i<bx*by;i++){
       const start=r.position(),size=r.u32();
-      if(r.name()!=='BlockDataBeginChunk'||r.u32()!==i||r.u32()!==327680||r.u32()!==256||r.u32()!==256)throw Error('Invalid raster block');
+      if(r.name()!=='BlockDataBeginChunk'||r.u32()!==i||r.u32()!==raw0||r.u32()!==256||r.u32()!==256)throw Error('Invalid raster block');
       const present=r.u32();if(present!==0&&present!==1)throw Error('Invalid block status');
       let sum=0;
       if(present){
+        presentCount++;
         const framed=r.take(r.u32());
         if(framed.length<4||le32(framed,0)!==framed.length-4)throw Error('Invalid compressed length');
-        const raw=zlib.inflateLimited(framed.subarray(4),327680);
-        if(raw.length!==327680)throw Error('Invalid raster length');
+        const raw=zlib.inflateLimited(framed.subarray(4),raw0);
+        if(raw.length!==raw0)throw Error('Invalid raster length');
         // Coloured layers need colour semantics; do not silently discard RGB.
-        for(let c=65536;c<raw.length;c++)if(raw[c])throw Error('Coloured raster is not supported');
+        for(let c=65536;c<raw.length&&raw0===327680;c++)if(raw[c])throw Error('Coloured raster is not supported');
         const left=(i%bx)*256,top=Math.floor(i/bx)*256;
         for(let y=0;y<Math.min(256,h-top);y++)mask.set(raw.subarray(y*256,y*256+Math.min(256,w-left)),(top+y)*w+left);
         sum=adler(framed);
@@ -183,12 +175,103 @@
       statuses.push(present);checks.push(sum);sizes.push(size);
     }
     [['BlockStatus',statuses],['BlockCheckSum',checks]].forEach(function(t){
+      if(r.position()===r.length)return; // native files may end right after the last tile record
       if(r.name()!==t[0]||r.u32()!==12||r.u32()!==bx*by||r.u32()!==4)throw Error('Invalid raster table');
-      t[1].forEach(function(v){if(r.u32()!==v)throw Error('Invalid raster checksum/status');});
+      t[1].forEach(function(v,i){const x=r.u32();if(t[0]==='BlockStatus'?(x!==0&&x!==1):(statuses[i]?x!==v:x!==0))throw Error('Invalid raster checksum/status');});
     });
     const expected=[12,bx*by,4].concat(sizes),actual=sections.BlockSize||[];
     if(r.position()!==r.length||expected.length!==actual.length||expected.some(function(v,i){return v!==actual[i];}))throw Error('Invalid raster size table');
-    return {w:w,h:h,mask:mask};
+    return {w:w,h:h,mask:mask,present:presentCount};
+  }
+  /* Row choice: a row that actually carries tiles wins (self-made MainId 7 first,
+     then the largest); an all-empty MainId 7 raster is a legitimately empty tip. */
+  function pickRaster(rows){
+    const good=[];let empty=null,lastError=null;
+    rows.forEach(function(row){
+      if(row.MainId!==7&&row.MainId!==8&&row.MainId!==9&&row.MainId!==10)return;
+      if(!(row.Attribute instanceof Uint8Array)||!(row.BlockData instanceof Uint8Array))return;
+      let image;try{image=decodeRaster(row);}catch(e){lastError=e;return;}
+      if(image.present)good.push({image:image,id:row.MainId,len:row.BlockData.length});
+      else if(row.MainId===7&&!empty)empty=image;
+    });
+    good.sort(function(a,b){return (b.id===7)-(a.id===7)||b.len-a.len;});
+    if(good.length)return good[0].image;
+    if(empty)return empty;
+    throw lastError||Error('Missing raster');
+  }
+  /* The first dATA chunk of many native files encrypts only the first 5120 bytes
+     of the inner SQLite file; the remaining chunks are plaintext and keep every
+     page at its original offset, so b-tree leaf pages can be scanned directly. */
+  function varint(b,p){let v=0;for(let i=0;i<8;i++){const c=b[p+i];v=v*128+(c&127);if(c<128)return [v,p+i+1];}return [v*256+b[p+8],p+9];}
+  function serialLen(s){if(s<=4)return s;if(s===5)return 6;if(s===6||s===7)return 8;if(s>=12)return (s-(s%2?13:12))/2;return 0;}
+  function scanRows(body){
+    for(const ps of [1024,4096,2048,8192]){
+      if(body.length%ps)continue;
+      const pages=body.length/ps,rows=[];
+      for(let pg=1;pg<=pages;pg++){
+        const base=(pg-1)*ps;if(body[base]!==0x0d)continue;
+        const cells=(body[base+3]<<8)|body[base+4];if(!cells||8+cells*2>ps)continue;
+        for(let c=0;c<cells;c++){
+          try{
+            const co=(body[base+8+c*2]<<8)|body[base+9+c*2];if(co<8||co>=ps)continue;
+            let q=varint(body,base+co);const total=q[0];q=varint(body,q[1]);let at=q[1];
+            const maxLocal=ps-35;let local=total;
+            if(total>maxLocal){const m=Math.floor((ps-12)*32/255)-23;local=m+((total-m)%(ps-4));if(local>maxLocal)local=m;}
+            if((at-base)+local>ps)continue;
+            const parts=[body.subarray(at,at+local)];let rem=total-local;
+            if(rem>0){
+              let ov=util.u32(body,at+local),guard=0;
+              while(rem>0&&ov>=1&&ov<=pages&&guard++<pages){const o=(ov-1)*ps,take=Math.min(rem,ps-4);parts.push(body.subarray(o+4,o+4+take));rem-=take;ov=util.u32(body,o);}
+            }
+            if(rem!==0)continue;
+            const rec=parts.length===1?parts[0]:util.concat(parts);
+            const hl=varint(rec,0),kinds=[];let hp=hl[1];
+            while(hp<hl[0]){const s=varint(rec,hp);kinds.push(s[0]);hp=s[1];}
+            if(kinds.length!==6)continue;
+            let bp=hl[0];const vals=[];
+            kinds.forEach(function(k){
+              if(k<=6&&k>=1){let n=0;const len=serialLen(k);for(let i=0;i<len;i++)n=n*256+rec[bp+i];vals.push(n);bp+=len;}
+              else if(k>=12){const len=serialLen(k);vals.push(rec.subarray(bp,bp+len));bp+=len;}
+              else{vals.push(k===8?0:k===9?1:null);if(k===7)bp+=8;}
+            });
+            if(vals[4] instanceof Uint8Array&&vals[5] instanceof Uint8Array)rows.push({MainId:vals[1],Attribute:vals[4],BlockData:vals[5]});
+          }catch(e){/* damaged cell: keep scanning */}
+        }
+      }
+      if(rows.length)return rows;
+    }
+    return [];
+  }
+  // Plain C2F and the partially-encrypted native layout are read at original
+  // resolution; anything else stays on the explicit preview fallback.
+  function read(layer){
+    const magic=[137,67,50,70,13,10,26,10];
+    if(!(layer instanceof Uint8Array)||!magic.every(function(v,i){return layer[i]===v;}))throw Error('Unsupported material container');
+    let pos=8;const chunks=[];
+    while(pos<layer.length){
+      if(pos+12>layer.length)throw Error('Truncated C2F header');
+      const n=le32(layer,pos),end=pos+8+n;
+      if(end+4>layer.length||util.crc32(layer.subarray(pos+4,end))!==le32(layer,end))throw Error('Invalid C2F chunk');
+      const type=util.utf8Decode(layer.subarray(pos+4,pos+8));
+      if(type==='dATA'){
+        if(n<2)throw Error('Encrypted material');
+        chunks.push({flag:layer[pos+8]|(layer[pos+9]<<8),data:layer.subarray(pos+10,end)});
+      }
+      pos=end+4;
+    }
+    if(!chunks.length)throw Error('Missing material data');
+    let rows;
+    if(chunks.every(function(c){return c.flag===0;})){
+      const body=util.concat(chunks.map(function(c){return c.data;}));
+      if(!sql.isSqlite(body))throw Error('Material is not plain SQLite');
+      const off=sql.getTable(sql.read(body),'Offscreen');
+      rows=off?off.rows:[];
+    }else if(chunks.length>=2&&chunks[0].flag===1&&chunks.slice(1).every(function(c){return c.flag===0;})&&chunks[0].data.length>8){
+      const lead=new Uint8Array(chunks[0].data.length-8);
+      rows=scanRows(util.concat([lead].concat(chunks.slice(1).map(function(c){return c.data;}))));
+    }else throw Error('Encrypted material');
+    const image=pickRaster(rows);
+    return {w:image.w,h:image.h,mask:image.mask};
   }
   function referencePath(blob){
     if(!(blob instanceof Uint8Array)||blob.length<16||util.u32(blob,0)!==8||util.u32(blob,4)<1)return null;

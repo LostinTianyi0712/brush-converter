@@ -1481,6 +1481,18 @@
   }
 
   /* 通用笔刷模型 → CSP Variant 列值（仅标量；模板缺列由 sutWrite 覆写时报错前过滤）。 */
+  /* Effector blob: 48 B neutral (off) or 92 B with a linear pressure curve (on), copied
+     from the structure of real CSP exports (三角 ok.sut BrushSizeEffector). */
+  function sutEffectorBlob(on, minRatio) {
+    const words = on
+      ? [48, 240, 16, Math.round(Math.max(0, Math.min(1, minRatio)) * 100), 100, 0, 0, 0, 44, 0, 500, 0,
+         12, 2, 16, 0, 0, 0, 0, 1072693248, 0, 1072693248, 0]
+      : [48, 240, 0, 0, 100, 0, 0, 0, 0, 0, 500, 0];
+    const out = new Uint8Array(words.length * 4), dv = new DataView(out.buffer);
+    words.forEach(function (w, i) { dv.setUint32(i * 4, w, false); });
+    return out;
+  }
+
   function variantParamsForSut(brush) {
     const clamp = function (v, a, b) { return v < a ? a : (v > b ? b : v); };
     const num = function (v, d) { return (typeof v === 'number' && isFinite(v)) ? v : d; };
@@ -1499,6 +1511,17 @@
     let ang = (360 - num(brush.angle, 0)) % 360;
     if (ang < 0) ang += 360;
     p.BrushRotation = ang;
+    // Pressure dynamics: every native Variant carries Size/Opacity Effector blobs;
+    // header u32[2] bit 0x10 = pressure on, u32[3] = minimum percent (samples: 三角 ok.sut).
+    p.BrushSizeEffector = sutEffectorBlob(!!brush.pressureSize, num(brush.minSizeRatio, 0.2));
+    p.BrushOpacityEffector = sutEffectorBlob(!!brush.pressureOpacity, num(brush.minOpacityRatio, 0.3));
+    // Taper: BrushUseIn / BrushUseOut toggle fade-in / fade-out (lengths in px-like units).
+    {
+      p.BrushUseIn = brush.taperOn ? 1 : 0;
+      p.BrushUseOut = brush.taperOn ? 1 : 0;
+      if (brush.taperOn && num(brush.taperStartLength, 0) > 0) p.BrushInLength = clamp(Math.round(brush.taperStartLength * 10) / 10, 0, 1000);
+      if (brush.taperOn && num(brush.taperEndLength, 0) > 0) p.BrushOutLength = clamp(Math.round(brush.taperEndLength * 10) / 10, 0, 1000);
+    }
     /* 双笔刷（副笔）：参考样本 sample_ceshi2.sut（UseDualBrush=1 / DualSize=30 / DualFlow=31 /
        DualHardness=80 / DualInterval=100 / DualSizeUnit=0），单位与主笔一致（0=px）。
        重建时副笔笔尖用 CSP 内置（DualUsePatternImage=0）；任意素材图块写入尚未接入。 */
@@ -1567,7 +1590,10 @@
       // Never round-trip untouched values: native units, subpixel precision,
       // automatic spacing and secondary compensation are not generic defaults.
       Object.keys(after).forEach(function (key) {
-        if (after[key] !== before[key]) changes[key] = after[key];
+        const a = after[key], b = before[key];
+        const same = (a instanceof Uint8Array && b instanceof Uint8Array)
+          ? (a.length === b.length && a.every(function (v, i) { return v === b[i]; })) : a === b;
+        if (!same) changes[key] = a;
       });
       if (changes.BrushSize !== undefined) changes.BrushSizeUnit = after.BrushSizeUnit;
       if (changes.DualSize !== undefined) changes.DualSizeUnit = after.DualSizeUnit;
