@@ -9,6 +9,12 @@
       '<a href="https://xhslink.cn/o/3oISiVWckx3" target="_blank" rel="noopener">https://xhslink.cn/o/3oISiVWckx3</a><br>' +
       'QQ：<b>941034827</b><br>' +
       '如付费获取，请联系商家退款。</div>' +
+      '<div class="modal-body">' +
+      '<b>格式与输出</b><br>' +
+      '自动打包：少于 4 个输出文件时直接保存，4 个及以上合并为 ZIP；支持文件夹保存的设备可复用已选目录。<br>' +
+      '输入支持 Photoshop ABR / TPL、Procreate、画世界Pro、优动漫 SUT / MTD、天生会画、Krita、GIMP、MyPaint、Painter 等格式；ZIP 会自动解包。<br>' +
+      '下载受浏览器限制时，可在结果列表逐个保存，或使用「分享保存」。' +
+      '</div>' +
       '<div class="modal-thanks">特别感谢：<a href="https://github.com/tohsakarat/Brush-Converter" target="_blank" rel="noopener">tohsakarat / Brush-Converter</a>（提供了 PS6 文件格式规范与 ABR 参数解析参考，本项目仅参考其公开规范与思路，未使用其代码）</div>' +
       '<div class="modal-note">此公告仅在第一次打开时显示，之后可在页面底部点「公告」再次查看。</div>' +
       '<div class="modal-actions"><button type="button" data-close>我知道了</button></div>';

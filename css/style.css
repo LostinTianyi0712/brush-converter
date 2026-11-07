@@ -502,6 +502,7 @@ main {
   .actions {
     display: flex;
     flex-direction: column;
+    align-items: stretch;   /* 桌面版是 align-items:center，手机端不重置会让两行按钮缩成内容宽度、居中悬空 */
     gap: 0;
     width: 100%;
     margin: 0;
