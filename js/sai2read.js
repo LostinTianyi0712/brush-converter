@@ -137,7 +137,9 @@
   function parseBrushIni(bytes, fileName) {
     const p = parseIniParams(decodeText(bytes));
     const density = p.Opacity === undefined ? (p.Density === undefined ? 100 : p.Density) : p.Opacity;
-    const flowRaw = p.Density !== undefined ? Number(p.Density) : Number(density);
+    /* Density 只按它自己取 flow；没有 Density 时不再把 Opacity 复制成流量
+       （官方 [Parameters] 里没有 Density/Opacity，二者都是本项目内部约定） */
+    const flowRaw = p.Density !== undefined && isFinite(Number(p.Density)) ? Number(p.Density) : undefined;
     const angle = p.Angle === undefined ? 0 : p.Angle;
     const base = String(fileName || 'sai2-brush').replace(/\.ini$/i, '').replace(/^.*[\\/]/, '');
     const scatPct = Math.max(0, Math.min(1000, Number(p.Scattering) || 0));
@@ -151,7 +153,9 @@
     const followsDir = angCtl === 1;
     const followsTilt = angCtl === 2;
     const perTip = p.ApplyToEachShape === undefined ? undefined : Number(p.ApplyToEachShape) === 1;
-    const scalingVal = p.Scaling === undefined ? undefined : Math.max(1, Math.min(200, Number(p.Scaling) || 100));
+    /* 官方注释：Scaling 0～200，缺省 100；0 是合法值，不能用 || 100 兜底 */
+    const scalingVal = p.Scaling === undefined || String(p.Scaling).trim() === '' || !isFinite(Number(p.Scaling))
+      ? undefined : Math.max(0, Math.min(200, Number(p.Scaling)));
     return {
       brushes: [{
         name: base,
@@ -159,7 +163,7 @@
         sizePx: p.ShapeSize === undefined ? 100 : Math.max(1, Math.min(5000, p.ShapeSize)),
         spacingPct: p.Spacing === undefined ? 25 : Math.max(0, Math.min(1000, p.Spacing)),
         opacity: Math.max(0, Math.min(1, density / 100)),
-        flowPct: Math.max(0, Math.min(1, (isFinite(flowRaw) ? flowRaw : 100) / 100)),
+        flowPct: flowRaw === undefined ? undefined : Math.max(0, Math.min(1, flowRaw / 100)),
         minSizeRatio: 0,
         minOpacityRatio: 0,
         pressureSize: true,

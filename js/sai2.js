@@ -110,7 +110,7 @@
          !(brush.colorJitterHue > 0 && !brush.dynamicsJitterStrokeHue) ? 0
       : nativeValue('ApplyToEachShape', (colJitter > 0 || hueJitter > 0 || satJitter > 0 || briJitter > 0) && !brush._sai2ini ? 1 : 0));
     const scaling = brush.sai2Scaling !== undefined && Number.isFinite(Number(brush.sai2Scaling))
-      ? Math.max(1, Math.min(200, Math.round(Number(brush.sai2Scaling)))) : nativeValue('Scaling', 100);
+      ? Math.max(0, Math.min(200, Math.round(Number(brush.sai2Scaling)))) : nativeValue('Scaling', 100);
     const lines = [
       '; Converted by BrushConverter',
       '[Parameters]',

@@ -1927,7 +1927,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.33';
+const APP_VERSION = '2.8.34';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
