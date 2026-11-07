@@ -1927,7 +1927,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.32';
+const APP_VERSION = '2.8.33';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2118,7 +2118,13 @@ const APP_VERSION = '2.8.32';
   const btnShare = $('#btnShare');
   const btnShareResult = $('#btnShareResult');
   [btnShare, btnShareResult].filter(Boolean).forEach(function (button) {
-    if (!(navigator.canShare && navigator.share)) { button.style.display = 'none'; return; }
+    if (!(navigator.canShare && navigator.share)) {
+      button.style.display = 'none';
+      /* 安卓 WebView 没有 Web Share：本行只剩一个按钮时让它占满两列，避免半行悬空 */
+      var row = button.closest ? button.closest('.nav-row') : null;
+      if (row) row.classList.add('is-single');
+      return;
+    }
     button.hidden = false;
     button.addEventListener('click', async function () {
       if (!lastSavedFiles || !lastSavedFiles.length) { toast('还没有可分享的转换结果'); return; }

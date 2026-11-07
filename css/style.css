@@ -520,6 +520,8 @@ main {
     will-change: height, opacity, transform;
   }
   .nav-row > .btn { width: 100%; }
+  /* 行内只剩一个按钮（如安卓没有分享）时占满整行，不留半行空位 */
+  .nav-row.is-single > .btn { grid-column: 1 / -1; }
   main { padding: 6px 10px 28px; }
   .step { margin-top: 20px; }
   .step-title h2 { font-size: 18px; }
@@ -619,7 +621,7 @@ main {
   position: sticky;
   bottom: -8px;
   padding: 10px 0 4px;
-  background: linear-gradient(to top, #fff 62%, rgba(255, 255, 255, 0));
+  background: #fff;
 }
 .modal-card .modal-actions button {
   border: 0;
