@@ -383,6 +383,8 @@
       const usePose = desc.getItem(preset, 'useBrushPose');
       const wtVr = desc.getItem(preset, 'wtVr');
       const mxVr = desc.getItem(preset, 'mxVr');
+      const clVr = desc.getItem(preset, 'clVr');
+      const cdPerTip = desc.getItem(preset, 'colorDynamicsPerTip');
       const cdHue = desc.unitValue(desc.getItem(preset, 'H   '));
       const cdSat = desc.unitValue(desc.getItem(preset, 'Strt'));
       const cdBri = desc.unitValue(desc.getItem(preset, 'Brgh'));
@@ -507,6 +509,8 @@
         poseTiltY: _descNum(desc.getItem(preset, 'brushPoseTiltY')),
         posePressure: _descNum(desc.getItem(preset, 'brushPosePressure')),
         colorDynamicsOn: useColorDyn === true,
+        colorJitterFgBg: clVr ? jitterOf(clVr) / 100 : undefined,
+        colorPerTip: typeof cdPerTip === 'boolean' ? cdPerTip : undefined,
         colorJitterHue: cdHue === undefined ? undefined : cdHue / 100,
         colorJitterSat: cdSat === undefined ? undefined : cdSat / 100,
         colorJitterVal: cdBri === undefined ? undefined : cdBri / 100,
@@ -1442,13 +1446,13 @@
       if (it.wetnessDynamics) presetItems.push(_descItem('wtVr', 'Objc', brv(0, it.wetnessDynamics, 0)));
       if (it.mixDynamics) presetItems.push(_descItem('mxVr', 'Objc', brv(0, it.mixDynamics, 0)));
       if (it.colorDynamicsOn) {
-        presetItems.push(_descItem('clVr', 'Objc', brv(0, 0, 0)));
         const prc = function (v) { return Math.round(Math.max(0, Math.min(100, (v || 0) * 100))); };
+        presetItems.push(_descItem('clVr', 'Objc', brv(0, prc(it.colorJitterFgBg), 0)));
         presetItems.push(_descItem('H   ', 'UntF', _descUntF('#Prc', prc(it.colorJitterHue))));
         presetItems.push(_descItem('Strt', 'UntF', _descUntF('#Prc', prc(it.colorJitterSat))));
         presetItems.push(_descItem('Brgh', 'UntF', _descUntF('#Prc', prc(it.colorJitterVal))));
         presetItems.push(_descItem('purity', 'UntF', _descUntF('#Prc', prc(it.colorJitterPurity))));
-        presetItems.push(_descItem('colorDynamicsPerTip', 'bool', _descBool(true)));
+        presetItems.push(_descItem('colorDynamicsPerTip', 'bool', _descBool(it.colorPerTip === undefined ? true : !!it.colorPerTip)));
       }
       const flowPct100 = it.flowPct === undefined ? 100 : Math.max(0, Math.min(100, Math.round(it.flowPct * 100)));
       const opct100 = it.opacityPct === undefined ? 100 : Math.max(0, Math.min(100, Math.round(it.opacityPct * 100)));

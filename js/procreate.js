@@ -250,6 +250,9 @@
     const hueDyn = Math.max(nv('dynamicsPressureHue'), nv('dynamicsJitterHue'), nv('dynamicsJitterStrokeHue'));
     const satDyn = Math.max(nv('dynamicsPressureSaturation'), nv('dynamicsJitterSaturation'), nv('dynamicsJitterStrokeSaturation'));
     const briDyn = Math.max(nv('dynamicsPressureBrightness'), nv('dynamicsJitterLightness'), nv('dynamicsJitterStrokeLightness'));
+    const fgBgDyn = Math.max(nv('jitterSecondary'), nv('jitterStrokeSecondary'));
+    const hasPerTipColor = nv('dynamicsJitterHue') > 0.001 || nv('dynamicsJitterSaturation') > 0.001 || nv('dynamicsJitterLightness') > 0.001 || nv('jitterSecondary') > 0.001;
+    const hasStrokeColor = nv('dynamicsJitterStrokeHue') > 0.001 || nv('dynamicsJitterStrokeSaturation') > 0.001 || nv('dynamicsJitterStrokeLightness') > 0.001 || nv('jitterStrokeSecondary') > 0.001;
     const sizeJitV = nv('dynamicsJitterSize');
     const pressureRound = nv('dynamicsPressureShapeRoundness');
     const dualBlendMode = Number(params.dualBlendMode) || 0;
@@ -354,7 +357,9 @@
       spacingJitterPct: Math.max(0, Math.min(100, nv('plotSpacingJitter') * 100)),
       falloffPct: Math.max(0, Math.min(100, nv('dynamicsFalloff') * 100)),
       smoothingStrength: smoothingV,
-      colorDynamicsOn: hueDyn > 0.001 || satDyn > 0.001 || briDyn > 0.001,
+      colorDynamicsOn: hueDyn > 0.001 || satDyn > 0.001 || briDyn > 0.001 || fgBgDyn > 0.001,
+      colorJitterFgBg: fgBgDyn,
+      colorPerTip: hasStrokeColor && !hasPerTipColor ? false : (hasPerTipColor ? true : undefined),
       colorJitterHue: hueDyn,
       colorJitterSat: satDyn,
       colorJitterVal: briDyn,
@@ -813,9 +818,14 @@
       smudgeOpacity: brush.smudgeOpacity === undefined ? (brush.smudgeOn ? Math.max(0, Math.min(1, brush.smudgeAmount === undefined ? 0.3 : brush.smudgeAmount)) : 0) : brush.smudgeOpacity,
       dynamicsSmudgeAccumulation: brush.procreateSmudgeAccumulation === undefined ? (brush.smudgeAmount === undefined ? 0.5 : brush.smudgeAmount) : brush.procreateSmudgeAccumulation,
       dynamicsMix: brush.dynamicsMix !== undefined ? Math.max(0, Math.min(1, Number(brush.dynamicsMix) || 0)) : (brush.smudgeOn && brush.source !== 'procreate' ? Math.max(0, Math.min(1, brush.smudgeAmount === undefined ? 0.3 : brush.smudgeAmount)) : D.dynamicsMix),
-      dynamicsJitterHue: Math.max(0, Math.min(1, brush.colorJitterHue || 0)),
-      dynamicsJitterSaturation: Math.max(0, Math.min(1, brush.colorJitterSat || 0)),
-      dynamicsJitterLightness: Math.max(0, Math.min(1, brush.colorJitterVal || 0)),
+      dynamicsJitterHue: brush.colorPerTip === false ? 0 : Math.max(0, Math.min(1, brush.colorJitterHue || 0)),
+      dynamicsJitterSaturation: brush.colorPerTip === false ? 0 : Math.max(0, Math.min(1, brush.colorJitterSat || 0)),
+      dynamicsJitterLightness: brush.colorPerTip === false ? 0 : Math.max(0, Math.min(1, brush.colorJitterVal || 0)),
+      dynamicsJitterStrokeHue: brush.colorPerTip === false ? Math.max(0, Math.min(1, brush.colorJitterHue || 0)) : D.dynamicsJitterStrokeHue,
+      dynamicsJitterStrokeSaturation: brush.colorPerTip === false ? Math.max(0, Math.min(1, brush.colorJitterSat || 0)) : D.dynamicsJitterStrokeSaturation,
+      dynamicsJitterStrokeLightness: brush.colorPerTip === false ? Math.max(0, Math.min(1, brush.colorJitterVal || 0)) : D.dynamicsJitterStrokeLightness,
+      jitterSecondary: brush.colorPerTip === false ? D.jitterSecondary : Math.max(0, Math.min(1, brush.colorJitterFgBg || 0)),
+      jitterStrokeSecondary: brush.colorPerTip === false ? Math.max(0, Math.min(1, brush.colorJitterFgBg || 0)) : D.jitterStrokeSecondary,
       blendMode: (typeof brush.blendMode === 'number' && isFinite(brush.blendMode) && brush.blendMode >= 0 && brush.blendMode <= 30) ? Math.round(brush.blendMode) : 0,
       dualBlendMode: (function () {
         if (typeof brush.dualBlendMode === 'number' && isFinite(brush.dualBlendMode) && brush.dualBlendMode >= 0 && brush.dualBlendMode <= 30) return Math.round(brush.dualBlendMode);
@@ -905,8 +915,10 @@
       wetEdgesOn:['wetEdgesAmount'],wetEdgesAmount:['wetEdgesAmount'],smudgeOn:['smudgeSize','smudgeOpacity'],
       smudgeAmount:['smudgeSize','smudgeOpacity'],smudgeSize:['smudgeSize'],smudgeOpacity:['smudgeOpacity'],
       procreateSmudgeAccumulation:['dynamicsSmudgeAccumulation'],
-      colorJitterHue:['dynamicsJitterHue'],colorJitterSat:['dynamicsJitterSaturation'],
-      colorJitterVal:['dynamicsJitterLightness']};
+      colorJitterFgBg:['jitterSecondary','jitterStrokeSecondary'],
+      colorPerTip:['dynamicsJitterHue','dynamicsJitterSaturation','dynamicsJitterLightness','dynamicsJitterStrokeHue','dynamicsJitterStrokeSaturation','dynamicsJitterStrokeLightness','jitterSecondary','jitterStrokeSecondary'],
+      colorJitterHue:['dynamicsJitterHue','dynamicsJitterStrokeHue'],colorJitterSat:['dynamicsJitterSaturation','dynamicsJitterStrokeSaturation'],
+      colorJitterVal:['dynamicsJitterLightness','dynamicsJitterStrokeLightness']};
     Object.keys(nativeFields).forEach(key=>{mapping[key]=[nativeFields[key]];});
     Object.keys(mapping).forEach(function(key){if(brush[key]!==before[key])mapping[key].forEach(k=>{changes[k]=params[k];});});
     if(changes.shapeAngle!==undefined)changes.shapeAngle-=orientationDegrees(plist.unarchive(brush._rawArchive))*Math.PI/180;

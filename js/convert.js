@@ -1258,7 +1258,7 @@
         tiltJitterPct:['useTipDynamics','ttlVr.jitter'],minRoundnessRatio:['minimumRoundness'],
         scatterOn:['useScatter'],scatterPct:['scatterDynamics.jitter'],scatterCount:['Cnt ','useScatter'],scatterBothAxes:['bothAxes'],
         countJitterPct:['countDynamics.jitter','useScatter'],flowJitterPct:['prVr.jitter','usePaintDynamics'],
-        colorDynamicsOn:['useColorDynamics'],colorJitterHue:['H   '],colorJitterSat:['Strt'],colorJitterVal:['Brgh'],
+        colorDynamicsOn:['useColorDynamics'],colorJitterFgBg:['clVr.jitter'],colorPerTip:['colorDynamicsPerTip'],colorJitterHue:['H   '],colorJitterSat:['Strt'],colorJitterVal:['Brgh'],
         noise:['Nose'],buildUp:['Rpt '],wetEdgesOn:['Wtdg'],poseOn:['useBrushPose']});
       if(keepRaw && source._rawPreset)Object.keys(mapping).forEach(k=>{if(brush[k]!==before[k])mapping[k].forEach(p=>paths.add(p));});
       if(tipChanged)paths.add('Brsh.sampledData');
@@ -1399,6 +1399,8 @@
         wetnessDynamics: brush.wetnessDynamics,
         mixDynamics: brush.mixDynamics,
         colorDynamicsOn: !!brush.colorDynamicsOn,
+        colorJitterFgBg: brush.colorJitterFgBg,
+        colorPerTip: brush.colorPerTip,
         colorJitterHue: brush.colorJitterHue,
         colorJitterSat: brush.colorJitterSat,
         colorJitterVal: brush.colorJitterVal,
@@ -2654,9 +2656,10 @@ Write-Host 'restart MediBang Paint Pro'
       if (adjusted.sizePx > limit) return '近似（超过Procreate当前间距下的尺寸上限，已缩小至上限）';
     }
     if (key === 'eraser' && target === 'kbundle' && brush.eraserAmount > 0 && brush.eraserAmount < 1) return '近似（连续橡皮强度映射为橡皮开关）';
-    if (target === 'sai2' && ['opacity','minSizeRatio','minOpacityRatio','hardness','pressureSize','pressureOpacity'].indexOf(key) >= 0) return opts.pressure === false && (key === 'pressureSize' || key === 'pressureOpacity')
+    if (target === 'sai2' && ['opacity','minSizeRatio','minOpacityRatio','hardness','pressureSize','pressureOpacity','smudgeOn','wetEdgesOn','smoothingStrength'].indexOf(key) >= 0) return opts.pressure === false && (key === 'pressureSize' || key === 'pressureOpacity')
       ? '兼容参数（按导出设置关闭压感；toolnrm旁带文本，不是新版原生工具预设）'
       : '兼容参数（toolnrm旁带文本，需在SAI2工具中设置；不是新版原生工具预设）';
+    if (target === 'sai2' && key === 'flowPct') return '参数映射（写入散布INI的Density与toolnrm的bfval，笔触待验证）';
     if (target === 'sai2' && brush.scatterOn === false && ['scatterCount','countJitterPct'].indexOf(key) >= 0) return '未启用';
     if (key === 'scatterCount' && (target === 'brush' || target === 'brushset') && brush.scatterCount > 16) return '近似（目标写端最多16个笔尖，数量已限制为16）';
     if (target === 'sai2' && key === 'angleJitterDeg') return '近似（转换为SAI2角度随机百分比，实际角度范围待原生标定）';
@@ -2759,7 +2762,7 @@ Write-Host 'restart MediBang Paint Pro'
     const pct = function (v) { return Math.round(v) + '%'; };
     const ratio = function (v) { return Math.round(v * 100) + '%'; };
     return fields.concat([['数量随机','countJitterPct',pct],['圆度随机','roundnessJitterPct',pct],
-      ['色相随机','colorJitterHue',ratio],['饱和度随机','colorJitterSat',ratio],['亮度随机','colorJitterVal',ratio]]);
+      ['前背景色随机','colorJitterFgBg',ratio],['色相随机','colorJitterHue',ratio],['饱和度随机','colorJitterSat',ratio],['亮度随机','colorJitterVal',ratio]]);
   }
 
   function buildCompareHtml(brushList, target, meta) {
@@ -2805,7 +2808,7 @@ Write-Host 'restart MediBang Paint Pro'
       kbundle: ['橡皮模式','尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','散布','纹理深度','混色/涂抹','颜色动态'],
       gbr: ['尺寸','间距','硬度'], gih: ['尺寸','间距','硬度'],
       myb: ['橡皮模式','尺寸','间距','角度','圆度','不透明度','硬度','最小直径','最小不透明度','大小随机','散布','混色/涂抹','颜色动态'],
-      painter: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','大小随机','散布'], sai2: ['尺寸','间距','角度','圆度','不透明度','硬度','最小直径','最小不透明度','大小随机','角度随机','散布','散布数量','数量随机','圆度随机','颜色动态','色相随机','饱和度随机','亮度随机','纹理深度'], png: ['尺寸','间距','角度','圆度','不透明度'],
+      painter: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','大小随机','散布'], sai2: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','大小随机','角度随机','散布','散布数量','数量随机','圆度随机','湿边','混色/涂抹','颜色动态','前背景色随机','色相随机','饱和度随机','亮度随机','平滑','纹理深度'], png: ['尺寸','间距','角度','圆度','不透明度'],
       medibang: ['尺寸','不透明度','最小直径','压感尺寸','压感不透明度'], mbini: ['尺寸','不透明度','最小直径','压感尺寸','压感不透明度'],
       gobrush: ['尺寸','间距','不透明度','最小直径','最小不透明度','流量','散布','纹理深度'],
       gopaint_set: ['尺寸','间距','不透明度','散布','纹理深度'], gopaint_abr: ['尺寸','间距','不透明度','纹理深度']
@@ -2984,7 +2987,7 @@ Write-Host 'restart MediBang Paint Pro'
       kbundle: ['橡皮模式','尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','散布','纹理','压感尺寸','压感不透明度','混色/涂抹','颜色动态'],
       gbr: ['尺寸','间距','硬度'], gih: ['尺寸','间距','硬度'],
       myb: ['橡皮模式','尺寸','间距','角度','圆度','不透明度','硬度','最小直径','最小不透明度','大小随机','散布','压感尺寸','压感不透明度','混色/涂抹','颜色动态'],
-      painter: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','大小随机','散布'], sai2: ['尺寸','间距','角度','圆度','不透明度','硬度','最小直径','最小不透明度','压感尺寸','压感不透明度','大小随机','角度随机','散布','散布数量','数量随机','圆度随机','颜色动态','色相随机','饱和度随机','亮度随机','纹理深度'], png: ['尺寸','间距','角度','圆度','不透明度'],
+      painter: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','大小随机','散布'], sai2: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','最小直径','最小不透明度','压感尺寸','压感不透明度','大小随机','角度随机','散布','散布数量','数量随机','圆度随机','湿边','混色/涂抹','颜色动态','前背景色随机','色相随机','饱和度随机','亮度随机','平滑','纹理深度'], png: ['尺寸','间距','角度','圆度','不透明度'],
       medibang: ['尺寸','不透明度','最小直径','压感尺寸','压感不透明度'], mbini: ['尺寸','不透明度','最小直径','压感尺寸','压感不透明度'],
       gobrush: ['尺寸','间距','不透明度','最小直径','最小不透明度','流量','散布','纹理'],
       gopaint_set: ['尺寸','间距','不透明度','散布','纹理'], gopaint_abr: ['尺寸','间距','不透明度','纹理']

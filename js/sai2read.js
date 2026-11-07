@@ -137,15 +137,21 @@
   function parseBrushIni(bytes, fileName) {
     const p = parseIniParams(decodeText(bytes));
     const density = p.Opacity === undefined ? (p.Density === undefined ? 100 : p.Density) : p.Opacity;
+    const flowRaw = p.Density !== undefined ? Number(p.Density) : Number(density);
     const angle = p.Angle === undefined ? 0 : p.Angle;
     const base = String(fileName || 'sai2-brush').replace(/\.ini$/i, '').replace(/^.*[\\/]/, '');
     const scatPct = Math.max(0, Math.min(1000, Number(p.Scattering) || 0));
     const scatCnt = Math.max(1, Math.min(20, Math.round(Number(p.Count) || 1)));
+    const colJ = Math.max(0, Math.min(1, (Number(p.ColJitter) || 0) / 100));
     const hueJ = Math.max(0, Math.min(1, (Number(p.HueJitter) || 0) / 100));
     const satJ = Math.max(0, Math.min(1, (Number(p.SaturationJitter) || 0) / 100));
     const briJ = Math.max(0, Math.min(1, (Number(p.BrightnessJitter) || 0) / 100));
-    const colOn = Number(p.ColJitter) > 0 || hueJ > 0.001 || satJ > 0.001 || briJ > 0.001;
-    const followsDir = p.AngleControl === undefined || Number(p.AngleControl) === 1;
+    const colOn = colJ > 0.001 || hueJ > 0.001 || satJ > 0.001 || briJ > 0.001;
+    const angCtl = p.AngleControl === undefined ? 1 : Number(p.AngleControl);
+    const followsDir = angCtl === 1;
+    const followsTilt = angCtl === 2;
+    const perTip = p.ApplyToEachShape === undefined ? undefined : Number(p.ApplyToEachShape) === 1;
+    const scalingVal = p.Scaling === undefined ? undefined : Math.max(1, Math.min(200, Number(p.Scaling) || 100));
     return {
       brushes: [{
         name: base,
@@ -153,14 +159,16 @@
         sizePx: p.ShapeSize === undefined ? 100 : Math.max(1, Math.min(5000, p.ShapeSize)),
         spacingPct: p.Spacing === undefined ? 25 : Math.max(0, Math.min(1000, p.Spacing)),
         opacity: Math.max(0, Math.min(1, density / 100)),
+        flowPct: Math.max(0, Math.min(1, (isFinite(flowRaw) ? flowRaw : 100) / 100)),
         minSizeRatio: 0,
         minOpacityRatio: 0,
         pressureSize: true,
         pressureOpacity: false,
         hardness: p.EdgeHardness === undefined ? 1 : Math.max(0, Math.min(1, p.EdgeHardness / 100)),
         angle: angle,
-        dynamicsControlAngle: followsDir ? 6 : undefined,
-        bruRotationMode: followsDir ? 1 : 0,
+        dynamicsControlAngle: followsDir ? 6 : (followsTilt ? 3 : undefined),
+        bruRotationMode: followsDir ? 1 : (followsTilt ? 4 : 0),
+        tiltAngleDyn: followsTilt ? 1 : undefined,
         angleJitterDeg: Math.max(0, Math.min(360, (Number(p.AngleJitter) || 0) * 3.6)),
         sizeJitterPct: Math.max(0, Math.min(100, Number(p.SizeJitter) || 0)),
         roundness: typeof p.WxHRatio==='string' && /^\d+(\.\d+)?:\d+(\.\d+)?$/.test(p.WxHRatio) && Number(p.WxHRatio.split(':')[1])>0
@@ -172,10 +180,15 @@
         countJitterPct: Math.max(0, Math.min(100, Number(p.CountJitter) || 0)),
         scatterBothAxes: p.AllDirScattering === undefined ? false : Number(p.AllDirScattering) !== 0,
         colorDynamicsOn: colOn,
+        colorJitterFgBg: colJ,
+        jitterSecondary: colJ > 0 ? colJ : undefined,
         colorJitterHue: hueJ,
         colorJitterSat: satJ,
         colorJitterVal: briJ,
+        colorPerTip: perTip,
+        sai2Scaling: scalingVal,
         source: 'sai2',
+        _sai2SourceOpacity: Math.max(0, Math.min(1, density / 100)),
         _sai2ini: p
       }],
       warnings: ['SAI2 笔刷 ini 只含笔形参数，笔尖图需从素材包（blotmap/brshape/brushtex）里配套使用']
@@ -223,24 +236,38 @@
       const size = Math.max(1, Math.min(5000, Number(r.brsize) || Number(r.brsizesc) || 30));
       const szmin = Number(r.szmin);
       const depth = Number(r.depth);
+      const bfval = r.bfval !== undefined && String(r.bfval).trim() !== '' && isFinite(Number(r.bfval))
+        ? Math.max(0, Math.min(1, Number(r.bfval) / 100)) : undefined;
+      const texscl = r.texscl !== undefined && String(r.texscl).trim() !== '' && isFinite(Number(r.texscl)) && Number(r.texscl) > 0
+        ? Math.max(0.01, Math.min(10, Number(r.texscl) / 100)) : undefined;
+      const texinvf = r.texinvf !== undefined && String(r.texinvf).trim() !== '' ? Number(r.texinvf) === 1 : undefined;
+      const stretch = r.stretch !== undefined && String(r.stretch).trim() !== '' && isFinite(Number(r.stretch))
+        ? Math.max(0, Math.min(1, Number(r.stretch) / 100)) : undefined;
       brushes.push({
         name: r.name || ('SAI2 ' + idx),
         tip: null,
         sizePx: Math.round(size),
         spacingPct: 10,
         opacity: isFinite(depth) ? Math.max(0, Math.min(1, depth / 100)) : 1,
+        flowPct: bfval,
         minSizeRatio: isFinite(szmin) ? Math.max(0, Math.min(1, szmin / 100)) : 0,
         minOpacityRatio: Number(r.dpmin) ? Math.max(0, Math.min(1, Number(r.dpmin) / 100)) : 0,
         pressureSize: r.f_prs2sz === '1',
         pressureOpacity: r.f_prs2dp === '1',
-        hardness: r.edgehdns !== undefined && isFinite(Number(r.edgehdns)) ? Math.max(0, Math.min(1, Number(r.edgehdns) / 100)) : 1,
+        pressureSmudge: r.f_prs2bl !== undefined ? r.f_prs2bl === '1' : undefined,
+        keepOpacity: r.f_keepopac !== undefined ? r.f_keepopac === '1' : undefined,
+        hardness: r.edgehdns !== undefined && isFinite(Number(r.edgehdns)) ? Math.max(0, Math.min(1, Number(r.edgehdns) / 100))
+          : (r.prsfeel !== undefined && isFinite(Number(r.prsfeel)) ? Math.max(0, Math.min(1, Number(r.prsfeel) / 100)) : 1),
         angle: 0,
         roundness: 100,
         smudgeOn: Number(r.blend) > 0,
         smudgeAmount: Number(r.blend) ? Math.max(0, Math.min(1, Number(r.blend) / 100)) : 0,
         wetEdgesOn: Number(r.water) > 0,
         wetEdgesAmount: Number(r.water) ? Math.max(0, Math.min(1, Number(r.water) / 100)) : 0,
+        colorStretch: stretch,
         smoothingStrength: Number(r.smooth) ? Math.max(0, Math.min(1, Number(r.smooth) / 100)) : 0,
+        textureScale: texscl,
+        textureInverted: texinvf,
         source: 'sai2',
         _sai2tool: r
       });
@@ -293,18 +320,28 @@
       consumedTextures.add(key(entry.name));
       brush._grainRgba = image; brush.hasTexture = true; brush.textureName = record.texnam;
       brush.textureDepth = record.txval === undefined ? 1 : Math.max(0,Math.min(1,Number(record.txval)/100));
+      if (record.texscl !== undefined && String(record.texscl).trim() !== '' && isFinite(Number(record.texscl)) && Number(record.texscl) > 0) {
+        brush.textureScale = Math.max(0.01, Math.min(10, Number(record.texscl) / 100));
+      }
+      if (record.texinvf !== undefined && String(record.texinvf).trim() !== '') {
+        brush.textureInverted = Number(record.texinvf) === 1;
+      }
     }
     function finish(brush, imageEntry, iniEntry, meta, prefix) {
       if (meta) {
         const record = meta._sai2tool;
         const fields = {name:['name'],sizePx:['brsize','brsizesc'],opacity:['depth'],minSizeRatio:['szmin'],minOpacityRatio:['dpmin'],
-          pressureSize:['f_prs2sz'],pressureOpacity:['f_prs2dp'],hardness:['edgehdns'],smudgeOn:['blend'],smudgeAmount:['blend'],
-          wetEdgesOn:['water'],wetEdgesAmount:['water'],smoothingStrength:['smooth']};
+          pressureSize:['f_prs2sz'],pressureOpacity:['f_prs2dp'],pressureSmudge:['f_prs2bl'],keepOpacity:['f_keepopac'],
+          hardness:['edgehdns','prsfeel'],smudgeOn:['blend'],smudgeAmount:['blend'],
+          wetEdgesOn:['water'],wetEdgesAmount:['water'],colorStretch:['stretch'],smoothingStrength:['smooth'],
+          textureScale:['texscl'],textureInverted:['texinvf']};
         for (const field of Object.keys(fields)) if (fields[field].some(k=>record[k]!==undefined && String(record[k]).trim()!=='')) brush[field]=meta[field];
+        if (!iniEntry && record.bfval !== undefined && String(record.bfval).trim() !== '') brush.flowPct = meta.flowPct;
         brush._sai2tool = record;
         attachTexture(brush, record, prefix);
       }
       brush._sai2SourceSize = brush.sizePx;
+      brush._sai2SourceOpacity = brush.opacity;
       brush._sai2SourceRoundness = brush.roundness;
       if (imageEntry) {
         brush.tip = decodeImage(imageEntry.data());
