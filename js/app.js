@@ -1927,7 +1927,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.29';
+const APP_VERSION = '2.8.30';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2678,15 +2678,19 @@ const APP_VERSION = '2.8.29';
      附上 gh 加速镜像（代理 raw.githubusercontent.com，带 CORS *、支持 Range 断点续传），
      下载时多源竞速，哪个快用哪个；镜像挂了也不影响直连兜底。 */
   const SITE_RAW_BASE = 'https://raw.githubusercontent.com/LostinTianyi0712/brush-converter/main/';
+  /* 2026-11-07 实测（本机直连、无代理，取 512KB 片段）：
+       Pages 直连 21.7 KB/s ｜ raw 直连 24.6 ｜ jsDelivr 17.3 ｜ gh-proxy 77.7 ｜ ghfast 78.9。
+     单连接被限速，所以：① 镜像/jsd 排前面，直连只做兜底；② 单连接慢就靠多连接分段并发。 */
   const SITE_MIRRORS = ['https://gh-proxy.com/', 'https://gh-proxy.org/', 'https://ghfast.top/'];
+  const SITE_CDN = ['https://cdn.jsdelivr.net/gh/LostinTianyi0712/brush-converter@main/'];
   function shapeLibSourceUrls(name) {
     if (/^(https?:)?\/\//.test(name)) return [name];
     const enc = encodeURI(name);
     const list = [];
-    if (!(window.BrushNative || window.BrushDesktop)) list.push(enc); // 网页版同源：可吃离线缓存
-    if (!(window.BrushNative || window.BrushDesktop)) list.push(SITE_BASE + enc);
     for (let i = 0; i < SITE_MIRRORS.length; i++) list.push(SITE_MIRRORS[i] + SITE_RAW_BASE + enc);
-    if (window.BrushNative || window.BrushDesktop) list.push(SITE_BASE + enc);
+    for (let i = 0; i < SITE_CDN.length; i++) list.push(SITE_CDN[i] + enc);
+    if (!(window.BrushNative || window.BrushDesktop)) list.push(enc); // 同源：可吃离线缓存，兜底
+    list.push(SITE_BASE + enc);
     return list;
   }
   /* 原生壳传参格式：同一卷的多个候选源用 ';' 连接（卷与卷之间仍是 '|'），
@@ -2851,6 +2855,71 @@ const APP_VERSION = '2.8.29';
      之后只留最快的源继续读，其余掐掉；领先源卡死（10s 读不出一个字节）、报错或
      提前结束时，把已收字节入库，用 Range 到其余源上重开一轮竞速，直到凑齐总长。
      返回完整 Blob。 */
+  /* 多连接分段下载：同一条链路被限速时（实测单连接 ~78KB/s），并发 4 段能叠加吞吐。
+     先各源并发探一个字节拿 Content-Range 总长并计速；不支持 Range（非 206）就返回 null，
+     由调用方退回单连接竞速。任何一段失败会换下一个源重试；拿不全也返回 null。 */
+  async function parallelRangeBlob(urls, onProgress, opts) {
+    urls = (urls || []).filter(Boolean);
+    if (!urls.length || typeof fetch !== 'function') return null;
+    const CHUNK = (opts && opts.chunkBytes) || 4 * 1048576;
+    const MAXP = Math.max(1, Math.min(8, (opts && opts.parallel) || 4));
+    const score = new Map();
+    let total = 0;
+    await Promise.all(urls.map(async function (u) {
+      const t0 = Date.now();
+      try {
+        const res = await fetch(u, { headers: { Range: 'bytes=0-0' }, cache: 'no-store' });
+        const dt = Math.max(1, Date.now() - t0);
+        if (res.status !== 206) { try { res.body && res.body.cancel(); } catch (e) {} return; }
+        const cr = (res.headers && res.headers.get && res.headers.get('content-range')) || '';
+        const m = /\/(\d+)\s*$/.exec(cr);
+        try { await res.arrayBuffer(); } catch (e) {}
+        const t = m ? Number(m[1]) : 0;
+        if (t > total) total = t;
+        score.set(u, { bytes: 1, ms: dt });
+      } catch (e) { /* 该源不支持/不可达 */ }
+    }));
+    const live = urls.filter(function (u) { return score.has(u) && score.get(u).bytes > 0; });
+    if (!total || !live.length) return null;
+    const n = Math.ceil(total / CHUNK);
+    const parts = new Array(n);
+    let got = 0, next = 0;
+    function orderBy() {
+      return live.slice().sort(function (a, b) {
+        const sa = score.get(a), sb = score.get(b);
+        return (sb.bytes / sb.ms) - (sa.bytes / sa.ms);
+      });
+    }
+    async function oneChunk(i) {
+      const start = i * CHUNK, end = Math.min(total, start + CHUNK) - 1, want = end - start + 1;
+      let lastErr = null;
+      for (const u of orderBy()) {
+        const t0 = Date.now();
+        try {
+          const res = await fetch(u, { headers: { Range: 'bytes=' + start + '-' + end }, cache: 'no-store' });
+          if (res.status !== 206) throw new Error('range unsupported: ' + res.status);
+          const buf = new Uint8Array(await res.arrayBuffer());
+          if (buf.length !== want) throw new Error('short chunk ' + buf.length + '/' + want);
+          const s = score.get(u) || { bytes: 0, ms: 1 };
+          s.bytes += buf.length; s.ms += Math.max(1, Date.now() - t0);
+          score.set(u, s);
+          parts[i] = buf; got += buf.length;
+          onProgress && onProgress(got);
+          return;
+        } catch (e) { lastErr = e; }
+      }
+      throw lastErr || new Error('chunk ' + i + ' failed');
+    }
+    const workers = Math.min(MAXP, n);
+    try {
+      await Promise.all(Array.from({ length: workers }, async function () {
+        for (;;) { const i = next++; if (i >= n) return; await oneChunk(i); }
+      }));
+    } catch (e) { return null; }
+    if (got !== total) return null;
+    return new Blob(parts);
+  }
+
   async function raceDownloadBlob(urls, onProgress) {
     urls = (urls || []).filter(Boolean);
     if (!urls.length) throw new Error('没有可用的下载地址');
@@ -3107,8 +3176,12 @@ const APP_VERSION = '2.8.29';
       let blob;
       shapeDlProgressStart(btn, totalBytes); // 网页内下载：进度由本地定时器驱动，始终在动
       if (pack.parts.length === 1) {
-        // 多源竞速：网页版同源 + GitHub Pages 直连 + 加速镜像，自动用最快的
-        blob = await raceDownloadBlob(shapeLibSourceUrls(pack.parts[0]), function (n) {
+        // 先试多连接分段（镜像限速时能叠加吞吐），拿不到再退回单连接多源竞速
+        const singleUrls = shapeLibSourceUrls(pack.parts[0]);
+        blob = await parallelRangeBlob(singleUrls, function (n) {
+          if (shapeDlTick) shapeDlTick.set(n);
+        });
+        if (!blob) blob = await raceDownloadBlob(singleUrls, function (n) {
           if (shapeDlTick) shapeDlTick.set(n);
         });
       } else {
@@ -3116,7 +3189,11 @@ const APP_VERSION = '2.8.29';
         const chunks = [];
         let got = 0;
         for (const part of pack.parts) {
-          const partBlob = await raceDownloadBlob(shapeLibSourceUrls(part), function (n) {
+          const partUrls = shapeLibSourceUrls(part);
+          let partBlob = await parallelRangeBlob(partUrls, function (n) {
+            if (shapeDlTick) shapeDlTick.set(got + n);
+          });
+          if (!partBlob) partBlob = await raceDownloadBlob(partUrls, function (n) {
             if (shapeDlTick) shapeDlTick.set(got + n); // 跨卷累加：每卷都从上一卷的字节数接着走
           });
           chunks.push(new Uint8Array(await partBlob.arrayBuffer()));
