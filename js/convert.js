@@ -22,6 +22,8 @@
   const medibang = isNode ? require('./medibang.js') : root.BC.medibang;
   const medibangIni = isNode ? require('./medibangIni.js') : root.BC.medibangIni;
   const sai2read = isNode ? require('./sai2read.js') : root.BC.sai2read;
+  const sai2dat = isNode ? require('./sai2dat.js') : root.BC.sai2dat;
+  const sai2settings = isNode ? require('./sai2settings.js') : root.BC.sai2settings;
   const painterlib = isNode ? require('./painterlib.js') : root.BC.painterlib;
   const gobrush = isNode ? require('./gobrush.js') : root.BC.gobrush;
   const gobrushWrite = isNode ? require('./gobrushWrite.js') : root.BC.gobrushWrite;
@@ -167,6 +169,7 @@
     if (medibangIni && safe(function () { return medibangIni.isIni(bytes); })) return 'mbini';
     if (sai2read && safe(function () { return sai2read.isToolnrm(bytes); })) return 'sai2tool';
     if (sai2read.isBrushIni(bytes)) return 'sai2ini';
+    if (sai2dat && safe(function () { return sai2dat.isSai2Preset(bytes); })) return 'sai2preset';
     if (bru && safe(function () { return bru.isBru(bytes); })) return 'bru';
     if (csp && safe(function () { return csp.isSut(bytes); })) return 'sut';
     if (gobrush && safe(function () { return gobrush.isGobrush(lower); })) return 'gobrush';
@@ -175,6 +178,7 @@
       try { zentries = zip.read(bytes); } catch (e) { /* ignore */ }
       if (zentries) {
         if (zentries.some(e => /^brush2\.ini$/i.test(e.name.replace(/^.*\//, '')))) return 'mbini_set';
+        if (sai2settings && safe(function () { return sai2settings.isSettingsPack(bytes); })) return 'sai2settings';
         if (sai2read.isSai2Pack(bytes,zentries)) return 'sai2pack';
         if (zentries.some(e => /^paintoppresets\/[^/]+\.kpp$/i.test(e.name))) return 'kbundle';
         if (lower.endsWith('.mtd')) return 'mtd'; // 优动漫绘画助手素材包（zip 壳），须先于 Painter 库判定
@@ -229,6 +233,8 @@
       sai2pack: 'SAI 2 素材包',
       sai2ini: 'SAI 2 笔刷 ini',
       sai2tool: 'SAI 2 笔刷预设 toolnrm',
+      sai2preset: 'SAI 2 原生工具预设（只读识别）',
+      sai2settings: 'SAI 2 设置包（工具+素材，只读）',
       pat: 'Photoshop 图案 PAT',
       gobrushSet: '天生会画笔刷组'
     }[kind] || kind;
@@ -364,7 +370,20 @@
     const kind = detect(name, bytes);
     if (!kind) throw new Error('无法识别的文件格式（支持 .bru/.abr/.tpl/.brush/.brushset/.gobrush/.gobrushes/.sut/.mtd/.kpp/.gbr/.gih/.myb/.brushcategory/.brushlibrary，或包含笔刷的 ZIP）');
     let result;
-    if (kind === 'bru') {
+    if (kind === 'sai2settings') {
+      /* SAI2 设置包（custool + 素材目录）：结构可读，参数语义未标定，本版只给清单。 */
+      let sum = null;
+      try { sum = sai2settings.readSettingsPack(bytes); } catch (e) { sum = null; }
+      throw new Error('SAI2 设置包：' + (sum ? sai2settings.summarize(sum) : '可识别') +
+        '；本版只读清单，暂不转换为其它格式（字段语义未标定）');
+    } else if (kind === 'sai2preset') {
+      /* 第153轮：SAI2 原生工具预设（.saitdat/.saitgrp/.saitset/.saitlnk）结构已解开，
+         但字段语义（cursize 刻度等）尚未原生标定，本版只做识别与说明，不猜映射。 */
+      const info = sai2dat.identify(bytes);
+      const label = sai2dat.KIND_LABEL[info.kind] || '预设';
+      throw new Error('SAI2 原生' + label + (info.name ? '「' + info.name + '」' : '') +
+        '：文件结构可读，但字段语义尚未标定，本版不提供转换（可用 _testout/native153/sai2/saitdat_tool.js dump 查看字段）');
+    } else if (kind === 'bru') {
       result = bru.parseBru(bytes);
       result.brushes = result.brushes.map(b => Object.assign({}, b, { source: 'bru' }));
       restoreHsjTips(result);
@@ -3093,7 +3112,19 @@ Write-Host 'restart MediBang Paint Pro'
         return withFixedTipFlips(Object.assign({}, b, { tip: { w: tip.w, h: tip.h, rgba: tip.rgba }, _sai2Texture: texture }));
       } catch (e) { return b; }
     });
-    return sai2.makeSai2Pack(list, opts || {});
+    const made = sai2.makeSai2Pack(list, opts || {});
+    /* 第153轮：源有纹理但拿不到纹理像素时（画世界内置材质 / Procreate 内置 Grain 等），
+       以前是静默不写 brushtex，也没有任何提示——用户会以为配套纹理已经带过去了。
+       这里补一条明确警告，与其它格式「未写出要说明」的口径一致。 */
+    if (!(opts && opts.noTextureBake)) {
+      const missing = list.filter(function (b) { return b && b.hasTexture && !b._sai2Texture; });
+      if (missing.length) {
+        made.warnings = (made.warnings || []).concat(missing.map(function (b) {
+          return (b.name || '未命名') + '：有纹理但缺纹理像素，未输出配套纹理 BMP（需在 SAI2 工具设置里手动选择纹理）';
+        }));
+      }
+    }
+    return made;
   }
 
   function makeGoPaintAbr(brushList, opts) {

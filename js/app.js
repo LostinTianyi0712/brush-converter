@@ -1927,7 +1927,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.28';
+const APP_VERSION = '2.8.29';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2339,6 +2339,7 @@ const APP_VERSION = '2.8.28';
         state.shapeLibBuiltIn = true;
         state.shapeLibLabel = [got.name || '图库包', variant].filter(Boolean).join(' · ');
         state.shapeLibBytes = got.bytes.length;
+        state.shapeLibPackKey = got.bytes.length > 120 * 1048576 ? 'full' : 'lite';
         updateShapeLibText();
         const fixed = await reparseWithShapeLib();
         pushLog('图库包已加载 ' + map.size + ' 张 / ' + Math.round(got.bytes.length / 1048576) + 'MB / ' + state.shapeLibLabel);
@@ -2677,14 +2678,15 @@ const APP_VERSION = '2.8.28';
      附上 gh 加速镜像（代理 raw.githubusercontent.com，带 CORS *、支持 Range 断点续传），
      下载时多源竞速，哪个快用哪个；镜像挂了也不影响直连兜底。 */
   const SITE_RAW_BASE = 'https://raw.githubusercontent.com/LostinTianyi0712/brush-converter/main/';
-  const SITE_MIRRORS = ['https://gh-proxy.com/', 'https://ghfast.top/'];
+  const SITE_MIRRORS = ['https://gh-proxy.com/', 'https://gh-proxy.org/', 'https://ghfast.top/'];
   function shapeLibSourceUrls(name) {
     if (/^(https?:)?\/\//.test(name)) return [name];
     const enc = encodeURI(name);
     const list = [];
     if (!(window.BrushNative || window.BrushDesktop)) list.push(enc); // 网页版同源：可吃离线缓存
-    list.push(SITE_BASE + enc);
+    if (!(window.BrushNative || window.BrushDesktop)) list.push(SITE_BASE + enc);
     for (let i = 0; i < SITE_MIRRORS.length; i++) list.push(SITE_MIRRORS[i] + SITE_RAW_BASE + enc);
+    if (window.BrushNative || window.BrushDesktop) list.push(SITE_BASE + enc);
     return list;
   }
   /* 原生壳传参格式：同一卷的多个候选源用 ';' 连接（卷与卷之间仍是 '|'），
@@ -2926,7 +2928,9 @@ const APP_VERSION = '2.8.28';
               .then(resolve, reject);
           });
           clearTimeout(timer);
-          if (!accepting || !res.ok || (chunksGot > 0 && res.status !== 206)) {
+          const contentType = res.headers && res.headers.get ? String(res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase() : '';
+          const errorPage = /^(text\/html|application\/(xhtml\+xml|json|problem\+json))$/.test(contentType);
+          if (!accepting || !res.ok || errorPage || (chunksGot > 0 && res.status !== 206)) {
             if (controller) controller.abort();
             if (res.body && res.body.cancel) Promise.resolve(res.body.cancel()).catch(function () {});
             return;
@@ -3283,7 +3287,7 @@ const APP_VERSION = '2.8.28';
                 b.disabled = false;
                 if (b.dataset && b.dataset.label) b.textContent = b.dataset.label;
               });
-              // 安卓安装包里还带 512px 精简图库：删完回落到内置那份；桌面没有内置包，删完就是空着
+              // 安卓删完回落到当前安装包内置图库；桌面没有内置包，删完就是空着
               let fellBack = 0;
               if (canNative) {
                 try {
@@ -3295,7 +3299,7 @@ const APP_VERSION = '2.8.28';
               refreshShapeLibStoreUI();
               render();
               toast(fellBack > 0
-                ? '已删除下载的图库和缓存（占用的空间已释放），已自动换回安装包内置的 512px 精简图库（' + fellBack + ' 张），现在就能用'
+                ? '已删除下载的图库和缓存，已加载安装包内置的' + (state.shapeLibPackKey === 'full' ? '原图' : '精简') + '图库（' + fellBack + ' 张）；内置部分随安装包保留'
                 : '已删除图库和缓存（占用的空间已释放），下次要用再下载或导入', 6000);
             } else toast('删除失败：可能没有存储权限', 5000);
           } catch (e) { toast('删除失败：' + ((e && e.message) || e), 5000); }
@@ -3308,6 +3312,17 @@ const APP_VERSION = '2.8.28';
     async function restoreCachedShapeLib() {
       if (state.shapeLib) return;
       if (window.BrushDesktop) return; // 桌面走程序目录
+      // An original library on disk or in the APK must win over an old lite
+      // IndexedDB cache; otherwise an upgrade still reopens the lite library.
+      try {
+        const native = window.BrushNative;
+        if (native && typeof native.shapeLibLength === 'function') {
+          const bytes = Number(native.shapeLibLength());
+          const original = bytes > 120 * 1048576;
+          const custom = bytes > 0 && bytes !== 33146896 && typeof native.shapeLibSource === 'function' && native.shapeLibSource() === 'file';
+          if (original || custom) return;
+        }
+      } catch (e) { /* a usable browser cache remains a fallback */ }
       try {
         // 原图档优先（用户下过原图就说明想要高清），其次精简档
         // 原图档不从 IndexedDB 恢复（太大）：它落在 App 私有目录里，启动时由 loadBundledShapeLib 读
