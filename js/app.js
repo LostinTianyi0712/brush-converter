@@ -2199,7 +2199,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.47';
+const APP_VERSION = '2.8.48';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2542,7 +2542,15 @@ const APP_VERSION = '2.8.47';
   function renderUpdate(state, info, err) {
     const el = updateEls();
     if (el.current) el.current.textContent = APP_VERSION;
-    if (el.btn) { el.btn.disabled = state === 'checking'; el.btn.textContent = state === 'checking' ? '检查中…' : '检查更新'; }
+    if (el.btn) {
+      el.btn.disabled = state === 'checking';
+      /* 窄屏只显示图标（↻），宽屏显示文字：文案写到 .lbl 里，别覆盖掉图标节点 */
+      const lbl = el.btn.querySelector('.lbl');
+      const txt = state === 'checking' ? '检查中…' : '检查更新';
+      if (lbl) lbl.textContent = txt; else el.btn.textContent = txt;
+      el.btn.title = txt;
+      el.btn.setAttribute('aria-label', txt);
+    }
     const newer = !!(info && BC.update.isNewer(info.version, APP_VERSION));
     if (el.go) {
       el.go.hidden = !newer;

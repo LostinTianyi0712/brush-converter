@@ -736,3 +736,12 @@ main {
 /* 导入区的「选择文件夹」：小一号，放在副标题下面，别抢主按钮 */
 .dz-folder-btn { margin-top: 8px; padding: 5px 14px; font-size: 13px; }
 @media (max-width: 640px) { .dz-folder-btn { margin-top: 6px; } }
+
+/* 窄屏底栏：「检查更新」收成图标，给「公告」腾出同一行的位置 */
+#btnCheckUpdate .ico { display: none; }
+#btnCheckUpdate .lbl { display: inline; }
+@media (max-width: 640px) {
+  .footer-tools #btnCheckUpdate { padding: 4px 8px; }
+  .footer-tools #btnCheckUpdate .lbl { display: none; }
+  .footer-tools #btnCheckUpdate .ico { display: inline; font-size: 15px; line-height: 1; }
+}
