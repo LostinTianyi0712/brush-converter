@@ -2169,7 +2169,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.42';
+const APP_VERSION = '2.8.43';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2411,6 +2411,7 @@ const APP_VERSION = '2.8.42';
       return;
     }
     const day = info && info.date ? '（' + String(info.date).slice(0, 10) + '）' : '';
+    if (el.text.classList) el.text.classList.toggle('is-new', newer);
     if (newer) {
       el.text.textContent = '发现新版本 v' + info.version + day + '，当前 v' + APP_VERSION +
         (updateNative() ? '。点「打开下载页」取新包' : '。点「刷新页面」即可更新');

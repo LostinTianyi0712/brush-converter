@@ -665,3 +665,30 @@ main {
 /* SAI2 笔刷文件夹那一行：开关和说明排一行，手机端不挤 */
 .sai2-auto { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #444; margin: 6px 0 0; }
 .sai2-auto input { width: 16px; height: 16px; margin: 0; }
+
+/* 页面底部：检查更新 + 协议/声明（原来塞在「高级设置」里，用户找不到，2026-11-08 移出） */
+.footer-extra {
+  padding: 10px 22px 14px;
+  border-top: 1px solid var(--line);
+  background: #fff;
+  font-size: 12px;
+  color: #64748b;
+}
+.footer-update { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.footer-update .btn { padding: 4px 12px; font-size: 12px; }
+.footer-update-text { color: #64748b; }
+.footer-update-text.is-new { color: #0f172a; font-weight: 600; }
+.footer-legal { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.footer-legal .license-notice { flex: 1 1 320px; max-width: 100%; }
+.footer-legal .license-notice > summary { font-size: 12px; color: #64748b; cursor: pointer; }
+.footer-legal .license-notice pre {
+  max-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  font-size: 11px; line-height: 1.5; background: #f8fafc; border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 10px; margin: 6px 0 0;
+}
+@media (max-width: 640px) {
+  .footer-extra { padding: 10px 12px 14px; }
+  .footer-update { gap: 8px; }
+  .footer-update-text { flex: 1 1 100%; order: 3; }
+  .footer-legal { flex-direction: column; gap: 6px; }
+}
