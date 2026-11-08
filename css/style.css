@@ -537,7 +537,8 @@ main {
   .pt-right { flex: 1 1 100%; justify-content: stretch; }
   .pt-search { flex: 1; width: auto; }
   .grid { grid-template-columns: 1fr; }
-  .footer { flex-direction: column; align-items: flex-start; gap: 4px; }
+  /* 窄屏底栏：左边 导出日志+检查更新(图标)，右边 公告，同一行；状态文本另起一行 */
+  .footer { flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; }
   .footer-tools { gap: 8px; }
   .footer-update-text { flex: 1 1 100%; order: 9; }
   .outpath, .notice { margin-left: 0; margin-right: 0; }
