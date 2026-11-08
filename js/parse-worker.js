@@ -11,7 +11,7 @@ var CORE = [
   'gimp.js', 'kritaPreview.js', 'kritaPresetTemplate.js', 'sai2.js', 'sai2read.js', 'sai2dat.js', 'sai2settings.js', 'mypaint.js', 'krita.js',
   'jpeg.js', 'jpegEncode.js', 'genericbrush.js', 'painterlib.js',
   'abrUuidPool.js', 'abrPatternTemplate.js', 'pat.js', 'patRead.js', 'abr.js', 'tplTemplate.js', 'tpl.js',
-  'procreate.js', 'bru.js', 'convert.js'
+  'procreate.js', 'bru.js', 'convert.js', 'update.js'
 ];
 
 var loaded = false;

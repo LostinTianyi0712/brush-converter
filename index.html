@@ -262,6 +262,14 @@
             <input id="shapeLibInput" type="file" accept=".zip,image/png,image/jpeg" multiple hidden>
             <input id="shapeLibDirInput" type="file" webkitdirectory directory multiple hidden>
           </div>
+          <div class="opt opt-update">
+            <label>检查更新</label>
+            <div class="shapelib-btns">
+              <button id="btnCheckUpdate" type="button" class="btn ghost">检查更新</button>
+              <button id="btnUpdateGo" type="button" class="btn ghost" hidden>刷新页面</button>
+            </div>
+            <div id="updateText" class="hint">当前版本 v<span id="updateCurrent"></span></div>
+          </div>
           <div class="opt opt-sai2dir" id="sai2DirRow" hidden>
             <label>SAI2 笔刷文件夹（桌面版）</label>
             <div class="shapelib-btns">
@@ -563,6 +571,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 <script defer src="./js/procreate.js"></script>
 <script defer src="./js/bru.js"></script>
 <script defer src="./js/convert.js"></script>
+<script defer src="./js/update.js"></script>
 <script defer src="./js/save-legacy.js"></script>
 <script defer src="./js/app.js"></script>
 </body>

@@ -2169,7 +2169,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.41';
+const APP_VERSION = '2.8.42';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2351,12 +2351,103 @@ const APP_VERSION = '2.8.41';
     // 安卓 App 跑在 file:///android_asset 下，fetch 本地文件会报 “URL scheme file is not supported”，直接跳过
     if (window.BrushNative) return;
     try {
-      const r = await fetch('version.json?_=' + Date.now(), { cache: 'no-store' });
-      if (!r.ok) return;
-      const j = await r.json();
-      if (j && j.version && j.version !== APP_VERSION) toast('发现新版本 ' + j.version + '（当前 ' + APP_VERSION + '），刷新页面即可更新', 8000);
+      await checkForUpdate({ silent: true });
     } catch (e) { /* 离线/本地文件忽略 */ }
   })();
+  /* ---------- 检查更新（网页 / 桌面 EXE / 安卓共用一套） ---------- */
+  const UPDATE = { checking: false, latest: null, error: null };
+  function updateEls() {
+    return {
+      btn: document.getElementById('btnCheckUpdate'),
+      go: document.getElementById('btnUpdateGo'),
+      text: document.getElementById('updateText'),
+      current: document.getElementById('updateCurrent')
+    };
+  }
+  function updateNative() { return !!(window.BrushNative || window.BrushDesktop); }
+  function updateSources() {
+    const lib = BC.update;
+    return lib.sources({
+      siteBase: SITE_BASE, rawBase: SITE_RAW_BASE,
+      mirrors: SITE_MIRRORS, cdn: SITE_CDN, native: updateNative()
+    });
+  }
+  async function fetchLatestVersion() {
+    const urls = updateSources();
+    let lastErr = null;
+    for (const u of urls) {
+      try {
+        const res = await fetch(BC.update.bust(u), { cache: 'no-store' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const info = BC.update.normalize(await res.json());
+        if (!info) throw new Error('内容不是版本信息');
+        return info;
+      } catch (e) { lastErr = e; }
+    }
+    throw lastErr || new Error('没有可用的更新源');
+  }
+  function openDownloadPage() {
+    const url = SITE_BASE;
+    try {
+      if (window.BrushDesktop && typeof window.BrushDesktop.openUrl === 'function') { window.BrushDesktop.openUrl(url); return; }
+      if (window.BrushNative && typeof window.BrushNative.openUrl === 'function') { window.BrushNative.openUrl(url); return; }
+    } catch (e) { /* 落到下面的 window.open */ }
+    try { window.open(url, '_blank'); } catch (e) { /* 忽略 */ }
+  }
+  function updateReload() { try { location.reload(); } catch (e) { /* 忽略 */ } }
+  function renderUpdate(state, info, err) {
+    const el = updateEls();
+    if (el.current) el.current.textContent = APP_VERSION;
+    if (el.btn) { el.btn.disabled = state === 'checking'; el.btn.textContent = state === 'checking' ? '检查中…' : '检查更新'; }
+    const newer = !!(info && BC.update.isNewer(info.version, APP_VERSION));
+    if (el.go) {
+      el.go.hidden = !newer;
+      el.go.textContent = updateNative() ? '打开下载页' : '刷新页面';
+    }
+    if (!el.text) return;
+    if (state === 'checking') { el.text.textContent = '正在检查更新…'; return; }
+    if (state === 'error') {
+      el.text.textContent = '检查失败：' + ((err && (err.message || err)) || '网络不可用') + '（可稍后再试）';
+      return;
+    }
+    const day = info && info.date ? '（' + String(info.date).slice(0, 10) + '）' : '';
+    if (newer) {
+      el.text.textContent = '发现新版本 v' + info.version + day + '，当前 v' + APP_VERSION +
+        (updateNative() ? '。点「打开下载页」取新包' : '。点「刷新页面」即可更新');
+    } else {
+      el.text.textContent = '已是最新版本 v' + APP_VERSION + (info && info.date ? '（线上 ' + String(info.date).slice(0, 10) + '）' : '');
+    }
+  }
+  async function checkForUpdate(opts) {
+    opts = opts || {};
+    if (UPDATE.checking) return UPDATE.latest;
+    UPDATE.checking = true;
+    if (!opts.silent) renderUpdate('checking');
+    try {
+      const info = await fetchLatestVersion();
+      UPDATE.latest = info; UPDATE.error = null;
+      renderUpdate('done', info);
+      if (BC.update.isNewer(info.version, APP_VERSION)) {
+        toast('发现新版本 v' + info.version + '（当前 v' + APP_VERSION + '）' +
+          (updateNative() ? '，可在设置里点「检查更新」打开下载页' : '，刷新页面即可更新'), 8000);
+      } else if (!opts.silent) {
+        toast('已是最新版本 v' + APP_VERSION, 2600);
+      }
+      return info;
+    } catch (e) {
+      UPDATE.error = e;
+      renderUpdate('error', null, e);
+      if (!opts.silent) toast('检查更新失败：' + (e.message || e), 5000);
+      return null;
+    } finally { UPDATE.checking = false; }
+  }
+  (function initUpdateUi() {
+    const el = updateEls();
+    if (el.current) el.current.textContent = APP_VERSION;
+    if (el.btn) el.btn.addEventListener('click', function () { checkForUpdate({ silent: false }); });
+    if (el.go) el.go.addEventListener('click', function () { if (updateNative()) openDownloadPage(); else updateReload(); });
+  })();
+
   const btnShare = $('#btnShare');
   const btnShareResult = $('#btnShareResult');
   [btnShare, btnShareResult].filter(Boolean).forEach(function (button) {
