@@ -747,6 +747,145 @@
     return t;
   }
 
+  /* 画世界内置笔尖库（core/hsj-shapes.js，14MB base64 图）：
+     小包版/未内置该文件的安装包里按需加载——先用上次缓存的字节，再依次试同源、站点绝对地址、
+     gh 镜像与 jsDelivr；全都拿不到就提示用户去设置里点「下载笔尖库」。 */
+  const HSJ_LIB_KEY = 'hsj';
+  let hsjLibState = 'unknown';       // unknown | missing | loading | ready
+  const hsjFailedSources = Object.create(null);
+  let hsjTipNotified = false;
+
+  function hsjLibElements() {
+    return {
+      text: document.getElementById('hsjLibText'),
+      btn: document.getElementById('btnHsjDownload')
+    };
+  }
+  function renderHsjLibState(msg) {
+    const el = hsjLibElements();
+    const label = '下载笔尖库（14MB）';
+    if (el.btn) {
+      el.btn.disabled = hsjLibState === 'loading';
+      el.btn.textContent = hsjLibState === 'loading' ? (msg || '下载中…') : label;
+      el.btn.hidden = hsjLibState === 'ready';
+    }
+    if (el.text) {
+      if (hsjLibState === 'ready') el.text.textContent = '已就绪：画世界 ps* 内置笔尖可直接回填（随 App 或已下载）';
+      else if (hsjLibState === 'loading') el.text.textContent = msg || '正在下载画世界内置笔尖库…';
+      else if (hsjLibState === 'missing') el.text.textContent = '未安装：画世界 BRU 缺内置笔尖时只能留空，点右侧按钮下载（14MB，仅一次）';
+      else el.text.textContent = '可选：画世界 BRU 的内置笔尖（ps*）需要它来回填原图';
+    }
+  }
+  /* 本地优先：网页版是 js/hsj-shapes.js，安卓/桌面壳是同包内的 ../core/hsj-shapes.js
+     （精简图库版、原图图库版内置该文件，小包版没有 → 才需要联网下载）。 */
+  function hsjLocalSrc() {
+    const scripts = Array.prototype.slice.call(document.scripts || []);
+    const inJsDir = scripts.some(function (sc) { return /\/js\/app\.js(\?|$)/.test(sc.src || ''); });
+    return inJsDir ? 'js/hsj-shapes.js' : '../core/hsj-shapes.js';
+  }
+  /* 线上仓库根就是网页包内容，该文件在仓库里是 js/hsj-shapes.js（core/ 不在线上，实测 404），
+     所以镜像与 CDN 都拼 js/ 路径——2026-11-08 用 curl 实测：Pages 200、raw 200、gh-proxy 200、jsDelivr 403。 */
+  function hsjShapesCandidates() {
+    const name = 'js/hsj-shapes.js';
+    const list = [hsjLocalSrc()];
+    list.push(SITE_BASE + name);                          // 站点绝对地址（安卓/桌面壳兜底）
+    for (let i = 0; i < SITE_MIRRORS.length; i++) list.push(SITE_MIRRORS[i] + SITE_RAW_BASE + name);
+    for (let i = 0; i < SITE_CDN.length; i++) list.push(SITE_CDN[i] + name);
+    return list;
+  }
+  function loadHsjScript(url) {
+    return new Promise(function (resolve, reject) {
+      const s = document.createElement('script');
+      s.src = url;
+      s.onload = function () { resolve(true); };
+      s.onerror = function () { s.remove(); reject(new Error('加载失败')); };
+      document.head.appendChild(s);
+    });
+  }
+  async function loadHsjFromBlob(bytes) {
+    const url = URL.createObjectURL(new Blob([bytes], { type: 'text/javascript' }));
+    try { await loadHsjScript(url); } finally { URL.revokeObjectURL(url); }
+    return !!BC.hsjShapes;
+  }
+  async function ensureHsjShapes() {
+    if (BC.hsjShapes) { hsjLibState = 'ready'; renderHsjLibState(); return true; }
+    hsjLibState = 'loading'; renderHsjLibState('正在加载画世界笔尖库…');
+    try {
+      const cached = await ShapeLibStore.get(HSJ_LIB_KEY);
+      if (cached) {
+        try {
+          if (await loadHsjFromBlob(cached)) { hsjLibState = 'ready'; renderHsjLibState(); return true; }
+        } catch (e) { hsjFailedSources.cache = true; }
+      }
+    } catch (e) { /* 缓存不可用：继续在线 */ }
+    const urls = hsjShapesCandidates().filter(function (u) { return !hsjFailedSources[u]; });
+    for (const u of urls) {
+      try { await loadHsjScript(u); } catch (e) { hsjFailedSources[u] = true; continue; }
+      if (BC.hsjShapes) { hsjLibState = 'ready'; renderHsjLibState(); return true; }
+      hsjFailedSources[u] = true;
+    }
+    hsjLibState = 'missing'; renderHsjLibState();
+    return false;
+  }
+  async function installHsjBytes(bytes) {
+    if (!bytes || !bytes.length) throw new Error('空文件');
+    await ShapeLibStore.put(bytes, HSJ_LIB_KEY);
+    if (await loadHsjFromBlob(bytes)) {
+      hsjLibState = 'ready'; renderHsjLibState();
+      toast('画世界内置笔尖库已就绪（14MB，已缓存）', 3500);
+      return true;
+    }
+    throw new Error('脚本载入后没有注册 hsjShapes');
+  }
+  async function downloadHsjLib(btn) {
+    if (hsjLibState === 'loading' || (btn && btn.disabled)) return false;
+    hsjLibState = 'loading';
+    renderHsjLibState('连接中…');
+    const urls = hsjShapesCandidates();
+    let lastErr = null;
+    /* 1) 多源并发分块：Pages 单连接实测约 21KB/s，4 路分块能到 250KB/s 以上 */
+    try {
+      const blob = await parallelRangeBlob(urls, function (got) {
+        renderHsjLibState('下载中 ' + (got / 1048576).toFixed(1) + 'MB');
+      }, { chunkBytes: 2 * 1048576, parallel: 4 });
+      if (blob && blob.size) {
+        try { return await installHsjBytes(new Uint8Array(await blob.arrayBuffer())); }
+        catch (e) { lastErr = e; }
+      }
+    } catch (e) { lastErr = e; }
+    /* 2) 单连接兜底：源不支持 Range 时走流式读取 */
+    for (const u of urls) {
+      try {
+        renderHsjLibState('下载中…');
+        const res = await fetch(u, { cache: 'no-store' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const total = Number(res.headers.get('content-length')) || 0;
+        let got = 0;
+        const reader = res.body && res.body.getReader ? res.body.getReader() : null;
+        let bytes;
+        if (reader) {
+          const parts = [];
+          for (;;) {
+            const r = await reader.read();
+            if (r.done) break;
+            parts.push(r.value); got += r.value.length;
+            const pct = total ? Math.min(99, Math.round(got * 100 / total)) : null;
+            renderHsjLibState(pct === null ? ('下载中 ' + (got / 1048576).toFixed(1) + 'MB') : ('下载中 ' + pct + '%'));
+          }
+          bytes = new Uint8Array(got);
+          let off = 0;
+          parts.forEach(function (part) { bytes.set(part, off); off += part.length; });
+        } else {
+          bytes = new Uint8Array(await res.arrayBuffer());
+        }
+        return await installHsjBytes(bytes);
+      } catch (e) { lastErr = e; hsjFailedSources[u] = true; }
+    }
+    hsjLibState = 'missing'; renderHsjLibState();
+    toast('下载失败：' + ((lastErr && lastErr.message) || '网络不可用') + '，可稍后重试', 6000);
+    return false;
+  }
+
   let hsjShapesLoading = null;
   async function restoreHsjShapes(parsed) {
     const needed = parsed && parsed.brushes && parsed.brushes.some(function (b) {
@@ -755,18 +894,16 @@
     if (!needed) return;
     try {
       if (!BC.hsjShapes) {
-        if (!hsjShapesLoading) hsjShapesLoading = new Promise(function (resolve, reject) {
-          const scripts = Array.prototype.slice.call(document.scripts || []);
-          const inJsDir = scripts.some(function (sc) { return /\/js\/app\.js(\?|$)/.test(sc.src || ''); });
-          const script = document.createElement('script');
-          script.src = inJsDir ? 'js/hsj-shapes.js' : '../core/hsj-shapes.js';
-          script.onload = resolve;
-          script.onerror = function () { script.remove(); hsjShapesLoading = null; reject(new Error('画世界内置笔尖资源加载失败')); };
-          document.head.appendChild(script);
-        });
-        await hsjShapesLoading;
+        if (!hsjShapesLoading) hsjShapesLoading = ensureHsjShapes();
+        const ok = await hsjShapesLoading;
+        hsjShapesLoading = null;
+        if (!ok && !hsjTipNotified) {
+          hsjTipNotified = true;
+          toast('有笔刷缺画世界内置笔尖：可在「设置」里点「下载笔尖库（14MB）」补回', 6500);
+        }
       }
-      BC.convert.restoreHsjTips(parsed);
+      if (BC.hsjShapes) BC.convert.restoreHsjTips(parsed);
+      else pushLog('画世界内置笔尖：本安装包未内置该库，ps* 笔尖暂留空');
     } catch (e) { pushLog(String(e.message || e)); }
   }
 
@@ -1927,7 +2064,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.34';
+const APP_VERSION = '2.8.35';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2649,6 +2786,7 @@ const APP_VERSION = '2.8.34';
           const tx = db.transaction(STORE, 'readwrite');
           tx.objectStore(STORE).delete('lite');
           tx.objectStore(STORE).delete('full');
+          tx.objectStore(STORE).delete('hsj');   // 画世界内置笔尖库（14MB），删除图库时一并释放
           tx.oncomplete = function () { resolve(); };
           tx.onerror = function () { reject(tx.error); };
         });
@@ -2882,11 +3020,20 @@ const APP_VERSION = '2.8.34';
         try { await res.arrayBuffer(); } catch (e) {}
         const t = m ? Number(m[1]) : 0;
         if (t > total) total = t;
-        score.set(u, { bytes: 1, ms: dt });
+        score.set(u, { bytes: 1, ms: dt, total: t });
       } catch (e) { /* 该源不支持/不可达 */ }
     }));
-    const live = urls.filter(function (u) { return score.has(u) && score.get(u).bytes > 0; });
-    if (!total || !live.length) return null;
+    /* 只认同长度的源：镜像/CDN 可能缓存着旧版本（实测 gh-proxy 对同一路径返回 10,638,011B、
+       Pages 与 ghfast 是 14,171,205B）。不同长度的源混进并发分块会拼出坏文件，直接剔除。 */
+    const live = urls.filter(function (u) {
+      const s = score.get(u);
+      return s && s.bytes > 0 && s.total === total;
+    });
+    if (!total || !live.length) {
+      const mixed = urls.filter(function (u) { return score.has(u) && score.get(u).total !== total; });
+      if (mixed.length) pushLog('下载源长度不一致，已忽略：' + mixed.map(function (u) { return u + ' (' + score.get(u).total + 'B)'; }).join('、'));
+      return null;
+    }
     const n = Math.ceil(total / CHUNK);
     const parts = new Array(n);
     let got = 0, next = 0;
@@ -3565,6 +3712,16 @@ const APP_VERSION = '2.8.34';
       apply(virtY);
     }, { passive: true });
     apply(scrollTop());
+  })();
+
+  /* 画世界内置笔尖库：设置区按钮 + 首次状态渲染 */
+  (function initHsjLibUi() {
+    renderHsjLibState();
+    const btn = document.getElementById('btnHsjDownload');
+    if (!btn) return;
+    btn.addEventListener('click', function () { downloadHsjLib(btn); });
+    /* 已内置的包直接置 ready，省得用户白点 */
+    if (BC.hsjShapes) { hsjLibState = 'ready'; renderHsjLibState(); }
   })();
 
   $('#ver').textContent = 'v' + APP_VERSION;
