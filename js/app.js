@@ -2186,7 +2186,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.45';
+const APP_VERSION = '2.8.46';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2371,6 +2371,95 @@ const APP_VERSION = '2.8.45';
       await checkForUpdate({ silent: true });
     } catch (e) { /* 离线/本地文件忽略 */ }
   })();
+  /* ---------- 目标 = SAI2 时，列出本机 SAI2 已装的散布笔刷 ---------- */
+  const SAI2_LIST = { loaded: false, dir: '', items: [], error: null };
+  function sai2ListEls() {
+    return {
+      panel: document.getElementById('sai2ListPanel'),
+      count: document.getElementById('sai2ListCount'),
+      body: document.getElementById('sai2ListBody'),
+      hint: document.getElementById('sai2ListHint'),
+      search: document.getElementById('sai2ListSearch'),
+      refresh: document.getElementById('btnSai2ListRefresh')
+    };
+  }
+  function sai2OutputNames() {
+    /* 本次将要写进 SAI2 的名字（含去重后的 _2），用来标「重名」 */
+    const names = new Set();
+    (state.files || []).forEach(function (rec) {
+      (rec.brushes || []).forEach(function (b) {
+        if (!b || b.enabled === false) return;   // 取消勾选的笔刷不会输出，不做重名提示
+        names.add(String(b.sai2ShapeName || b.name || '').trim().toLowerCase());
+      });
+    });
+    return names;
+  }
+  function renderSai2List() {
+    const el = sai2ListEls();
+    if (!el.body) return;
+    const q = (el.search && el.search.value || '').trim().toLowerCase();
+    const dup = sai2OutputNames();
+    const items = SAI2_LIST.items.filter(function (it) {
+      return !q || String(it.name).toLowerCase().indexOf(q) >= 0;
+    });
+    el.body.innerHTML = '';
+    items.slice(0, 300).forEach(function (it) {
+      const row = document.createElement('div');
+      row.className = 'sai2-row';
+      const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = it.name;
+      const sz = document.createElement('span'); sz.className = 'sz';
+      sz.textContent = it.bytes ? (Math.round(it.bytes / 1024) + 'KB') : '';
+      row.appendChild(nm); row.appendChild(sz);
+      if (dup.has(String(it.name).toLowerCase())) {
+        const d = document.createElement('span'); d.className = 'dup'; d.textContent = '重名 → 会存为 _2';
+        row.appendChild(d);
+      }
+      el.body.appendChild(row);
+    });
+    if (el.count) el.count.textContent = SAI2_LIST.error ? '' : ('（' + SAI2_LIST.items.length + ' 支）');
+    if (el.hint) {
+      el.hint.textContent = SAI2_LIST.error
+        ? ('读取失败：' + SAI2_LIST.error)
+        : (SAI2_LIST.dir ? ('目录：' + SAI2_LIST.dir) : '目标格式选 SAI2 时会自动读取这个列表');
+    }
+  }
+  async function loadSai2Brushes(force) {
+    const el = sai2ListEls();
+    const target = $('#optTarget') ? $('#optTarget').value : '';
+    if (!el.panel) return;
+    if (target !== 'sai2') { el.panel.hidden = true; return; }
+    if (!(window.BrushDesktop && typeof window.BrushDesktop.sai2List === 'function')) {
+      el.panel.hidden = true;   // 网页/安卓没有本地 SAI2 目录
+      return;
+    }
+    el.panel.hidden = false;
+    if (SAI2_LIST.loaded && !force) { renderSai2List(); return; }
+    if (el.hint) el.hint.textContent = '正在读取本机 SAI2 笔刷…';
+    try {
+      const r = await window.BrushDesktop.sai2List();
+      if (r && r.ok) {
+        SAI2_LIST.items = r.brushes || [];
+        SAI2_LIST.dir = r.dir || '';
+        SAI2_LIST.error = null;
+      } else {
+        SAI2_LIST.items = []; SAI2_LIST.dir = '';
+        SAI2_LIST.error = (r && r.error) || '未知错误';
+      }
+    } catch (e) {
+      SAI2_LIST.items = []; SAI2_LIST.error = e.message || String(e);
+    }
+    SAI2_LIST.loaded = true;
+    renderSai2List();
+  }
+  (function initSai2ListUi() {
+    const el = sai2ListEls();
+    if (el.refresh) el.refresh.addEventListener('click', function () { loadSai2Brushes(true); });
+    if (el.search) el.search.addEventListener('input', renderSai2List);
+    const sel = $('#optTarget');
+    if (sel) sel.addEventListener('change', function () { SAI2_LIST.loaded = false; loadSai2Brushes(); });
+    loadSai2Brushes();          // 默认目标就是 SAI2 时立刻拉一次
+  })();
+
   /* ---------- 检查更新（网页 / 桌面 EXE / 安卓共用一套） ---------- */
   const UPDATE = { checking: false, latest: null, error: null };
   function updateEls() {

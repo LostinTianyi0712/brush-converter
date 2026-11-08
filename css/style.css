@@ -711,3 +711,22 @@ main {
   color: #475569;
 }
 .opt-section:first-child { border-top: 0; padding-top: 0; }
+
+/* 目标=SAI2 时列出的本机已有笔刷（scatter 目录） */
+.sai2-list-actions { display: flex; gap: 8px; align-items: center; margin: 4px 0 6px; }
+.sai2-list-actions input[type="search"] {
+  flex: 1 1 auto; min-width: 0; padding: 5px 10px; font-size: 13px;
+  border: 1px solid var(--line); border-radius: 8px; background: #fff;
+}
+.sai2-list-body {
+  max-height: 240px; overflow: auto; border: 1px solid var(--line);
+  border-radius: 8px; background: #fff; font-size: 13px;
+}
+.sai2-list-body:empty { display: none; }
+.sai2-row { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border-top: 1px solid #f1f5f9; }
+.sai2-row:first-child { border-top: 0; }
+.sai2-row .nm { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sai2-row .sz { color: #94a3b8; font-size: 12px; flex: 0 0 auto; }
+.sai2-row .dup { color: #b45309; font-size: 12px; flex: 0 0 auto; }
+.hint-inline { color: #94a3b8; font-weight: 400; font-size: 12px; margin-left: 6px; }
+@media (max-width: 640px) { .sai2-list-body { max-height: 180px; } }

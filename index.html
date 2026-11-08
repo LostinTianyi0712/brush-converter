@@ -242,6 +242,15 @@
               <option value="auto">实验浓度归一（会调整不透明度）</option>
             </select>
           </div>
+          <div class="opt opt-sai2list" id="sai2ListPanel" hidden>
+            <label>本机 SAI2 已有笔刷 <span id="sai2ListCount" class="hint-inline"></span></label>
+            <div class="sai2-list-actions">
+              <button id="btnSai2ListRefresh" type="button" class="btn ghost">重新读取</button>
+              <input id="sai2ListSearch" type="search" placeholder="搜索名字" autocomplete="off">
+            </div>
+            <div id="sai2ListBody" class="sai2-list-body"></div>
+            <div id="sai2ListHint" class="hint">目标格式选 SAI2 时会自动读取这个列表</div>
+          </div>
           <div class="opt-section">素材与兼容</div>
           <div class="opt">
             <label>ZIP 内按来源分文件夹（单独模式）</label>
