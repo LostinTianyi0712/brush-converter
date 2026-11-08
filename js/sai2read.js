@@ -252,6 +252,8 @@
       const texscl = r.texscl !== undefined && String(r.texscl).trim() !== '' && isFinite(Number(r.texscl)) && Number(r.texscl) > 0
         ? Math.max(0.01, Math.min(10, Number(r.texscl) / 100)) : undefined;
       const texinvf = r.texinvf !== undefined && String(r.texinvf).trim() !== '' ? Number(r.texinvf) === 1 : undefined;
+      const txval = r.txval !== undefined && String(r.txval).trim() !== '' && isFinite(Number(r.txval))
+        ? Math.max(0, Math.min(1, Number(r.txval) / 100)) : undefined;
       const stretch = r.stretch !== undefined && String(r.stretch).trim() !== '' && isFinite(Number(r.stretch))
         ? Math.max(0, Math.min(1, Number(r.stretch) / 100)) : undefined;
       brushes.push({
@@ -279,6 +281,7 @@
         smoothingStrength: Number(r.smooth) ? Math.max(0, Math.min(1, Number(r.smooth) / 100)) : 0,
         textureScale: texscl,
         textureInverted: texinvf,
+        textureDepth: txval,
         source: 'sai2',
         _sai2tool: r
       });
@@ -355,7 +358,7 @@
           pressureSize:['f_prs2sz'],pressureOpacity:['f_prs2dp'],pressureSmudge:['f_prs2bl'],keepOpacity:['f_keepopac'],
           hardness:['edgehdns','prsfeel'],smudgeOn:['blend'],smudgeAmount:['blend'],
           wetEdgesOn:['water'],wetEdgesAmount:['water'],colorStretch:['stretch'],smoothingStrength:['smooth'],
-          textureScale:['texscl'],textureInverted:['texinvf']};
+          textureScale:['texscl'],textureInverted:['texinvf'],textureDepth:['txval']};
         for (const field of Object.keys(fields)) if (fields[field].some(k=>record[k]!==undefined && String(record[k]).trim()!=='')) brush[field]=meta[field];
         if (!iniEntry && record.bfval !== undefined && String(record.bfval).trim() !== '') brush.flowPct = meta.flowPct;
         brush._sai2tool = record;

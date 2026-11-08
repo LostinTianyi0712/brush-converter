@@ -3119,13 +3119,29 @@ Write-Host 'restart MediBang Paint Pro'
       const b = withExportSettings(source, opts);
       try {
         const tip = bakedTipFor(Object.assign({}, b, { angle: 0, roundness: 100 }), opts || {});
-        const texture = !(opts && opts.noTextureBake) && b.hasTexture ? textureGray(b) : null;
+        /* SAI2 的 brushtex 是纹理素材原图，反相由工具参数 texinvf 决定（toolnrm 里会写）。
+           这里若把 textureInverted 烘焙进 BMP，回读时解析器又会带着 texinvf=1 再烘焙一次，
+           导出→导入→再导出就在「正/反」之间无限震荡；SAI2 里也会双重反相。 */
+        const texSource = Object.assign({}, b, { textureInverted: false });
+        const texture = !(opts && opts.noTextureBake) && b.hasTexture ? textureGray(texSource) : null;
         return withFixedTipFlips(Object.assign({}, b, { tip: { w: tip.w, h: tip.h, rgba: tip.rgba }, _sai2Texture: texture }));
       } catch (e) { return b; }
     });
     const made = sai2.makeSai2Files(list, opts || {});
+    made.warnings = (made.warnings || []).concat(sai2TextureWarnings(list, opts));
     if (made.record) made.files = made.files.concat([{ rel: 'SAI2参数记录.txt', data: made.record }]);
     return made;
+  }
+
+  /* 源有纹理引用却拿不到纹理像素（画世界内置材质 / Procreate 内置 Grain 等）时，
+     SAI2 只会静默不写 brushtex。打包与「自动写入 SAI2 文件夹」两条路都要如实报告，
+     否则桌面端用户完全看不到这条警告。 */
+  function sai2TextureWarnings(list, opts) {
+    if (opts && opts.noTextureBake) return [];
+    return (list || []).filter(function (b) { return b && b.hasTexture && !b._sai2Texture; })
+      .map(function (b) {
+        return (b.name || '未命名') + '：有纹理但缺纹理像素，未输出配套纹理 BMP（需在 SAI2 工具设置里手动选择纹理）';
+      });
   }
 
   /** Brush list -> SAI2 scatter brush files (bmp + ini), zipped. */
@@ -3134,22 +3150,15 @@ Write-Host 'restart MediBang Paint Pro'
       const b = withExportSettings(source, opts);
       try {
         const tip = bakedTipFor(Object.assign({}, b, { angle: 0, roundness: 100 }), opts || {});
-        const texture = !(opts && opts.noTextureBake) && b.hasTexture ? textureGray(b) : null;
+        /* 同 makeSai2Files：反相是 texinvf 工具参数，不烘焙进 BMP 素材，避免回读二次反相 */
+        const texSource = Object.assign({}, b, { textureInverted: false });
+        const texture = !(opts && opts.noTextureBake) && b.hasTexture ? textureGray(texSource) : null;
         return withFixedTipFlips(Object.assign({}, b, { tip: { w: tip.w, h: tip.h, rgba: tip.rgba }, _sai2Texture: texture }));
       } catch (e) { return b; }
     });
     const made = sai2.makeSai2Pack(list, opts || {});
-    /* 第153轮：源有纹理但拿不到纹理像素时（画世界内置材质 / Procreate 内置 Grain 等），
-       以前是静默不写 brushtex，也没有任何提示——用户会以为配套纹理已经带过去了。
-       这里补一条明确警告，与其它格式「未写出要说明」的口径一致。 */
-    if (!(opts && opts.noTextureBake)) {
-      const missing = list.filter(function (b) { return b && b.hasTexture && !b._sai2Texture; });
-      if (missing.length) {
-        made.warnings = (made.warnings || []).concat(missing.map(function (b) {
-          return (b.name || '未命名') + '：有纹理但缺纹理像素，未输出配套纹理 BMP（需在 SAI2 工具设置里手动选择纹理）';
-        }));
-      }
-    }
+    /* 第153轮：源有纹理但拿不到纹理像素时不能静默不写 brushtex，明确报出来 */
+    made.warnings = (made.warnings || []).concat(sai2TextureWarnings(list, opts));
     return made;
   }
 

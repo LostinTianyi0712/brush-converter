@@ -954,6 +954,8 @@
     try {
       const made = BC.convert.makeSai2Files(list, opts || {});
       if (!made || !made.files || !made.files.length) return null;
+      /* 自动写入不产生 ZIP，makeSai2Files 的警告没有别的出口，这里补记到日志 */
+      for (const w of made.warnings || []) pushLog('SAI2：' + w);
       /* 只落 SAI2 真正会读的 SAIv2/settings 素材。SAI2参数记录.txt 是给 ZIP 用户看的兼容文本，
          写进 SAI2 用户目录既不生效，又会在每次转换被重名顺延成 _2/_3，堆出一串垃圾文件。 */
       const payload = made.files
@@ -961,16 +963,24 @@
         .map(function (f) { return { rel: f.rel, base64: sai2BytesToB64(f.data) }; });
       if (!payload.length) return null;
       const res = await window.BrushDesktop.sai2Save(payload);
-      if (res && res.ok) {
-        const written = res.written || [];
-        const renamed = written.filter(function (w) { return w.renamed; }).length;
+      if (!res) { pushLog('SAI2：写入笔刷文件夹无返回'); return null; }
+      const written = res.written || [];
+      const errors = res.errors || [];
+      const skipped = res.skipped || [];
+      const renamed = written.filter(function (w) { return w.renamed; }).length;
+      const why = res.error || errors.join('；');
+      /* 部分写入成功后 IPC 会返回 ok:false，但文件其实已经落盘了。
+         一律提示「失败」会让用户重复导入，在 SAI2 目录里堆出更多 _2/_3。 */
+      if (written.length) {
         pushLog('SAI2：已写入 ' + written.length + ' 个文件到 ' + res.settings +
-          (renamed ? '（' + renamed + ' 个重名自动加 _2）' : ''));
-        toast('已保存到 SAI2 笔刷文件夹（' + written.length + ' 个文件）', 4200);
+          (renamed ? '（' + renamed + ' 个重名自动加 _2）' : '') +
+          (errors.length || skipped.length ? '；' + errors.length + ' 个失败、' + skipped.length + ' 个跳过' : ''));
+        if (why || skipped.length) pushLog('SAI2：' + [why, skipped.length ? skipped.length + ' 个路径被跳过' : ''].filter(Boolean).join('；'));
+        toast('已保存到 SAI2 笔刷文件夹（' + written.length + ' 个文件' +
+          (errors.length ? '，' + errors.length + ' 个失败' : '') + '）', 4200);
       } else {
-        const why = (res && (res.error || (res.errors && res.errors.join('；')))) || '未知错误';
-        pushLog('SAI2：写入笔刷文件夹失败 ' + why);
-        toast('写入 SAI2 文件夹失败：' + why, 6000);
+        pushLog('SAI2：写入笔刷文件夹失败 ' + (why || '未知错误'));
+        toast('写入 SAI2 文件夹失败：' + (why || '未知错误'), 6000);
       }
       return res;
     } catch (e) {
@@ -2159,7 +2169,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.37';
+const APP_VERSION = '2.8.38';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -3114,10 +3124,29 @@ const APP_VERSION = '2.8.37';
         const m = /\/(\d+)\s*$/.exec(cr);
         try { await res.arrayBuffer(); } catch (e) {}
         const t = m ? Number(m[1]) : 0;
-        if (t > total) total = t;
         score.set(u, { bytes: 1, ms: dt, total: t });
       } catch (e) { /* 该源不支持/不可达 */ }
     }));
+    /* 选权威长度：原来直接取所有源里最大的 Content-Range，等于默认「旧缓存更大就是新版」。
+       一旦新版比旧缓存小，就会静默把 CDN 旧文件当新版下载回来（没有任何报错）。
+       按 SITE_BASE 前缀认出发布源，优先采信它的长度（不依赖候选顺序）；
+       发布源不可达或调用方只给了自定义 URL 时，退回「票多者胜、平局取大」。 */
+    const authUrl = urls.find(function (u) { return typeof u === 'string' && u.indexOf(SITE_BASE) === 0; });
+    const authoritative = authUrl && score.get(authUrl);
+    if (authoritative && authoritative.total > 0) {
+      total = authoritative.total;
+    } else {
+      const votes = new Map();
+      for (const u of urls) {
+        const s = score.get(u);
+        if (s && s.bytes > 0 && s.total > 0) votes.set(s.total, (votes.get(s.total) || 0) + 1);
+      }
+      let best = 0, bestVotes = -1;
+      for (const [len, cnt] of votes) {
+        if (cnt > bestVotes || (cnt === bestVotes && len > best)) { best = len; bestVotes = cnt; }
+      }
+      total = best;
+    }
     /* 只认同长度的源：镜像/CDN 可能缓存着旧版本（实测 gh-proxy 对同一路径返回 10,638,011B、
        Pages 与 ghfast 是 14,171,205B）。不同长度的源混进并发分块会拼出坏文件，直接剔除。 */
     const live = urls.filter(function (u) {
