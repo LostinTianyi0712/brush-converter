@@ -45,7 +45,9 @@
       <div class="dz-inner">
         <div class="dz-icon">＋</div>
         <p class="dz-title">拖入笔刷文件，或点击选择</p>
-        <p class="dz-sub">支持多选文件或 ZIP</p>
+        <p class="dz-sub">支持多选文件、文件夹或 ZIP（保留子文件夹结构）</p>
+        <button id="btnPickFolder" type="button" class="btn ghost dz-folder-btn">选择文件夹</button>
+        <input id="folderInput" type="file" webkitdirectory directory multiple hidden>
         <!-- Do not restrict accept: iOS document pickers can gray out custom brush types. The parser validates selected files. -->
         <input id="fileInput" type="file" multiple hidden>
       </div>

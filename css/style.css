@@ -526,7 +526,7 @@ main {
   .step { margin-top: 20px; }
   .step-title h2 { font-size: 18px; }
   .dropzone { padding: 16px 12px; }
-  .dz-sub { text-align: left; line-height: 1.6; }
+  .dz-sub { text-align: center; line-height: 1.6; }   /* 竖屏也居中，跟标题对齐 */
   .options { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 12px; }
   .opt.grow { grid-column: span 2; }
   .opt input, .opt select { width: 100%; min-width: 0; max-width: 100%; }
@@ -698,6 +698,8 @@ main {
   .footer-update { gap: 8px; }
   .footer-update-text { flex: 1 1 100%; order: 3; }
   .footer-legal { flex-direction: column; gap: 6px; }
+  /* 列方向下 flex-basis 会当成高度：不清掉的话两个声明之间会空出一大截 */
+  .footer-legal .license-notice { flex: 0 0 auto; }
 }
 
 /* 高级设置里的分组标题（20 个选项一锅端太难看，按用途分段） */
@@ -730,3 +732,7 @@ main {
 .sai2-row .dup { color: #b45309; font-size: 12px; flex: 0 0 auto; }
 .hint-inline { color: #94a3b8; font-weight: 400; font-size: 12px; margin-left: 6px; }
 @media (max-width: 640px) { .sai2-list-body { max-height: 180px; } }
+
+/* 导入区的「选择文件夹」：小一号，放在副标题下面，别抢主按钮 */
+.dz-folder-btn { margin-top: 8px; padding: 5px 14px; font-size: 13px; }
+@media (max-width: 640px) { .dz-folder-btn { margin-top: 6px; } }

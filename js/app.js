@@ -657,8 +657,10 @@
     }[kind] || '未知';
   }
 
-  function makeRecord(name, bytes) {
-    const rec = { name: name, size: bytes ? bytes.length : 0, bytes: bytes, brushes: null, warnings: [], error: null };
+  function makeRecord(name, bytes, relDir) {
+    /* relDir：从文件夹拖入/选择时的相对子目录（不带首尾斜杠），转出时按它还原目录结构 */
+    const rec = { name: name, size: bytes ? bytes.length : 0, bytes: bytes, brushes: null, warnings: [], error: null,
+      relDir: String(relDir || '').replace(/^\/+|\/+$/g, '') };
     state.files.push(rec);
     return rec;
   }
@@ -1109,7 +1111,13 @@
   }
 
   async function addFiles(fileList) {
-    const arr = Array.from(fileList || []);
+    /* 两种输入：拖文件夹走 {file, relDir}；<input webkitdirectory> 用 webkitRelativePath */
+    const arr = Array.from(fileList || []).map(function (x) {
+      if (x && x.file) return { file: x.file, relDir: x.relDir || '' };
+      const rel = (x && x.webkitRelativePath) || '';
+      const cut = rel.lastIndexOf('/');
+      return { file: x, relDir: cut > 0 ? rel.slice(0, cut) : '' };
+    }).filter(function (x) { return x.file; });
     if (!arr.length) return;
     // #262 导入中再拖/再选：不静默失败，也不允许两批交错塞卡片
     if (isImporting() || isBusy()) { toast(isBusy() ? '正在转换，完成后再添加文件' : '正在导入上一个文件，稍等'); return; }
@@ -1117,14 +1125,15 @@
     state.importing++;
     updateConvertButton();
     try {
-    for (const f of arr) {
+    for (const item of arr) {
+      const f = item.file;
       // #262 用户点了「清空」/单卡✕：token 变了就停手，不再往新列表里 push
       if (token !== state.importToken) break;
       let rec = null;
       try {
         const bytes = await readFileBytes(f).catch(function (e) { return null; });
         if (!bytes) {
-          rec = makeRecord(f.name, null);
+          rec = makeRecord(f.name, null, item.relDir);
           rec.error = '读取文件失败';
           render();
           continue;
@@ -1156,14 +1165,14 @@
             await addZip(f.name, bytes, 0);
             setProgress(null);
           } catch (e) {
-            rec = makeRecord(f.name, null);
+            rec = makeRecord(f.name, null, item.relDir);
             rec.error = friendlyError(e.message) || '压缩包解析失败';
             render();
           }
           continue;
         }
         // 先建卡片再解析：大文件解析要一会儿，界面能立刻看到进度
-        rec = makeRecord(f.name, null);
+        rec = makeRecord(f.name, null, item.relDir);
         rec.sizeBytes = bytes.length;
         rec.parsing = true;
         render();
@@ -1600,7 +1609,11 @@
         const brushTag = (b.name || '').trim();
         const composed = (opts.prefix || '') + (brushTag || rec.baseName || ('笔刷 ' + String(i + 1).padStart(2, '0')));
         const base = BC.convert.sanitizeName(composed, doneCount, true);
-        const folder = opts.groupBySource && rec.baseName ? BC.convert.sanitizeName(rec.baseName, 0, true) + '/' : '';
+        /* 目录结构优先：从文件夹导入的笔刷按原来的子目录还原；否则退回「按来源分文件夹」 */
+        const relDir = String(rec.relDir || '').replace(/^\/+|\/+$/g, '');
+        const folder = relDir
+          ? relDir.split('/').map(function (seg) { return BC.convert.sanitizeName(seg, 0, true); }).join('/') + '/'
+          : (opts.groupBySource && rec.baseName ? BC.convert.sanitizeName(rec.baseName, 0, true) + '/' : '');
         for (const fmt of targets) {
           try {
             const co = commonOpts(rec);
@@ -2186,7 +2199,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.46';
+const APP_VERSION = '2.8.47';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2270,7 +2283,12 @@ const APP_VERSION = '2.8.46';
       if (!entry) return;
       if (entry.isFile) {
         const f = await new Promise(function (res) { try { entry.file(res, function () { res(null); }); } catch (e) { res(null); } });
-        if (f) out.push(f);
+        if (f) {
+          /* entry.fullPath 形如 /子目录/文件.bru：记下相对目录，转出时还原结构 */
+          const full = String(entry.fullPath || '');
+          const cut = full.lastIndexOf('/');
+          out.push({ file: f, relDir: cut > 0 ? full.slice(1, cut) : '' });
+        }
         return;
       }
       if (entry.isDirectory) {
@@ -2285,6 +2303,18 @@ const APP_VERSION = '2.8.46';
     for (const r of roots) await walk(r);
     return out.length ? out : plain;
   }
+  /* 「选择文件夹」：webkitdirectory 拿到的 File 带 webkitRelativePath，addFiles 会据此还原目录 */
+  (function initFolderPick() {
+    const btn = document.getElementById('btnPickFolder');
+    const inp = document.getElementById('folderInput');
+    if (btn && inp) btn.addEventListener('click', function () { inp.click(); });
+    if (inp) inp.addEventListener('change', function () {
+      if (!inp.files || !inp.files.length) return;
+      addFiles(inp.files);
+      inp.value = '';           // 允许连续选同一个文件夹
+    });
+  })();
+
   dz.addEventListener('drop', async e => {
     if (isBusy()) { toast('正在转换，完成后再添加文件'); return; }
     const files = await collectDroppedFiles(e.dataTransfer);
