@@ -352,7 +352,14 @@
       return b.source === 'bru' && !b.tip && /^ps[1-9][0-9]*$/.test(b.oldTexId || '');
     });
     if (!missing.length) return 0;
-    const lib = isNode ? require('./hsj-shapes.js') : root.BC.hsjShapes;
+    let lib = null;
+    if (isNode) {
+      /* 小包版/网页包可能不带 core/hsj-shapes.js（14MB）。缺文件按「没有内置库」处理：
+         浏览器端 root.BC.hsjShapes 为空时本来就 return 0，Node 端不该反过来抛
+         MODULE_NOT_FOUND 把整次解析带崩。其它 require 错误照常抛出。 */
+      try { lib = require('./hsj-shapes.js'); }
+      catch (e) { if (!e || e.code !== 'MODULE_NOT_FOUND') throw e; }
+    } else lib = root.BC.hsjShapes;
     if (!lib) return 0;
     let count = 0;
     missing.forEach(function (b) {
@@ -2657,9 +2664,9 @@ Write-Host 'restart MediBang Paint Pro'
     }
     if (key === 'eraser' && target === 'kbundle' && brush.eraserAmount > 0 && brush.eraserAmount < 1) return '近似（连续橡皮强度映射为橡皮开关）';
     if (target === 'sai2' && ['opacity','minSizeRatio','minOpacityRatio','hardness','pressureSize','pressureOpacity','smudgeOn','wetEdgesOn','smoothingStrength'].indexOf(key) >= 0) return opts.pressure === false && (key === 'pressureSize' || key === 'pressureOpacity')
-      ? '兼容参数（按导出设置关闭压感；toolnrm旁带文本，不是新版原生工具预设）'
-      : '兼容参数（toolnrm旁带文本，需在SAI2工具中设置；不是新版原生工具预设）';
-    if (target === 'sai2' && key === 'flowPct') return '参数映射（写入散布INI的Density与toolnrm的bfval，笔触待验证）';
+      ? '兼容参数（按导出设置关闭压感；写进包内 SAI2参数记录.txt，不是新版原生工具预设）'
+      : '兼容参数（写进包内 SAI2参数记录.txt，需在SAI2工具里设置；不是新版原生工具预设）';
+    if (target === 'sai2' && key === 'flowPct') return '参数映射（写入散布INI的Density与参数记录的bfval，笔触待验证）';
     if (target === 'sai2' && brush.scatterOn === false && ['scatterCount','countJitterPct'].indexOf(key) >= 0) return '未启用';
     if (key === 'scatterCount' && (target === 'brush' || target === 'brushset') && brush.scatterCount > 16) return '近似（目标写端最多16个笔尖，数量已限制为16）';
     if (target === 'sai2' && key === 'angleJitterDeg') return '近似（转换为SAI2角度随机百分比，实际角度范围待原生标定）';
@@ -2897,7 +2904,7 @@ Write-Host 'restart MediBang Paint Pro'
     gih: '不透明度/圆度：在 GIMP 管道画笔选项里手动设',
     myb: '当前仅输出参数化圆形/椭圆笔尖，不写入自定义采样笔尖、双笔或纹理图；速度/倾斜需手动配置',
     painter: '笔尖/半径：Painter 里按 PNG/nib 手动微调；双笔刷：已合成近似',
-    sai2: 'BMP/INI是形状素材；toolnrm是兼容参数文本，不是新版.saitdat原生预设。工具尺寸/浓度/压感与配套纹理需在SAI2中设置',
+    sai2: '输出可直接拖进 文档\\SYSTEMAX Software Development 的 SAIv2/settings 目录；包内 SAI2参数记录.txt 是兼容参数文本，不是新版.saitdat原生预设。工具尺寸/浓度/压感与配套纹理需在SAI2中设置',
     png: '仅笔尖图 + 参数文本，需在目标软件里手动建笔刷',
     medibang: '位图笔刷导入后可在 MediBang 里调间距/压感',
     mbini: '复制到 CloudAlpaca 后重启；程序笔刷已转成位图笔刷',
@@ -3002,7 +3009,7 @@ Write-Host 'restart MediBang Paint Pro'
       gih: 'GIMP 管道格式只有「笔尖 + 间距 + 硬度」',
       myb: '当前MyPaint导出不写入自定义采样笔尖、双笔或纹理图；速度/倾斜未映射',
       painter: 'Painter写出基础XML和有损JPEG笔尖；独立材质及复杂引擎未还原',
-      sai2: 'SAI2输出BMP/INI及配套纹理；toolnrm仅为兼容参数文本，新版原生.saitdat工具预设尚未验证',
+      sai2: 'SAI2输出 SAIv2/settings 目录树（拖进去即用）；参数记录仅为兼容文本，新版原生.saitdat工具预设尚未验证',
       png: 'PNG 只导出笔尖图 + 参数文本',
       medibang: 'MediBang 只写基础字段', mbini: 'MediBang 云笔刷只写基础字段',
       gobrush: '天生会画保留原样单支，重建映射主要数值和已知独立压力曲线；原生笔触待验证',
@@ -3105,6 +3112,22 @@ Write-Host 'restart MediBang Paint Pro'
     return krita.writeBundle(list, opts || {});
   }
 
+  /** 桌面版「保存到 SAI2 笔刷文件夹」用：只算文件清单，不打包。
+      返回 { files:[{rel, data}], count, warnings }，rel 形如 SAIv2/settings/scatter/x.bmp。 */
+  function makeSai2Files(brushList, opts) {
+    const list = (brushList || []).map(function (source) {
+      const b = withExportSettings(source, opts);
+      try {
+        const tip = bakedTipFor(Object.assign({}, b, { angle: 0, roundness: 100 }), opts || {});
+        const texture = !(opts && opts.noTextureBake) && b.hasTexture ? textureGray(b) : null;
+        return withFixedTipFlips(Object.assign({}, b, { tip: { w: tip.w, h: tip.h, rgba: tip.rgba }, _sai2Texture: texture }));
+      } catch (e) { return b; }
+    });
+    const made = sai2.makeSai2Files(list, opts || {});
+    if (made.record) made.files = made.files.concat([{ rel: 'SAI2参数记录.txt', data: made.record }]);
+    return made;
+  }
+
   /** Brush list -> SAI2 scatter brush files (bmp + ini), zipped. */
   function makeSai2Pack(brushList, opts) {
     const list = (brushList || []).map(function (source) {
@@ -3203,7 +3226,7 @@ Write-Host 'restart MediBang Paint Pro'
     });
   }
 
-  const api = { detect, parseFile, restoreHsjTips, expandArchive, synthTip, makeBru, makeBruPack, makeBruDualPair, buildBruDualPairBrushes, makeAbrPack, makeTplPack, makeUdongmanPack, makeUdongmanSutPack, makeUdongmanMtdPack, parseMtd, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, mergePatternFiles, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, tipSourceAudit, tipSourceHint, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
+  const api = { detect, parseFile, restoreHsjTips, expandArchive, synthTip, makeBru, makeBruPack, makeBruDualPair, buildBruDualPairBrushes, makeAbrPack, makeTplPack, makeUdongmanPack, makeUdongmanSutPack, makeUdongmanMtdPack, parseMtd, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, mergePatternFiles, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, tipSourceAudit, tipSourceHint, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Files, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { convert: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

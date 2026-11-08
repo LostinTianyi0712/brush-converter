@@ -108,7 +108,7 @@
     let entries;
     try { entries = knownEntries || zip.read(bytes); } catch (e) { return false; }
     if(entries.some(e => /(^|\/)(brushform|brushtex|papertex|scatter|bristle|blotmap)\.conf$/i.test(e.name)))return true;
-    if(entries.some(e => !e.dir && /(^|[\\/])toolnrm$/i.test(e.name) && isToolnrm(e.data())))return true;
+    if(entries.some(e => !e.dir && isToolRecord(e.name) && isToolnrm(e.data())))return true;
     const names=new Set(entries.filter(e=>!e.dir).map(e=>e.name.replace(/\\/g,'/').toLowerCase()));
     return entries.some(e=>!e.dir&&/\.ini$/i.test(e.name)&&
       ['.bmp','.png'].some(ext=>names.has(e.name.replace(/\\/g,'/').replace(/\.ini$/i,ext).toLowerCase()))&&isBrushIni(e.data()));
@@ -197,6 +197,13 @@
       }],
       warnings: ['SAI2 笔刷 ini 只含笔形参数，笔尖图需从素材包（blotmap/brshape/brushtex）里配套使用']
     };
+  }
+
+  /* 兼容参数记录：老包叫 toolnrm，新包（第161轮，改成可直接拖进 SAI2 的目录结构）叫
+     「SAI2参数记录.txt」。两种都要能读回，否则纹理缩放/流量这些旁带参数会丢。 */
+  function isToolRecord(name) {
+    const n = String(name || '');
+    return /(^|[\\/])toolnrm$/i.test(n) || /(^|[\\/])SAI2参数记录\.txt$/i.test(n);
   }
 
   /* SAI2 笔刷预设文件（toolnrm）：INI 结构，每条笔刷一组 key=value
@@ -298,6 +305,16 @@
       const dirs = role === 'texture' ? ['brushtex/',''] : ['', 'scatter/', 'brushfom/brshape/', 'brshape/', 'blotmap/'];
       for (const base of [prefix, '']) for (const dir of dirs) for (const ext of suffixes) candidates.push(base + dir + path + ext);
       for (const candidate of candidates) if (files.has(candidate)) return files.get(candidate);
+      /* 第161轮：包内改成可直接拖进 SAI2 的目录树（SAIv2/settings/scatter/...）后，
+         工具记录（参数记录）在根目录、形状在子目录，原来的「前缀 + 目录」拼法找不到。
+         这里按「目录/文件名」做后缀匹配，且只在唯一命中时采用，避免张冠李戴。 */
+      for (const dir of dirs) {
+        for (const ext of suffixes) {
+          const tail = dir + path + ext;
+          const hits = entries.filter(e => !e.dir && (key(e.name) === tail || key(e.name).endsWith('/' + tail)));
+          if (hits.length === 1) return hits[0];
+        }
+      }
       if (allowUniqueName) {
         const matches = entries.filter(e => !e.dir && /\.(bmp|png)$/i.test(e.name) && key(e.name).indexOf(prefix) === 0 && stem(e.name) === stem(path));
         if (matches.length === 1) return matches[0];
@@ -368,7 +385,7 @@
       brushes.push(brush);
     }
     // A tool's explicit shape reference belongs to its own package directory.
-    for (const toolEntry of entries.filter(e=>!e.dir && /(^|[\\/])toolnrm$/i.test(e.name))) {
+    for (const toolEntry of entries.filter(e=>!e.dir && isToolRecord(e.name))) {
       const tools = parseToolnrm(toolEntry.data()).brushes, prefix = folder(toolEntry.name), used = new Set();
       for (const meta of tools) {
         const base = String(meta.name||'brush').replace(/[\\/:*?"<>|]/g,'_').slice(0,60)||'brush';

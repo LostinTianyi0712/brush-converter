@@ -661,3 +661,7 @@ main {
 .settings-help a { color: var(--primary, #2563eb); text-decoration: underline; }
 .license-notice { margin: 10px 0; }
 .license-notice pre { max-height: 60vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 monospace; }
+
+/* SAI2 笔刷文件夹那一行：开关和说明排一行，手机端不挤 */
+.sai2-auto { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #444; margin: 6px 0 0; }
+.sai2-auto input { width: 16px; height: 16px; margin: 0; }

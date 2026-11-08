@@ -71,7 +71,7 @@
           <option value="gih">GIMP .gih</option>
           <option value="myb">MyPaint .myb</option>
           <option value="kbundle">Krita .bundle</option>
-          <option value="sai2">SAI2 散布（bmp+ini）</option>
+          <option value="sai2">SAI2 散布（可直接拖进 SAI2）</option>
           <option value="png">笔尖 PNG（MediBang）</option>
           <option value="painter">Corel Painter</option>
           <option value="gopaint">天生会画 .gobrush</option>
@@ -261,6 +261,15 @@
         <button id="btnShapeLibVerify" type="button" class="btn ghost" hidden>检查图库</button>
             <input id="shapeLibInput" type="file" accept=".zip,image/png,image/jpeg" multiple hidden>
             <input id="shapeLibDirInput" type="file" webkitdirectory directory multiple hidden>
+          </div>
+          <div class="opt opt-sai2dir" id="sai2DirRow" hidden>
+            <label>SAI2 笔刷文件夹（桌面版）</label>
+            <div class="shapelib-btns">
+              <button id="btnSai2Detect" type="button" class="btn ghost">重新检测</button>
+              <button id="btnSai2Choose" type="button" class="btn ghost">选择文件夹</button>
+            </div>
+            <label class="sai2-auto"><input id="chkSai2Auto" type="checkbox" checked> 输出 SAI2 笔刷时自动写入这个文件夹</label>
+            <div id="sai2DirText" class="hint">正在检测…</div>
           </div>
           <div class="opt opt-shapelib">
             <label>画世界内置笔尖库（可选）</label>

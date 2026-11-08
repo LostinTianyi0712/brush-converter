@@ -886,6 +886,99 @@
     return false;
   }
 
+  /* SAI2 笔刷文件夹（桌面版）：自动定位 文档\SYSTEMAX Software Development，
+     转换 SAI2 时把 scatter/brushtex 文件直接写进去，省掉下载解压拖拽。 */
+  const SAI2_DIR = { ok: false, dir: '', settings: '' };
+  function sai2DirEls() {
+    return {
+      row: document.getElementById('sai2DirRow'),
+      text: document.getElementById('sai2DirText'),
+      auto: document.getElementById('chkSai2Auto'),
+      detect: document.getElementById('btnSai2Detect'),
+      choose: document.getElementById('btnSai2Choose')
+    };
+  }
+  function sai2Desktop() {
+    return !!(window.BrushDesktop && typeof window.BrushDesktop.sai2Folder === 'function');
+  }
+  function renderSai2Dir(info, error) {
+    const el = sai2DirEls();
+    if (el.row) el.row.hidden = !sai2Desktop();
+    if (!el.text) return;
+    if (info && info.ok) {
+      SAI2_DIR.ok = true; SAI2_DIR.dir = info.dir || ''; SAI2_DIR.settings = info.settings || '';
+      el.text.textContent = '已找到：' + (info.settings || info.dir) +
+        (info.exists === false ? '（首次写入会自动创建）' : '');
+    } else {
+      SAI2_DIR.ok = false; SAI2_DIR.dir = ''; SAI2_DIR.settings = '';
+      el.text.textContent = (error || (info && info.error) || '未找到 SAI2 笔刷文件夹') +
+        '。可以点「选择文件夹」手动指定「文档」所在目录。';
+    }
+  }
+  async function refreshSai2Folder() {
+    if (!sai2Desktop()) return null;
+    const el = sai2DirEls();
+    if (el.row) el.row.hidden = false;
+    try {
+      const r = await window.BrushDesktop.sai2Folder();
+      renderSai2Dir(r);
+      return r;
+    } catch (e) { renderSai2Dir(null, '检测失败：' + (e.message || e)); return null; }
+  }
+  async function chooseSai2Folder() {
+    if (!sai2Desktop()) return null;
+    try {
+      const r = await window.BrushDesktop.sai2ChooseFolder();
+      if (r && r.canceled) return null;
+      renderSai2Dir(r);
+      if (r && r.ok) toast('SAI2 笔刷文件夹已指定', 3000);
+      return r;
+    } catch (e) { renderSai2Dir(null, '选择失败：' + (e.message || e)); return null; }
+  }
+  function sai2AutoOn() {
+    const el = sai2DirEls();
+    return !!(el.auto && el.auto.checked);
+  }
+  function sai2BytesToB64(bytes) {
+    let bin = '';
+    const CH = 0x8000;
+    for (let i = 0; i < bytes.length; i += CH) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(bytes.length, i + CH)));
+    }
+    return btoa(bin);
+  }
+  /* 转换 SAI2 时调用：满足「桌面版 + 勾了自动写入 + 找到目录」就直接落盘 */
+  async function autoSaveSai2ToFolder(list, opts) {
+    if (!sai2Desktop() || !sai2AutoOn()) return null;
+    if (!SAI2_DIR.ok) { const r = await refreshSai2Folder(); if (!r || !r.ok) return null; }
+    try {
+      const made = BC.convert.makeSai2Files(list, opts || {});
+      if (!made || !made.files || !made.files.length) return null;
+      /* 只落 SAI2 真正会读的 SAIv2/settings 素材。SAI2参数记录.txt 是给 ZIP 用户看的兼容文本，
+         写进 SAI2 用户目录既不生效，又会在每次转换被重名顺延成 _2/_3，堆出一串垃圾文件。 */
+      const payload = made.files
+        .filter(function (f) { return /^SAIv2\/settings\//i.test(f.rel); })
+        .map(function (f) { return { rel: f.rel, base64: sai2BytesToB64(f.data) }; });
+      if (!payload.length) return null;
+      const res = await window.BrushDesktop.sai2Save(payload);
+      if (res && res.ok) {
+        const written = res.written || [];
+        const renamed = written.filter(function (w) { return w.renamed; }).length;
+        pushLog('SAI2：已写入 ' + written.length + ' 个文件到 ' + res.settings +
+          (renamed ? '（' + renamed + ' 个重名自动加 _2）' : ''));
+        toast('已保存到 SAI2 笔刷文件夹（' + written.length + ' 个文件）', 4200);
+      } else {
+        const why = (res && (res.error || (res.errors && res.errors.join('；')))) || '未知错误';
+        pushLog('SAI2：写入笔刷文件夹失败 ' + why);
+        toast('写入 SAI2 文件夹失败：' + why, 6000);
+      }
+      return res;
+    } catch (e) {
+      pushLog('SAI2：写入笔刷文件夹异常 ' + (e.message || e));
+      return null;
+    }
+  }
+
   let hsjShapesLoading = null;
   async function restoreHsjShapes(parsed) {
     const needed = parsed && parsed.brushes && parsed.brushes.some(function (b) {
@@ -1373,6 +1466,7 @@
               const made = BC.convert.makeSai2Pack(list, commonOpts(rec));
               outFiles.push({ name: uniqueFile(base, '.zip'), data: made.bytes });
               if (made.warnings && made.warnings.length) warnings.push(...made.warnings);
+              autoSaveSai2ToFolder(list, commonOpts(rec)).catch(function () { /* 已在内部记日志 */ });
             } else if (fmt === 'kbundle') {
               const made = BC.convert.makeKritaBundle(list, commonOpts(rec));
               outFiles.push({ name: uniqueFile(base, '.bundle'), data: made.bytes });
@@ -1524,6 +1618,7 @@
             const extOut = { painter: '.brushcategory', kbundle: '.bundle', sai2: '.zip', medibang: '.zip', mbini: '.zip',
               udongman: '.abr', udongman_sut: '.sut', udongman_mtd: '.mtd', gopaint: '.gobrush', gopaint_abr: '.abr', gopaint_set: '.gobrushes' }[fmt] || ('.' + fmt);
             outFiles.push({ name: uniqueFile(folder + base, extOut), data: made.bytes });
+            if (fmt === 'sai2') autoSaveSai2ToFolder([b], co).catch(function () { /* 已在内部记日志 */ });
             if (fmt==='tpl' && made.warnings) warnings.push(...made.warnings);
             if (fmt === 'udongman') {
               if (!outFiles.some(f => f.name === '优动漫导入说明.txt')) outFiles.push({ name: '优动漫导入说明.txt', data: BC.util.utf8Encode(made.importGuide) });
@@ -2064,7 +2159,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.35';
+const APP_VERSION = '2.8.36';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -3712,6 +3807,15 @@ const APP_VERSION = '2.8.35';
       apply(virtY);
     }, { passive: true });
     apply(scrollTop());
+  })();
+
+  /* SAI2 笔刷文件夹：桌面版启动时检测一次，按钮可重新检测/手动指定 */
+  (function initSai2DirUi() {
+    if (!sai2Desktop()) return;
+    const el = sai2DirEls();
+    if (el.detect) el.detect.addEventListener('click', function () { refreshSai2Folder(); });
+    if (el.choose) el.choose.addEventListener('click', function () { chooseSai2Folder(); });
+    refreshSai2Folder();
   })();
 
   /* 画世界内置笔尖库：设置区按钮 + 首次状态渲染 */

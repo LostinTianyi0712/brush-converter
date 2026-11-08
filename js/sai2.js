@@ -85,9 +85,15 @@
     const ratio = Math.max(1, Math.min(100, Math.round(brush.roundness === undefined ? 100 : brush.roundness)));
     const nativeRatio = raw.WxHRatio && brush.roundness === brush._sai2SourceRoundness ? raw.WxHRatio : ratio + ':100';
     const opacity = Math.max(0, Math.min(100, Math.round((brush.opacity === undefined ? 1 : brush.opacity) * 100)));
-    const density = brush.flowPct !== undefined && Number.isFinite(Number(brush.flowPct))
+    /* Density 不是 SAI2 官方 [Parameters] 键，只是本项目承载流量的兼容字段。
+       没有明确流量时不要拿不透明度顶替写出 —— 否则自己的包再导入会凭空多出
+       flowPct = opacity，再跨格式导出就把「未定义流量」固化成错误数值。
+       原生包本来就带 Density 且未改动不透明度时，仍按原值保留。 */
+    const hasFlow = brush.flowPct !== undefined && Number.isFinite(Number(brush.flowPct));
+    const keepRawDensity = !hasFlow && raw.Density !== undefined && brush.opacity === brush._sai2SourceOpacity;
+    const density = hasFlow
       ? Math.max(0, Math.min(100, Math.round(Number(brush.flowPct) * 100)))
-      : (raw.Density !== undefined && brush.opacity === brush._sai2SourceOpacity ? Math.max(0, Math.min(100, Math.round(Number(raw.Density)))) : opacity);
+      : (keepRawDensity ? Math.max(0, Math.min(100, Math.round(Number(raw.Density)))) : null);
     const angleControl = (brush.bruRotationMode === 1 || brush.dynamicsControlAngle === 6) ? 1
       : ((brush.dynamicsControlAngle === 3 || brush.dynamicsControlAngle === 4 || (brush.tiltAngleDyn || 0) > 0) ? 2
       : ((brush.bruRotationMode === 0 || brush.dynamicsControlAngle === 0) ? 0 : nativeValue('AngleControl', 0)));
@@ -113,8 +119,10 @@
       ? Math.max(0, Math.min(200, Math.round(Number(brush.sai2Scaling)))) : nativeValue('Scaling', 100);
     const lines = [
       '; Converted by BrushConverter',
-      '[Parameters]',
-      'Density = ' + density,
+      '[Parameters]'
+    ];
+    if (density !== null) lines.push('Density = ' + density);
+    lines.push(
       'AngleControl = ' + angleControl,
       'Angle = ' + (angle >= 0 ? '+' : '') + angle,
       'AngleJitter = ' + angleJitter,
@@ -139,7 +147,7 @@
       'ApplyToEachShape = ' + applyPerTip,
       'Opacity = ' + opacity,
       ''
-    ];
+    );
     return util.utf8Encode(lines.join('\r\n'));
   }
 
@@ -172,8 +180,13 @@
     };
   }
 
-  function makeSai2Pack(brushList, opts) {
-    const zip = isNode ? require('./zip.js') : root.BC.zip;
+  /* SAI2 用户数据目录里的相对位置（新版把素材放在 文档\SYSTEMAX Software Development\SAIv2\settings）：
+       scatter/<名字>.bmp + <名字>.ini   散布笔刷
+       brushtex/<名字>_纹理.bmp          笔刷纹理
+     这里只产出「拖进去就生效」的目录结构，不生成任何 exe/自解压包。 */
+  const DROP_IN_ROOT = 'SAIv2/settings/';
+
+  function makeSai2Files(brushList, opts) {
     const files = [];
     const used = new Set();
     const completed = [];
@@ -190,27 +203,59 @@
       madeCount++;
       for (const f of made.files) {
         const ext = f.name.slice(f.name.lastIndexOf('.'));
-        files.push({ name: f.name.indexOf('brushtex/') === 0 ? 'brushtex/' + base + '_纹理.bmp' : base + ext, data: f.data });
+        files.push({
+          rel: f.name.indexOf('brushtex/') === 0
+            ? DROP_IN_ROOT + 'brushtex/' + base + '_纹理.bmp'
+            : DROP_IN_ROOT + 'scatter/' + base + ext,
+          data: f.data
+        });
       }
     }
-    // 笔刷预设 INI（toolnrm）：保留 SAI2 的尺寸/浓度/最小直径/压感开关
-    try { files.push({ name: 'toolnrm', data: writeToolnrm(completed) }); } catch (e) { warnings.push('toolnrm 兼容参数生成失败：' + e.message); }
-    files.push({
-      name: '说明.txt',
-      data: util.utf8Encode(
-        'SAI2 笔刷（scatter brush）导入说明\r\n' +
-        '==============================\r\n' +
-        '1. 新版 SAI2 通常使用「文档\\SYSTEMAX Software Development\\SAIv2\\settings\\scatter」。\r\n' +
-        '   文档可能位于 OneDrive；旧版才使用安装目录中的 scatter。\r\n' +
-        '2. 把本包里的每个 <名字>.bmp 和对应 <名字>.ini 一起放进该文件夹。\r\n' +
-        '3. 重启 SAI2，在笔刷设置里选择 scatter brush（散布笔刷）即可看到新增笔刷。\r\n' +
-        '4. 如有 brushtex 子目录，把其中纹理 BMP 放入上述 settings\\brushtex，再在工具中手动选择纹理。\r\n' +
-        '5. toolnrm 是兼容参数记录，供查阅尺寸/浓度/压感；不要拿它覆盖 SAI2 用户设置。\r\n' +
-        '   新版原生工具是 custool\\nrm\\*.saitdat，另需组登记；本包没有自动安装或替换这些预设。\r\n' +
-        '说明：BMP/INI 是形状素材，不会自动创建完整工具。工具当前尺寸、浓度和压感需按参数记录设置。\r\n'
-      )
-    });
-    return { bytes: zip.write(files), count: madeCount, warnings: warnings };
+    let record = null;
+    try { record = writeToolnrm(completed); } catch (e) { warnings.push('兼容参数记录生成失败：' + e.message); }
+    return { files: files, count: madeCount, warnings: warnings, record: record };
+  }
+
+  function sai2Readme(files) {
+    const shapes = files.filter(f => /\/scatter\/.+\.bmp$/i.test(f.rel)).length;
+    const textures = files.filter(f => /\/brushtex\//i.test(f.rel)).length;
+    return util.utf8Encode(
+      'SAI2 笔刷素材包（散布笔刷）\r\n' +
+      '========================================\r\n' +
+      '本包共 ' + shapes + ' 支笔刷（每支形状 BMP + 参数 INI 各一份），纹理 ' + textures + ' 个。\r\n' +
+      '不需要安装程序，也没有 exe —— 直接把里面的 SAIv2 文件夹拖进去就行。\r\n\r\n' +
+      '安装步骤\r\n' +
+      '1. 打开「文档」里的 SYSTEMAX Software Development 文件夹\r\n' +
+      '   常见路径：C:\\Users\\<你的用户名>\\Documents\\SYSTEMAX Software Development\r\n' +
+      '   如果文档被 OneDrive 接管：C:\\Users\\<你的用户名>\\OneDrive\\文档\\SYSTEMAX Software Development\r\n' +
+      '   找不到就先启动一次 SAI2，它会自动生成 SAIv2\\settings。\r\n' +
+      '2. 把本包的 SAIv2 文件夹整个拖进上面那个文件夹，提示「合并/替换」时选合并。\r\n' +
+      '   （本包只往 settings\\scatter 和 settings\\brushtex 里加文件，不会动 settings2.ssd。）\r\n' +
+      '3. 重启 SAI2，打开笔刷设置，把笔刷类型选成「散布笔刷 / scatter」，\r\n' +
+      '   在形状列表里就能看到这些名字。\r\n' +
+      '4. 有纹理的笔刷，还要在工具里手动选 settings\\brushtex 里对应的那张图。\r\n\r\n' +
+      '说明\r\n' +
+      '- BMP 是形状/纹理素材，不会自动创建完整工具；尺寸、浓度、压感这些请参照包内《SAI2参数记录.txt》。\r\n' +
+      '- 新版原生工具预设是 settings\\custool\\<组>\\*.saitdat，需要组登记，本包不写这些，避免弄坏你已经有的工具组。\r\n' +
+      '- 想删掉这批笔刷：按上面的文件名去 settings\\scatter 里删同名 bmp/ini 即可。\r\n'
+    );
+  }
+
+  function makeSai2Pack(brushList, opts) {
+    const zip = isNode ? require('./zip.js') : root.BC.zip;
+    const made = makeSai2Files(brushList, opts);
+    const files = made.files.slice();
+    if (made.record) files.push({ rel: 'SAI2参数记录.txt', data: made.record });
+    files.push({ rel: '导入说明.txt', data: sai2Readme(made.files) });
+    return {
+      bytes: zip.write(files.map(f => ({ name: f.rel, data: f.data }))),
+      /* 注意：字段名叫 dropInFiles 而不是 files —— 转换流水线里 `made.files` 的约定是
+         「一个个独立的输出文件」，SAI2 这里给的是包内相对路径清单，混用会让矩阵测试
+         把单个 bmp 当产物去解析。 */
+      dropInFiles: made.files,
+      count: made.count,
+      warnings: made.warnings
+    };
   }
 
   /* 生成 SAI2 toolnrm（笔刷预设 INI） */
@@ -276,7 +321,7 @@
     return util.utf8Encode(out.join(NL));
   }
 
-  const api = { makeSai2Brush: makeSai2Brush, makeSai2Pack: makeSai2Pack, encodeBmp8: encodeBmp8, writeToolnrm: writeToolnrm };
+  const api = { makeSai2Brush: makeSai2Brush, makeSai2Files: makeSai2Files, makeSai2Pack: makeSai2Pack, DROP_IN_ROOT: DROP_IN_ROOT, encodeBmp8: encodeBmp8, writeToolnrm: writeToolnrm };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { sai2: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);
