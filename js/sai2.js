@@ -50,13 +50,29 @@
     return out;
   }
 
-  /* Brush shape BMP: SAI uses luminance as opacity (white = paint). */
+  /* Brush shape BMP: SAI uses luminance as opacity (white = paint).
+     覆盖度通常放在 alpha 里，但部分来源（不透明灰度 PNG、某些解析器）把图案
+     放在 RGB 通道、alpha 恒为 255。若仍只读 alpha，整张 BMP 会变成纯白实心
+     方块。与 sai2read.decodeImage 对无 alpha 掩码 PNG 的处理保持一致。 */
   function tipGray(tip) {
     if (!tip) return null;
     if (tip.data) return { w: tip.w, h: tip.h, data: tip.data };
     if (!tip.rgba) return null;
-    const w = tip.w, h = tip.h, g = new Uint8Array(w * h);
-    for (let i = 0; i < w * h; i++) g[i] = tip.rgba[i * 4 + 3];
+    const w = tip.w, h = tip.h, n = w * h, rgba = tip.rgba, g = new Uint8Array(n);
+    let aMin = 255, aMax = 0, rMin = 255, rMax = 0;
+    for (let i = 0; i < n; i++) {
+      const o = i * 4, a = rgba[o + 3];
+      const v = (rgba[o] + rgba[o + 1] + rgba[o + 2]) / 3 | 0;
+      if (a < aMin) aMin = a;
+      if (a > aMax) aMax = a;
+      if (v < rMin) rMin = v;
+      if (v > rMax) rMax = v;
+    }
+    const useRgb = aMin === 255 && aMax === 255 && (rMax - rMin) > 2;
+    for (let i = 0; i < n; i++) {
+      const o = i * 4;
+      g[i] = useRgb ? Math.round((rgba[o] + rgba[o + 1] + rgba[o + 2]) / 3) : rgba[o + 3];
+    }
     return { w: w, h: h, data: g };
   }
 

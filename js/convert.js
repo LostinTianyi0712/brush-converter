@@ -3112,53 +3112,80 @@ Write-Host 'restart MediBang Paint Pro'
     return krita.writeBundle(list, opts || {});
   }
 
-  /** 桌面版「保存到 SAI2 笔刷文件夹」用：只算文件清单，不打包。
-      返回 { files:[{rel, data}], count, warnings }，rel 形如 SAIv2/settings/scatter/x.bmp。 */
-  function makeSai2Files(brushList, opts) {
-    const list = (brushList || []).map(function (source) {
-      const b = withExportSettings(source, opts);
-      try {
-        const tip = bakedTipFor(Object.assign({}, b, { angle: 0, roundness: 100 }), opts || {});
-        /* SAI2 的 brushtex 是纹理素材原图，反相由工具参数 texinvf 决定（toolnrm 里会写）。
-           这里若把 textureInverted 烘焙进 BMP，回读时解析器又会带着 texinvf=1 再烘焙一次，
-           导出→导入→再导出就在「正/反」之间无限震荡；SAI2 里也会双重反相。 */
-        const texSource = Object.assign({}, b, { textureInverted: false });
-        const texture = !(opts && opts.noTextureBake) && b.hasTexture ? textureGray(texSource) : null;
-        return withFixedTipFlips(Object.assign({}, b, { tip: { w: tip.w, h: tip.h, rgba: tip.rgba }, _sai2Texture: texture }));
-      } catch (e) { return b; }
-    });
-    const made = sai2.makeSai2Files(list, opts || {});
-    made.warnings = (made.warnings || []).concat(sai2TextureWarnings(list, opts));
-    if (made.record) made.files = made.files.concat([{ rel: 'SAI2参数记录.txt', data: made.record }]);
-    return made;
-  }
-
   /* 源有纹理引用却拿不到纹理像素（画世界内置材质 / Procreate 内置 Grain 等）时，
      SAI2 只会静默不写 brushtex。打包与「自动写入 SAI2 文件夹」两条路都要如实报告，
      否则桌面端用户完全看不到这条警告。 */
   function sai2TextureWarnings(list, opts) {
     if (opts && opts.noTextureBake) return [];
-    return (list || []).filter(function (b) { return b && b.hasTexture && !b._sai2Texture; })
-      .map(function (b) {
-        return (b.name || '未命名') + '：有纹理但缺纹理像素，未输出配套纹理 BMP（需在 SAI2 工具设置里手动选择纹理）';
-      });
+    return (list || []).filter(function (b) {
+      return b && b.hasTexture && !b._sai2Texture && !b._sai2FlatTexture;
+    }).map(function (b) {
+      return (b.name || '未命名') + '：有纹理但缺纹理像素，未输出配套纹理 BMP（需在 SAI2 工具设置里手动选择纹理）';
+    });
+  }
+
+  /* 大面积纯色笔尖不是真正的形状：Krita auto_brush、Procreate 空形状等来源会给出
+     200x200 / 1000x1000 的全白占位图，直接写进 SAI2 就是一支实心方块笔刷。
+     小尺寸实心笔尖（2px square 之类）本身合法，保持原样。 */
+  function blankSai2Tip(tip) {
+    if (!tip || !tip.rgba) return true;
+    if (tip.w * tip.h < 64 * 64) return false;
+    const first = tip.rgba[3];
+    for (let i = 3; i < tip.rgba.length; i += 4) if (tip.rgba[i] !== first) return false;
+    return true;
+  }
+  function flatSai2Texture(texture) {
+    if (!texture || !texture.gray || !texture.gray.length) return false;
+    const first = texture.gray[0];
+    for (let i = 1; i < texture.gray.length; i++) if (texture.gray[i] !== first) return false;
+    return true;
+  }
+
+  /* 两个 SAI2 出口（ZIP 包 / 桌面自动写入）共用同一套导出前预处理。 */
+  function sai2ExportList(brushList, opts) {
+    const warnings = [];
+    const list = (brushList || []).map(function (source) {
+      const b = withExportSettings(source, opts);
+      try {
+        let tip = bakedTipFor(Object.assign({}, b, { angle: 0, roundness: 100 }), opts || {});
+        let flatTex = false;
+        if (blankSai2Tip(tip)) {
+          tip = synthTip(Object.assign({}, b, { roundness: 100, angle: 0 }), 256, opts || {});
+          warnings.push((b.name || '未命名') + '：源笔尖是空白占位图，已按硬度/圆度合成 SAI2 形状（原自动笔刷参数无法完整还原）');
+        }
+        /* SAI2 的 brushtex 是纹理素材原图，反相由工具参数 texinvf 决定（toolnrm 里会写）。
+           这里若把 textureInverted 烘焙进 BMP，回读时解析器又会带着 texinvf=1 再烘焙一次，
+           导出→导入→再导出就在「正/反」之间无限震荡；SAI2 里也会双重反相。 */
+        const texSource = Object.assign({}, b, { textureInverted: false });
+        let texture = !(opts && opts.noTextureBake) && b.hasTexture ? textureGray(texSource) : null;
+        if (flatSai2Texture(texture)) {
+          texture = null;
+          flatTex = true;
+          warnings.push((b.name || '未命名') + '：纹理是纯色图，已跳过 brushtex（纯色纹理在 SAI2 里不产生质感）');
+        }
+        const out = Object.assign({}, b, { tip: { w: tip.w, h: tip.h, rgba: tip.rgba }, _sai2Texture: texture });
+        if (flatTex) out._sai2FlatTexture = true;
+        return withFixedTipFlips(out);
+      } catch (e) { return b; }
+    });
+    return { list: list, warnings: warnings };
+  }
+
+  /** 桌面版「保存到 SAI2 笔刷文件夹」用：只算文件清单，不打包。
+      返回 { files:[{rel, data}], count, warnings }，rel 形如 SAIv2/settings/scatter/x.bmp。 */
+  function makeSai2Files(brushList, opts) {
+    const prep = sai2ExportList(brushList, opts);
+    const made = sai2.makeSai2Files(prep.list, opts || {});
+    made.warnings = (made.warnings || []).concat(prep.warnings, sai2TextureWarnings(prep.list, opts));
+    if (made.record) made.files = made.files.concat([{ rel: 'SAI2参数记录.txt', data: made.record }]);
+    return made;
   }
 
   /** Brush list -> SAI2 scatter brush files (bmp + ini), zipped. */
   function makeSai2Pack(brushList, opts) {
-    const list = (brushList || []).map(function (source) {
-      const b = withExportSettings(source, opts);
-      try {
-        const tip = bakedTipFor(Object.assign({}, b, { angle: 0, roundness: 100 }), opts || {});
-        /* 同 makeSai2Files：反相是 texinvf 工具参数，不烘焙进 BMP 素材，避免回读二次反相 */
-        const texSource = Object.assign({}, b, { textureInverted: false });
-        const texture = !(opts && opts.noTextureBake) && b.hasTexture ? textureGray(texSource) : null;
-        return withFixedTipFlips(Object.assign({}, b, { tip: { w: tip.w, h: tip.h, rgba: tip.rgba }, _sai2Texture: texture }));
-      } catch (e) { return b; }
-    });
-    const made = sai2.makeSai2Pack(list, opts || {});
-    /* 第153轮：源有纹理但拿不到纹理像素时不能静默不写 brushtex，明确报出来 */
-    made.warnings = (made.warnings || []).concat(sai2TextureWarnings(list, opts));
+    const prep = sai2ExportList(brushList, opts);
+    const made = sai2.makeSai2Pack(prep.list, opts || {});
+    made.warnings = (made.warnings || []).concat(prep.warnings, sai2TextureWarnings(prep.list, opts));
     return made;
   }
 
