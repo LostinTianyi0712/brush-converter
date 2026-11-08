@@ -2169,7 +2169,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.39';
+const APP_VERSION = '2.8.40';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
