@@ -765,8 +765,9 @@
     const el = hsjLibElements();
     const label = '下载笔尖库（14MB）';
     if (el.btn) {
-      el.btn.disabled = hsjLibState === 'loading';
-      el.btn.textContent = hsjLibState === 'loading' ? (msg || '下载中…') : label;
+      /* 下载中按钮变成「取消」且可点（原来 disabled，14MB 卡住时没法停） */
+      el.btn.disabled = false;
+      el.btn.textContent = hsjLibState === 'loading' ? '取消下载' : label;
       el.btn.hidden = hsjLibState === 'ready';
     }
     if (el.text) {
@@ -837,9 +838,20 @@
     }
     throw new Error('脚本载入后没有注册 hsjShapes');
   }
+  let hsjAbort = null;
+  function cancelHsjDownload() {
+    if (hsjAbort) { try { hsjAbort.abort(); } catch (e) { /* 忽略 */ } }
+    hsjAbort = null;
+    hsjLibState = 'unknown';
+    hsjFailedSources.cancel = true;
+    renderHsjLibState();
+    toast('已取消下载笔尖库', 2500);
+  }
   async function downloadHsjLib(btn) {
-    if (hsjLibState === 'loading' || (btn && btn.disabled)) return false;
+    if (hsjLibState === 'loading') { cancelHsjDownload(); return false; }
     hsjLibState = 'loading';
+    hsjAbort = (typeof AbortController === 'function') ? new AbortController() : null;
+    const signal = hsjAbort ? hsjAbort.signal : undefined;
     renderHsjLibState('连接中…');
     const urls = hsjShapesCandidates();
     let lastErr = null;
@@ -847,7 +859,7 @@
     try {
       const blob = await parallelRangeBlob(urls, function (got) {
         renderHsjLibState('下载中 ' + (got / 1048576).toFixed(1) + 'MB');
-      }, { chunkBytes: 2 * 1048576, parallel: 4 });
+      }, { chunkBytes: 2 * 1048576, parallel: 4, signal: signal });
       if (blob && blob.size) {
         try { return await installHsjBytes(new Uint8Array(await blob.arrayBuffer())); }
         catch (e) { lastErr = e; }
@@ -857,7 +869,7 @@
     for (const u of urls) {
       try {
         renderHsjLibState('下载中…');
-        const res = await fetch(u, { cache: 'no-store' });
+        const res = await fetch(u, { cache: 'no-store', signal: signal });
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const total = Number(res.headers.get('content-length')) || 0;
         let got = 0;
@@ -879,8 +891,13 @@
           bytes = new Uint8Array(await res.arrayBuffer());
         }
         return await installHsjBytes(bytes);
-      } catch (e) { lastErr = e; hsjFailedSources[u] = true; }
+      } catch (e) {
+        if (e && e.name === 'AbortError') { hsjAbort = null; return false; }
+        lastErr = e; hsjFailedSources[u] = true;
+      }
     }
+    hsjAbort = null;
+    if (hsjFailedSources.cancel) { hsjFailedSources.cancel = false; return false; }
     hsjLibState = 'missing'; renderHsjLibState();
     toast('下载失败：' + ((lastErr && lastErr.message) || '网络不可用') + '，可稍后重试', 6000);
     return false;
@@ -2169,7 +2186,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.44';
+const APP_VERSION = '2.8.45';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2386,13 +2403,21 @@ const APP_VERSION = '2.8.44';
     }
     throw lastErr || new Error('没有可用的更新源');
   }
+  /* 安卓：直接下小包版 APK（发布脚本会把它传到站点的 apk/brushconv-latest.apk）；
+     桌面/网页：打开下载页（网页本身就是新版本，点「刷新页面」即可）。 */
+  const APK_LATEST = SITE_BASE + 'apk/brushconv-latest.apk';
+  function updateTarget() {
+    if (window.BrushNative) return { native: true, url: APK_LATEST };
+    if (window.BrushDesktop) return { native: true, url: SITE_BASE };
+    return { native: false, url: SITE_BASE };
+  }
   function openDownloadPage() {
-    const url = SITE_BASE;
+    const t = updateTarget();
     try {
-      if (window.BrushDesktop && typeof window.BrushDesktop.openUrl === 'function') { window.BrushDesktop.openUrl(url); return; }
-      if (window.BrushNative && typeof window.BrushNative.openUrl === 'function') { window.BrushNative.openUrl(url); return; }
+      if (window.BrushNative && typeof window.BrushNative.openUrl === 'function') { window.BrushNative.openUrl(t.url); return; }
+      if (window.BrushDesktop && typeof window.BrushDesktop.openUrl === 'function') { window.BrushDesktop.openUrl(t.url); return; }
     } catch (e) { /* 落到下面的 window.open */ }
-    try { window.open(url, '_blank'); } catch (e) { /* 忽略 */ }
+    try { window.open(t.url, '_blank'); } catch (e) { /* 忽略 */ }
   }
   function updateReload() { try { location.reload(); } catch (e) { /* 忽略 */ } }
   function renderUpdate(state, info, err) {
@@ -2402,7 +2427,7 @@ const APP_VERSION = '2.8.44';
     const newer = !!(info && BC.update.isNewer(info.version, APP_VERSION));
     if (el.go) {
       el.go.hidden = !newer;
-      el.go.textContent = updateNative() ? '打开下载页' : '刷新页面';
+      el.go.textContent = window.BrushNative ? '下载新版 APK' : (window.BrushDesktop ? '打开下载页' : '刷新页面');
     }
     if (!el.text) return;
     if (state === 'checking') { el.text.textContent = '正在检查更新…'; return; }

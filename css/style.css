@@ -699,3 +699,15 @@ main {
   .footer-update-text { flex: 1 1 100%; order: 3; }
   .footer-legal { flex-direction: column; gap: 6px; }
 }
+
+/* 高级设置里的分组标题（20 个选项一锅端太难看，按用途分段） */
+.opt-section {
+  grid-column: 1 / -1;
+  margin: 4px 0 -2px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+  font-size: 13px;
+  font-weight: 600;
+  color: #475569;
+}
+.opt-section:first-child { border-top: 0; padding-top: 0; }
