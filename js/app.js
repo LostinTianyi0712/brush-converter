@@ -2169,7 +2169,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.43';
+const APP_VERSION = '2.8.44';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2427,8 +2427,10 @@ const APP_VERSION = '2.8.43';
     try {
       const info = await fetchLatestVersion();
       UPDATE.latest = info; UPDATE.error = null;
-      renderUpdate('done', info);
-      if (BC.update.isNewer(info.version, APP_VERSION)) {
+      const newer = BC.update.isNewer(info.version, APP_VERSION);
+      /* 静默检查只在「有新版」时写底栏，避免每次启动都多一行字 */
+      if (!opts.silent || newer) renderUpdate('done', info);
+      if (newer) {
         toast('发现新版本 v' + info.version + '（当前 v' + APP_VERSION + '）' +
           (updateNative() ? '，可在设置里点「检查更新」打开下载页' : '，刷新页面即可更新'), 8000);
       } else if (!opts.silent) {
@@ -2437,7 +2439,7 @@ const APP_VERSION = '2.8.43';
       return info;
     } catch (e) {
       UPDATE.error = e;
-      renderUpdate('error', null, e);
+      if (!opts.silent) renderUpdate('error', null, e);
       if (!opts.silent) toast('检查更新失败：' + (e.message || e), 5000);
       return null;
     } finally { UPDATE.checking = false; }
@@ -2445,6 +2447,8 @@ const APP_VERSION = '2.8.43';
   (function initUpdateUi() {
     const el = updateEls();
     if (el.current) el.current.textContent = APP_VERSION;
+    /* 底栏自带 vX，状态行初始留空（空字符串有 :empty 样式，不占位） */
+    if (el.text) el.text.textContent = '';
     if (el.btn) el.btn.addEventListener('click', function () { checkForUpdate({ silent: false }); });
     if (el.go) el.go.addEventListener('click', function () { if (updateNative()) openDownloadPage(); else updateReload(); });
   })();

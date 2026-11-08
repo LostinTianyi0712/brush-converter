@@ -330,11 +330,6 @@
 </main>
 
 <section class="footer-extra" aria-label="检查更新与声明">
-  <div class="footer-update">
-    <button id="btnCheckUpdate" type="button" class="btn ghost">检查更新</button>
-    <button id="btnUpdateGo" type="button" class="btn ghost" hidden>刷新页面</button>
-    <span id="updateText" class="footer-update-text">当前版本 v<span id="updateCurrent"></span></span>
-  </div>
   <div class="footer-legal">
           <details class="license-notice"><summary>MIT 开源协议</summary><pre id="mitLicense">MIT License
 
@@ -512,7 +507,10 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 <footer class="footer">
   <div class="footer-tools">
     <button id="btnLog" class="btn ghost" title="导出本次运行日志">导出日志</button>
+    <button id="btnCheckUpdate" type="button" class="btn ghost">检查更新</button>
     <span id="ver"></span>
+    <button id="btnUpdateGo" type="button" class="btn ghost" hidden>刷新页面</button>
+    <span id="updateText" class="footer-update-text"></span>
   </div>
 </footer>
 
