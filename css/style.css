@@ -746,3 +746,20 @@ main {
   .footer-tools #btnCheckUpdate .lbl { display: none; }
   .footer-tools #btnCheckUpdate .ico { display: inline; font-size: 15px; line-height: 1; }
 }
+
+/* 发现新版本时的下载方式面板（放在页面底部、声明之上） */
+.update-links {
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 10px;
+  background: #eff6ff;
+}
+.update-links .ul-head { font-size: 13px; color: #1e3a8a; margin-bottom: 8px; }
+.update-links .ul-btns { display: flex; flex-wrap: wrap; gap: 8px; }
+.update-links .btn { padding: 5px 12px; font-size: 13px; }
+.update-links .hint { margin-top: 6px; }
+@media (max-width: 640px) {
+  .update-links .ul-btns { gap: 6px; }
+  .update-links .btn { flex: 1 1 46%; }
+}

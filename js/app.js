@@ -2202,7 +2202,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.50';
+const APP_VERSION = '2.8.51';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2397,13 +2397,18 @@ const APP_VERSION = '2.8.50';
       if (typeof updatePrecheck === 'function') updatePrecheck();
     }
   });
-  (async function checkVersion() {
-    // 安卓 App 跑在 file:///android_asset 下，fetch 本地文件会报 “URL scheme file is not supported”，直接跳过
-    if (window.BrushNative) return;
-    try {
-      await checkForUpdate({ silent: true });
-    } catch (e) { /* 离线/本地文件忽略 */ }
-  })();
+  /* 必须等脚本全部求值完再跑：checkForUpdate → updateSources() 会读 SITE_BASE，
+     而 const SITE_BASE 声明在本文件更靠后。在加载期直接调用会踩 TDZ（ReferenceError 被 catch 吞掉，
+     表现成「检查更新永远不会自动触发」）。挂到 load 事件上就绕开了。 */
+  window.addEventListener('load', function () {
+    (async function checkVersion() {
+      // 安卓 App 跑在 file:///android_asset 下，fetch 本地文件会报 “URL scheme file is not supported”，直接跳过
+      if (window.BrushNative) return;
+      try {
+        await checkForUpdate({ silent: true });
+      } catch (e) { /* 离线/本地文件忽略 */ }
+    })();
+  });
   /* ---------- 目标 = SAI2 时，列出本机 SAI2 已装的散布笔刷 ---------- */
   const SAI2_LIST = { loaded: false, dir: '', items: [], error: null };
   function sai2ListEls() {
@@ -2545,6 +2550,56 @@ const APP_VERSION = '2.8.50';
     try { window.open(t.url, '_blank'); } catch (e) { /* 忽略 */ }
   }
   function updateReload() { try { location.reload(); } catch (e) { /* 忽略 */ } }
+  /* 网盘兜底：GitHub Pages / 夸克偶尔被墙或限速，用户给的百度+夸克链接直接摆在「发现新版本」面板里 */
+  const PAN_URLS = {
+    baidu: 'https://pan.baidu.com/s/1E2cK7Dj3xeIZzEDhV7RidQ?pwd=i782',
+    baiduCode: 'i782',
+    quark: 'https://pan.quark.cn/s/a455643c9aed',
+    quarkCode: '/~eaf43bwbgU~:/'
+  };
+  function openExternal(url) {
+    try {
+      if (window.BrushDesktop && typeof window.BrushDesktop.openUrl === 'function') { window.BrushDesktop.openUrl(url); return; }
+      if (window.BrushNative && typeof window.BrushNative.openUrl === 'function') { window.BrushNative.openUrl(url); return; }
+    } catch (e) { /* 落到 window.open */ }
+    try { window.open(url, '_blank'); } catch (e) { /* 忽略 */ }
+  }
+  async function copyQuarkCode() {
+    const code = PAN_URLS.quarkCode;
+    const hint = document.getElementById('ulHint');
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(code);
+        if (hint) hint.textContent = '已复制夸克口令：' + code + '（打开夸克 App 会自动识别）';
+        toast('夸克口令已复制', 3000);
+        return;
+      }
+      throw new Error('no clipboard');
+    } catch (e) {
+      if (hint) hint.textContent = '口令：' + code + '（长按复制）';
+      toast('口令：' + code, 6000);
+    }
+  }
+  function renderUpdateLinks(newer, info) {
+    const box = document.getElementById('updateLinks');
+    if (!box) return;
+    box.hidden = !newer;
+    if (!newer) return;
+    const ver = document.getElementById('ulVer');
+    if (ver) ver.textContent = 'v' + (info && info.version ? info.version : '');
+    const hint = document.getElementById('ulHint');
+    if (hint) hint.textContent = '百度网盘提取码：' + PAN_URLS.baiduCode + '；夸克可直接点开，也可复制口令用 App 打开';
+  }
+  (function initUpdateLinks() {
+    const bind = function (id, fn) {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener('click', fn);
+    };
+    bind('ulSite', function () { openDownloadPage(); });
+    bind('ulBaidu', function () { openExternal(PAN_URLS.baidu); });
+    bind('ulQuark', function () { openExternal(PAN_URLS.quark); });
+    bind('ulQuarkCode', function () { copyQuarkCode(); });
+  })();
   function renderUpdate(state, info, err) {
     const el = updateEls();
     if (el.current) el.current.textContent = APP_VERSION;
@@ -2570,6 +2625,7 @@ const APP_VERSION = '2.8.50';
     }
     const day = info && info.date ? '（' + String(info.date).slice(0, 10) + '）' : '';
     if (el.text.classList) el.text.classList.toggle('is-new', newer);
+    renderUpdateLinks(newer, info);
     if (newer) {
       el.text.textContent = '发现新版本 v' + info.version + day + '，当前 v' + APP_VERSION +
         (updateNative() ? '。点「打开下载页」取新包' : '。点「刷新页面」即可更新');
