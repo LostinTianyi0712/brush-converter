@@ -373,7 +373,7 @@
     return null;
   }
 
-  function restoreHsjTips(result) {
+  function restoreHsjTips(result, opts) {
     if (!result || !result.brushes) return 0;
     const missing = result.brushes.filter(function (b) {
       return b.source === 'bru' && !b.tip && !!builtinTipKey(b);
@@ -387,16 +387,24 @@
       try { lib = require('./hsj-shapes.js'); }
       catch (e) { if (!e || e.code !== 'MODULE_NOT_FOUND') throw e; }
     } else lib = root.BC.hsjShapes;
-    if (!lib) return 0;
+    const resMap = opts && opts.shapeResources && typeof opts.shapeResources.get === 'function' ? opts.shapeResources : null;
+    if (!lib && !resMap) return 0;
     let count = 0;
     missing.forEach(function (b) {
       const key = builtinTipKey(b);
       if (!key) return;
-      const raw = lib.get(key);
-      if (!raw) return;               // 内置库没有这一号：保持无笔尖，交给上层合成
-      const image = png.decode(b64ToBytes(raw));
+      const raw = lib ? lib.get(key) : null;
+      let pngBytes = raw ? b64ToBytes(raw) : null;
+      if (!pngBytes && resMap) {
+        const cand = resMap.get(key.toLowerCase() + '.png') ||
+          (b.texAssetId ? resMap.get(String(b.texAssetId).toLowerCase() + '.png') : null);
+        if (cand instanceof Uint8Array) pngBytes = cand;
+      }
+      if (!pngBytes) return;          // 内置库没有这一号：保持无笔尖，交给上层合成
+      const image = png.decode(pngBytes);
       b.tip = { w: image.width, h: image.height, rgba: png.toMaskRgba(image.rgba) };
       b._tipFromBuiltin = key;
+      if (b.tipSource === 'synth') delete b.tipSource;
       count++;
     });
     return count;
@@ -422,7 +430,7 @@
     } else if (kind === 'bru') {
       result = bru.parseBru(bytes);
       result.brushes = result.brushes.map(b => Object.assign({}, b, { source: 'bru' }));
-      restoreHsjTips(result);
+      restoreHsjTips(result, opts);
       // #23（WorkBuddy 第106轮）：BRU f115（旋转方式）→ PS 角度控制源逆映射。
       // 1=跟随笔迹方向(6)、2=初始方向(5)、3=笔压(2)；0=固定不映射。
       // BRU→BRU 写出仍直接用 bruRotationMode，不受影响。
@@ -3371,7 +3379,7 @@ Write-Host 'restart MediBang Paint Pro'
     });
   }
 
-  const api = { detect, parseFile, restoreHsjTips, expandArchive, synthTip, makeBru, makeBruPack, makeBruDualPair, buildBruDualPairBrushes, makeAbrPack, makeTplPack, makeUdongmanPack, makeUdongmanSutPack, makeUdongmanMtdPack, parseMtd, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, mergePatternFiles, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, tipSourceAudit, tipSourceHint, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Files, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
+  const api = { detect, parseFile, restoreHsjTips, builtinTipKey, expandArchive, synthTip, makeBru, makeBruPack, makeBruDualPair, buildBruDualPairBrushes, makeAbrPack, makeTplPack, makeUdongmanPack, makeUdongmanSutPack, makeUdongmanMtdPack, parseMtd, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, mergePatternFiles, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, tipSourceAudit, tipSourceHint, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Files, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { convert: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

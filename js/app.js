@@ -817,14 +817,14 @@
       const cached = await ShapeLibStore.get(HSJ_LIB_KEY);
       if (cached) {
         try {
-          if (await loadHsjFromBlob(cached)) { hsjLibState = 'ready'; renderHsjLibState(); return true; }
+          if (await loadHsjFromBlob(cached)) { hsjLibState = 'ready'; renderHsjLibState(); if (typeof backfillHsjShapesInFiles === 'function') backfillHsjShapesInFiles(); return true; }
         } catch (e) { hsjFailedSources.cache = true; }
       }
     } catch (e) { /* 缓存不可用：继续在线 */ }
     const urls = hsjShapesCandidates().filter(function (u) { return !hsjFailedSources[u]; });
     for (const u of urls) {
       try { await loadHsjScript(u); } catch (e) { hsjFailedSources[u] = true; continue; }
-      if (BC.hsjShapes) { hsjLibState = 'ready'; renderHsjLibState(); return true; }
+      if (BC.hsjShapes) { hsjLibState = 'ready'; renderHsjLibState(); if (typeof backfillHsjShapesInFiles === 'function') backfillHsjShapesInFiles(); return true; }
       hsjFailedSources[u] = true;
     }
     hsjLibState = 'missing'; renderHsjLibState();
@@ -835,7 +835,8 @@
     await ShapeLibStore.put(bytes, HSJ_LIB_KEY);
     if (await loadHsjFromBlob(bytes)) {
       hsjLibState = 'ready'; renderHsjLibState();
-      toast('画世界内置笔尖库已就绪（14MB，已缓存）', 3500);
+      const fixed = typeof backfillHsjShapesInFiles === 'function' ? backfillHsjShapesInFiles() : 0;
+      toast('画世界内置笔尖库已就绪（14MB，已缓存）' + (fixed ? '，已补回 ' + fixed + ' 支笔尖' : ''), 3500);
       return true;
     }
     throw new Error('脚本载入后没有注册 hsjShapes');
@@ -1009,10 +1010,39 @@
   }
 
   let hsjShapesLoading = null;
+  function needsHsjBuiltinTip(b) {
+    if (!b || b.source !== 'bru' || b.tip) return false;
+    if (BC.convert && typeof BC.convert.builtinTipKey === 'function') return !!BC.convert.builtinTipKey(b);
+    return /^ps(?:[1-9]|[1-9][0-9]|1[0-7][0-9]|18[0-4])$/.test(b.oldTexId || '') ||
+      (!b.oldTexId && /^pt(?:[1-9]|[1-9][0-9]|1[0-7][0-9]|18[0-4])$/.test(b.texAssetId || ''));
+  }
+  function backfillHsjShapesInFiles() {
+    const hasLib = !!BC.hsjShapes;
+    const shapeRes = typeof state !== 'undefined' && state && state.shapeLib ? state.shapeLib : null;
+    if ((!hasLib && !shapeRes) || typeof state === 'undefined' || !state || !Array.isArray(state.files)) return 0;
+    let fixed = 0;
+    const opts = shapeRes ? { shapeResources: shapeRes } : undefined;
+    for (let i = 0; i < state.files.length; i++) {
+      const rec = state.files[i];
+      if (!rec || !Array.isArray(rec.brushes)) continue;
+      const count = BC.convert.restoreHsjTips(rec, opts);
+      if (count > 0) {
+        fixed += count;
+        rec.brushes.forEach(function (b) {
+          if (b && b.tip && b.tipSource === 'synth') delete b.tipSource;
+        });
+        if (Array.isArray(rec.warnings) && rec.brushes.every(function (b) { return !b || !!b.tip; })) {
+          rec.warnings = rec.warnings.filter(function (w) {
+            return String(w).indexOf('没有笔尖（shape）图片') < 0 && String(w).indexOf('内置笔尖') < 0;
+          });
+        }
+      }
+    }
+    if (fixed > 0 && typeof render === 'function') render();
+    return fixed;
+  }
   async function restoreHsjShapes(parsed) {
-    const needed = parsed && parsed.brushes && parsed.brushes.some(function (b) {
-      return b.source === 'bru' && !b.tip && /^ps(?:[1-9]|[1-9][0-9]|1[0-7][0-9]|18[0-4])$/.test(b.oldTexId || '');
-    });
+    const needed = parsed && parsed.brushes && parsed.brushes.some(needsHsjBuiltinTip);
     if (!needed) return;
     try {
       if (!BC.hsjShapes) {
@@ -1025,6 +1055,7 @@
         }
       }
       if (BC.hsjShapes) BC.convert.restoreHsjTips(parsed);
+      else if (typeof state !== 'undefined' && state && state.shapeLib) BC.convert.restoreHsjTips(parsed, { shapeResources: state.shapeLib });
       else pushLog('画世界内置笔尖：本安装包未内置该库，ps* 笔尖暂留空');
     } catch (e) { pushLog(String(e.message || e)); }
   }
@@ -1322,6 +1353,16 @@
     state.converting = true;
     if (!force) state.cancelRequested = false;
     if (typeof btnCancel !== 'undefined' && btnCancel) { btnCancel.style.display = ''; btnCancel.disabled = false; }
+    if (typeof needsHsjBuiltinTip === 'function' && typeof restoreHsjShapes === 'function') {
+      for (const rec of records) {
+        if (rec && rec.brushes && rec.brushes.some(needsHsjBuiltinTip)) {
+          await restoreHsjShapes(rec);
+          rec.brushes.forEach(function (b) {
+            if (b && b.tip && b.tipSource === 'synth') delete b.tipSource;
+          });
+        }
+      }
+    }
     render();
     const outFiles = [];
     const failed = [];
@@ -2202,7 +2243,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.53';
+const APP_VERSION = '2.8.54';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;
@@ -3028,8 +3069,10 @@ const UPDATE_ENABLED = false;
     /* 关键：不要整包解成 RGBA 常驻（292 张原图 = 1GB+ 会直接崩）。
        PNG 与 baseline JPEG 只存原始字节，core 用到时才同步解码；
        只有 progressive JPEG 必须在这解一次，解完烘成灰度 PNG 存起来（同样不常驻 RGBA）。 */
+    let hsjScriptBytes = null;
     async function addOne(name, bytes) {
       const base = String(name || '').split(/[\\/]/).pop().toLowerCase();
+      if (base === 'hsj-shapes.js' && bytes && bytes.length > 1024) { hsjScriptBytes = bytes; return; }
       if (!/\.(png|jpe?g)$/i.test(base)) return;
       let entry = bytes;
       if (/\.jpe?g$/i.test(base) && jpegScanKind(bytes) === 'progressive') {
@@ -3073,6 +3116,12 @@ const UPDATE_ENABLED = false;
         }
       } catch (e) { pushLog('图库读取失败 ' + f.name + '：' + e.message); }
     }
+    if (hsjScriptBytes) {
+      if (typeof installHsjBytes === 'function') {
+        try { await installHsjBytes(hsjScriptBytes); } catch (e) { pushLog('画世界笔尖库读取失败：' + e.message); }
+      }
+      if (!map.size) return !!BC.hsjShapes;
+    }
     if (!map.size) { toast('图库里没有 PNG/JPG：请选择包含内置笔尖图的 ZIP 或文件夹', 8000); return false; }
     if (converted) pushLog('图库里有 ' + converted + ' 张 progressive JPEG 已用 canvas 解出并转存为灰度 PNG');
     if (undecoded) pushLog('图库有 ' + undecoded + ' 张解不开：' + undecodedNames.slice(0, 12).join(', '));
@@ -3084,7 +3133,7 @@ const UPDATE_ENABLED = false;
     setShapeLibUserCleared(false); // 又装上了：恢复启动自动加载
     updateShapeLibText();
     refreshShapeLibStoreUI(); // 桌面：手动导入后也要显示「图库已装载」和删除按钮
-    const fixed = await reparseWithShapeLib(forceReparse);
+    const fixed = (await reparseWithShapeLib(forceReparse)) + (typeof backfillHsjShapesInFiles === 'function' ? backfillHsjShapesInFiles() : 0);
     toast('图库已加载 ' + map.size + ' 张' + (fixed ? '；补回 ' + fixed + ' 处笔尖/纹理原图'
       : '；未匹配到新的缺失原图'), 8000);
     return true;
@@ -4176,7 +4225,19 @@ const UPDATE_ENABLED = false;
     if (!btn) return;
     btn.addEventListener('click', function () { downloadHsjLib(btn); });
     /* 已内置的包直接置 ready，省得用户白点 */
-    if (BC.hsjShapes) { hsjLibState = 'ready'; renderHsjLibState(); }
+    if (BC.hsjShapes) { hsjLibState = 'ready'; renderHsjLibState(); return; }
+    if (typeof ShapeLibStore !== 'undefined' && ShapeLibStore && typeof ShapeLibStore.get === 'function') {
+      ShapeLibStore.get(HSJ_LIB_KEY).then(function (cached) {
+        if (!cached || BC.hsjShapes) return;
+        return loadHsjFromBlob(cached).then(function (ok) {
+          if (ok) {
+            hsjLibState = 'ready';
+            renderHsjLibState();
+            if (typeof backfillHsjShapesInFiles === 'function') backfillHsjShapesInFiles();
+          }
+        });
+      }).catch(function () { /* 忽略缓存读取异常 */ });
+    }
   })();
 
   $('#ver').textContent = 'v' + APP_VERSION;
