@@ -358,10 +358,25 @@
       .replace(/&amp;/g, '&');
   }
 
+  /* 内置笔尖引用有两种写法，必须都认：
+     ① 早期样本把 psN 塞进 oldTexId 当占位（目录里确实有同名自定义图）；
+     ② 画世界官方内置笔刷把引用放在 texAssetId = ptN，oldTexId 为空 —— 笔尖完全由
+        App 内置图库提供。第178轮实测：用户「小方块」的 texAssetId=pt65，内置库
+        里的 ps65 正是同一枚立体方块；漏掉 ② 会让这类笔刷被合成为纯圆头。
+     ② 只在 oldTexId 为空时回落，避免抢掉真正的自定义笔尖图。 */
+  function builtinTipKey(b) {
+    if (!b) return null;
+    const old = String(b.oldTexId || '');
+    if (/^ps[1-9][0-9]*$/.test(old)) return old;
+    const m = /^pt([1-9][0-9]*)$/.exec(String(b.texAssetId || ''));
+    if (m && !old) return 'ps' + m[1];
+    return null;
+  }
+
   function restoreHsjTips(result) {
     if (!result || !result.brushes) return 0;
     const missing = result.brushes.filter(function (b) {
-      return b.source === 'bru' && !b.tip && /^ps[1-9][0-9]*$/.test(b.oldTexId || '');
+      return b.source === 'bru' && !b.tip && !!builtinTipKey(b);
     });
     if (!missing.length) return 0;
     let lib = null;
@@ -375,11 +390,13 @@
     if (!lib) return 0;
     let count = 0;
     missing.forEach(function (b) {
-      const raw = lib.get(b.oldTexId);
-      if (!raw) return;
+      const key = builtinTipKey(b);
+      if (!key) return;
+      const raw = lib.get(key);
+      if (!raw) return;               // 内置库没有这一号：保持无笔尖，交给上层合成
       const image = png.decode(b64ToBytes(raw));
       b.tip = { w: image.width, h: image.height, rgba: png.toMaskRgba(image.rgba) };
-      b._tipFromBuiltin = b.oldTexId;
+      b._tipFromBuiltin = key;
       count++;
     });
     return count;
@@ -956,8 +973,19 @@
       name: brush.name || '',
       bruShapeInverted: !!brush.bruShapeInverted,
       pkgId: brush.pkgId || opts.pkgId,
-      texId: brush.source === 'bru' && brush._tipFromBuiltin === brush.oldTexId && opts.fidelity !== false && !opts.forceRebuild
-        ? brush.oldTexId : util.md5(pngBytes).toUpperCase(),
+      /* 笔尖从哪来，决定 f7(MASKTEXPATH) 写什么：
+         · 源自己的自定义图（oldTexId 就是它的 mask 名）→ 原样保留；
+         · 内置图库提供的形状 → 写空。源官方笔刷的 f7 本来就是空，塞一个 md5 会让
+           App 去 textures/<md5> 找一张不存在的图，笔刷变空白；留空它才继续按
+           texAssetId(ptN) 取内置纹理。 */
+      texId: (function () {
+        if (brush.source === 'bru' && opts.fidelity !== false && !opts.forceRebuild) {
+          const key = brush._tipFromBuiltin;
+          if (key && key === brush.oldTexId) return brush.oldTexId;
+          if (key) return '';
+        }
+        return util.md5(pngBytes).toUpperCase();
+      })(),
       sizePx,
       maxSizePx:Math.max(sizePx,brush._rawMaxWidth||500),
       spacingPct,

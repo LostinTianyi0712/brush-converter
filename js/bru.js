@@ -241,8 +241,13 @@
       }
       return raw;
     }
-    return buildMetadata(Object.assign({}, brush, { pkgId: brush.pkgId || opts.pkgId,
-      texId: brush.texId || (brush.png ? util.md5(brush.png).toUpperCase() : '') }));
+    /* texId 显式给空串 = 「本笔刷没有自定义 mask，笔尖由 App 内置图库提供」
+       （画世界官方内置笔刷的 f7 就是空）。不能用 `||` 兜底成 md5，否则空串被
+       当成缺失，又写回一个 App 找不到的 mask 名。未给（undefined）才回落 md5。 */
+    const texId = brush.texId !== undefined && brush.texId !== null
+      ? brush.texId
+      : (brush.png ? util.md5(brush.png).toUpperCase() : '');
+    return buildMetadata(Object.assign({}, brush, { pkgId: brush.pkgId || opts.pkgId, texId: texId }));
   }
 
   /* Build a single-brush .bru file */

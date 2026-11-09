@@ -1394,7 +1394,7 @@
         outFiles.push({ name: '参数对比.html', data: new TextEncoder().encode(cmpHtml) });
       }
     } catch (e) { /* 对比页失败不影响转换 */ }
-    const ALL_FORMATS = ['bru', 'abr', 'tpl', 'udongman', 'gopaint', 'gopaint_set', 'gopaint_abr', 'brushset', 'brush', 'gbr', 'gih',
+    const ALL_FORMATS = ['bru', 'abr', 'tpl', 'udongman', 'gopaint', 'gopaint_set', 'brushset', 'brush', 'gbr', 'gih',
       'myb', 'kbundle', 'sai2', 'png', 'painter', 'medibang', 'mbini'];
     const usedFileNames = new Set();
     let doneCount = 0;
@@ -2202,7 +2202,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.52';
+const APP_VERSION = '2.8.53';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;
