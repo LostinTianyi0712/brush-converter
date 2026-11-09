@@ -1510,6 +1510,7 @@
             } else if (fmt === 'gih') {
               const made = BC.convert.makeGih(list, commonOpts(rec));
               outFiles.push({ name: uniqueFile(base, '.gih'), data: made.bytes });
+              if (made.warnings && made.warnings.length) warnings.push(...made.warnings);
             } else if (fmt === 'painter') {
               const made = BC.convert.makePainter(list, commonOpts(rec), sourceName);
               outFiles.push({ name: uniqueFile(base, '.brushcategory'), data: made.bytes });
@@ -1659,7 +1660,9 @@
               udongman: '.abr', udongman_sut: '.sut', udongman_mtd: '.mtd', gopaint: '.gobrush', gopaint_abr: '.abr', gopaint_set: '.gobrushes' }[fmt] || ('.' + fmt);
             outFiles.push({ name: uniqueFile(folder + base, extOut), data: made.bytes });
             if (fmt === 'sai2') autoSaveSai2ToFolder([b], co).catch(function () { /* 已在内部记日志 */ });
-            if (fmt==='tpl' && made.warnings) warnings.push(...made.warnings);
+            /* 第165轮：所有 writer 的不可保真提示统一收集（原先只有 tpl）。
+               GIH/MDP 等纯位图格式回读会静默重置尺寸与间距，互转时尤其需要提示。 */
+            if (made.warnings && made.warnings.length) made.warnings.forEach(w => { if (warnings.indexOf(w) < 0) warnings.push(w); });
             if (fmt === 'udongman') {
               if (!outFiles.some(f => f.name === '优动漫导入说明.txt')) outFiles.push({ name: '优动漫导入说明.txt', data: BC.util.utf8Encode(made.importGuide) });
               made.warnings.forEach(w => { if (warnings.indexOf(w) < 0) warnings.push(w); });
@@ -2199,7 +2202,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.49';
+const APP_VERSION = '2.8.50';
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2524,9 +2527,12 @@ const APP_VERSION = '2.8.49';
   }
   /* 安卓：直接下小包版 APK（发布脚本会把它传到站点的 apk/brushconv-latest.apk）；
      桌面/网页：打开下载页（网页本身就是新版本，点「刷新页面」即可）。 */
-  const APK_LATEST = SITE_BASE + 'apk/brushconv-latest.apk';
+  /* 注意：SITE_BASE 的 const 声明在本文件更靠后的位置（TDZ）。这里必须**惰性求值**，
+     不能在顶层算好——v2.8.45 写成 `const APK_LATEST = SITE_BASE + ...` 直接在加载时抛
+     ReferenceError，把后面所有初始化（图库下载按钮、检查更新、SAI2 列表）全带死了。 */
+  function apkLatestUrl() { return SITE_BASE + 'apk/brushconv-latest.apk'; }
   function updateTarget() {
-    if (window.BrushNative) return { native: true, url: APK_LATEST };
+    if (window.BrushNative) return { native: true, url: apkLatestUrl() };
     if (window.BrushDesktop) return { native: true, url: SITE_BASE };
     return { native: false, url: SITE_BASE };
   }

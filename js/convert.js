@@ -185,10 +185,19 @@
         if (painterlib && safe(function () { return painterlib.isLibraryZip(bytes); })) return 'painter';
         if (zentries.some(e => /Brush\.archive$/i.test(e.name))) return 'procreate';
         if (lower.endsWith('.mtd')) return 'mtd';
+        /* 第164轮：Infinite Painter .prbr 与 ZIP 壳的 .mdp 各自已有 reader，
+           但过去 detect() 没接线，导致「转出到 .prbr/.mdp 后无法再转入」。
+           放在所有容器特征之后，避免抢走 SAI2 / Procreate / Krita / 优动漫包。 */
+        if (infpainter && safe(function () { return infpainter.isPrbr(bytes); })) return 'prbr';
+        if (/\.mdp$/i.test(lower) && genericBrush && safe(function () { return genericBrush.isMdp(bytes, name); })) return 'mdpzip';
       }
+      if (lower.endsWith('.prbr')) return 'prbr';
+      if (lower.endsWith('.mdp')) return 'mdpzip';
       return null;
     }
     if (tpl && safe(function(){return tpl.isTpl(bytes);})) return 'tpl';
+    /* MediBang 原生 .mdp 是 'mdipack' 魔数的二进制材质，不是 ZIP；reader 早已存在。 */
+    if (medibang && safe(function () { return medibang.isMdp(bytes); })) return 'mdp';
     if (bytes && bytes.length > 10 && bytes[0] === 0x38 && bytes[1] === 0x42 && bytes[2] === 0x50 && bytes[3] === 0x54) return 'pat';
     if (abr && safe(function () { return abr.isAbr(bytes); })) return 'abr';
     if (krita && safe(function () { return krita.isKpp(bytes); })) return 'kpp';
@@ -208,6 +217,7 @@
     if (lower.endsWith('.sut')) return 'sut';
     if (lower.endsWith('.mtd')) return 'mtd';
     if (lower.endsWith('.gobrush') || lower.endsWith('.gobrushes')) return 'gobrush';
+    if (lower.endsWith('.prbr')) return 'prbr';
     return null;
   }
 
@@ -223,6 +233,8 @@
       myb: 'MyPaint MYB',
       painter: 'Corel Painter',
       mdp: 'MediBang MDP',
+      prbr: 'Infinite Painter PRBR',
+      mdpzip: 'MediBang MDP 笔刷包（ZIP）',
       sut: '优动漫 / CSP SUT（部分读取）',
       udongman: '优动漫 / CSP（ABR兼容）',
       gobrush: '天生会画 GoBrush',
@@ -375,7 +387,7 @@
 
   function parseFile(name, bytes, opts) {
     const kind = detect(name, bytes);
-    if (!kind) throw new Error('无法识别的文件格式（支持 .bru/.abr/.tpl/.brush/.brushset/.gobrush/.gobrushes/.sut/.mtd/.kpp/.gbr/.gih/.myb/.brushcategory/.brushlibrary，或包含笔刷的 ZIP）');
+    if (!kind) throw new Error('无法识别的文件格式（支持 .bru/.abr/.tpl/.brush/.brushset/.gobrush/.gobrushes/.sut/.mtd/.kpp/.gbr/.gih/.myb/.prbr/.mdp/.brushcategory/.brushlibrary，或包含笔刷的 ZIP）');
     let result;
     if (kind === 'sai2settings') {
       /* SAI2 设置包（custool + 素材目录）：结构可读，参数语义未标定，本版只给清单。 */
@@ -491,6 +503,16 @@
       }
     } else if (kind === 'gobrush') {
       result = gobrush.parse(bytes, name);
+    } else if (kind === 'prbr') {
+      /* 第164轮：补上「转出 → 转入」闭环，reader 本来就在 core/infpainter.js。 */
+      result = infpainter.parsePrbr(bytes, name);
+      result.brushes = (result.brushes || []).map(b => Object.assign({}, b, { source: 'prbr' }));
+    } else if (kind === 'mdp') {
+      result = medibang.parseMdp(bytes, name);
+      result.brushes = (result.brushes || []).map(b => Object.assign({}, b, { source: 'mdp' }));
+    } else if (kind === 'mdpzip') {
+      result = genericBrush.parseMdp(bytes, name);
+      result.brushes = (result.brushes || []).map(b => Object.assign({}, b, { source: 'mdpzip' }));
     } else if (kind === 'mtd') {
       result = parseMtd(name, bytes);
     } else if (kind === 'sut') {
@@ -2115,7 +2137,23 @@
     const list = brushList.map(function (b) { return withTipRGBA(withSizeAndSpacing(b, opts), opts, {transform:true,fit:true}); });
     const name = (opts.name && String(opts.name).trim()) || (rawGroup && rawGroup.name) ||
       (list.length ? String(list[0].name || '').trim() : '') || 'brushconv';
-    return { bytes: gimp.writeGih(list, name), count: list.length };
+    /* 第165轮：GIH 是纯位图笔刷管，格式规定同一管内所有 cell 等尺寸（writeGih 用 max 补齐），
+       且文件里不存流量/硬度/散布/纹理参数。过去这些损失完全静默：多支不同尺寸的笔刷
+       互转一次后 sizePx 全部变成最大值，用户拿回转换器也看不出发生过什么。
+       与 SAI2 / 优动漫一致，把不可保真项明确报出来。 */
+    const warnings = [];
+    const sizes = new Set(list.map(function (b) { return b && b.tip ? Math.max(b.tip.w, b.tip.h) : 0; }));
+    if (sizes.size > 1) {
+      const maxSize = Math.max.apply(null, Array.from(sizes));
+      warnings.push('GIH：同一笔刷管内所有笔尖尺寸必须一致，已统一为 ' + maxSize + 'px（最大笔尖）；' +
+        sizes.size + ' 种原始尺寸不可恢复，导出的笔刷再导入时尺寸都会变成 ' + maxSize + 'px');
+    }
+    const lossy = list.some(function (b) {
+      return b && (b.flowPct !== undefined || b.hardness !== undefined || b.hasTexture ||
+        (b.scatterOn && (b.scatterPct || b.scatterCount)));
+    });
+    if (lossy) warnings.push('GIH：GIMP 位图笔刷不保存流量、硬度、散布与纹理参数，再导入时会重置为默认值');
+    return { bytes: gimp.writeGih(list, name), count: list.length, warnings: warnings };
   }
 
   /** Brush list -> Corel Painter .brushcategory XML (heuristic). */
@@ -2218,8 +2256,12 @@
       const b2 = withTipRGBA(withExportSettings(b, opts), opts, { bake: true, fit: true });
       chunks.push({ name: (sanitizeName(b2.name || 'material', 0)) + '.mdp', data: medibang.writeMdp(b2) });
     }
-    if (chunks.length === 1) return { bytes: chunks[0].data, count: 1 };
-    return { files: chunks, count: chunks.length };
+    /* 第165轮：.mdp 是「材质/图章文档」，XML 只带图像宽高，不存任意笔刷参数；
+       parseMdp 回读时 sizePx 由裁切后的位图反推、spacingPct 固定 25。
+       互转时这些值每跳都会重置，必须明确告知。 */
+    const warnings = ['MDP：MediBang 材质文件只保存笔尖图像，不保存尺寸、间距、流量等笔刷参数；再导入时会按位图重新推算并重置为默认值'];
+    if (chunks.length === 1) return { bytes: chunks[0].data, count: 1, warnings: warnings };
+    return { files: chunks, count: chunks.length, warnings: warnings };
   }
 
   /** Build a MediBang Paint brush package: black-shape tip PNG + Brush2.ini entry.
@@ -2525,10 +2567,43 @@ Write-Host 'restart MediBang Paint Pro'
         'if (-not (Test-Path $dst)) { New-Item -ItemType Directory -Path $dst -Force | Out-Null }',
         'Get-ChildItem $PSScriptRoot -Filter *.myb -File | Copy-Item -Destination $dst -Force',
         'Write-Host ("已复制到 " + $dst)',
-        'Write-Host "重启 MyPaint 后，在笔刷列表里即可看到"'
+        'Write-Host "重启 MyPaint 后：笔刷 -> 笔刷组 -> 失物招领(Lost & Found) 里查看"',
+        'Write-Host "想固定显示在独立分组，请再运行「登记到MyPaint分组.bat」"'
       ].join(NL));
       mk('安装到MyPaint.bat', ['@echo off', 'chcp 65001 >nul', 'powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0安装到MyPaint.ps1"', 'pause', ''].join(NL));
-      mk('安装说明.txt', 'MyPaint 安装说明' + NL + '运行「安装到MyPaint.bat」，然后重启 MyPaint。' + NL + '笔刷目录：%APPDATA%/mypaint/brushes');
+      /* 第167轮真机：MyPaint 2 用 brushes/order.conf 显式登记分组，未登记的 .myb
+         会被 brushmanager 放进 lost&found（失物招领），不会出现在默认网格。
+         旧说明写「重启后笔刷列表里即可看到」属误导，这里给出准确的分组入口，
+         并附一个可选的一键登记脚本（先备份 order.conf，再用无 BOM UTF-8 追加）。 */
+      mk('登记到MyPaint分组.ps1', [
+        '$ErrorActionPreference = "Stop"',
+        '$dst = Join-Path $env:APPDATA "mypaint/brushes"',
+        'if (-not (Test-Path $dst)) { Write-Host "brushes directory not found"; exit 1 }',
+        '$conf = Join-Path $dst "order.conf"',
+        'if (Test-Path $conf) { Copy-Item $conf ($conf + ".bak") -Force }',
+        '$names = @(Get-ChildItem $PSScriptRoot -Filter *.myb -File | ForEach-Object { $_.BaseName })',
+        '$block = @("Group: brushconv") + $names',
+        'if (Test-Path $conf) { $block = @(Get-Content $conf -Encoding UTF8) + $block }',
+        '$utf8 = New-Object System.Text.UTF8Encoding $false',
+        '[System.IO.File]::WriteAllLines($conf, [string[]]$block, $utf8)',
+        'Write-Host "order.conf updated; restart MyPaint -> Brush -> Brush Groups -> brushconv"'
+      ].join(NL));
+      mk('登记到MyPaint分组.bat', ['@echo off', 'chcp 65001 >nul', 'powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0登记到MyPaint分组.ps1"', 'pause', ''].join(NL));
+      mk('安装说明.txt', [
+        'MyPaint 安装说明（MyPaint 2.x 实测）',
+        '1）运行「安装到MyPaint.bat」：把 .myb 复制到 %APPDATA%/mypaint/brushes',
+        '2）重启 MyPaint。注意：MyPaint 2 只把 order.conf 登记过的笔刷放进分组，',
+        '   直接复制的文件会进「笔刷 -> 笔刷组 -> 失物招领(Lost & Found)」，',
+        '   不会自动出现在默认笔刷网格里。这是 MyPaint 的机制，不是笔刷损坏。',
+        '3）想固定显示在独立分组：运行「登记到MyPaint分组.bat」（会先备份 order.conf），',
+        '   重启后在「笔刷 -> 笔刷组 -> brushconv」里查看。',
+        '',
+        '手动登记格式（brushes/order.conf，UTF-8 无 BOM）：',
+        '  Group: brushconv',
+        '  <笔刷文件名，不含 .myb>',
+        '说明：.myb 里的 parent_brush_name 带 brushconv/ 前缀是本工具用来保存显示名的，',
+        '不是 MyPaint 的父笔刷引用，不影响加载。'
+      ].join(NL));
     } else if (target === 'kbundle') {
       mk('安装到Krita.ps1', [
         '$ErrorActionPreference = "SilentlyContinue"',
@@ -2536,14 +2611,20 @@ Write-Host 'restart MediBang Paint Pro'
         'if (-not (Test-Path $dst)) { New-Item -ItemType Directory -Path $dst -Force | Out-Null }',
         'Get-ChildItem $PSScriptRoot -Filter *.bundle -File | Copy-Item -Destination $dst -Force',
         'Write-Host ("已复制到 " + $dst)',
-        'Write-Host "重启 Krita 后，在 设置->管理资源 里应能看到；看不到就用「导入资源」手动选一次"'
+        'Write-Host "注意：Krita 5 不会因复制文件自动注册预设，必须走 GUI 导入"',
+        'Write-Host "Krita -> 设置 -> 管理资源库 -> + 导入 -> 选 .bundle -> 打开"'
       ].join(NL));
       mk('安装到Krita.bat', ['@echo off', 'chcp 65001 >nul', 'powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0安装到Krita.ps1"', 'pause', ''].join(NL));
       mk('安装说明.txt', [
-        'Krita 笔刷包安装说明',
-        '方法一（一键）：运行「安装到Krita.bat」，重启 Krita',
-        '方法二：Krita -> 设置 -> 管理资源 -> 导入资源 -> 选择本目录的 .bundle',
-        '导入后在「画笔预设」里搜索包名即可。'
+        'Krita 笔刷包安装说明（Krita 5.x 实测）',
+        '重要：Krita 5 改用 SQLite 资源库，直接把 .bundle 复制到用户目录只会在',
+        '「设置 -> 管理资源库」列表里显示，不会注册到画笔预设，必须走 GUI 导入：',
+        '1）Krita -> 设置 -> 管理资源库 -> 「+ 导入」',
+        '2）在文件对话框里选中本目录的 .bundle -> 打开',
+        '3）导入后在列表里选中该包确认状态；新建画布，在「画笔预设」里按名称搜索',
+        '',
+        '「安装到Krita.bat」只是把 .bundle 放到 %APPDATA%/krita/ 方便第 1 步选取，',
+        '不能代替 GUI 导入。把 .kpp 展开到 paintoppresets/ 同样不会自动注册。'
       ].join(NL));
     } else if (target === 'medibang') {
       mk('安装说明.txt', [
@@ -3030,7 +3111,7 @@ Write-Host 'restart MediBang Paint Pro'
       lines.push('【目标格式：' + (requestedTarget === 'udongman' ? '优动漫 / CSP（ABR兼容）' : requestedTarget === 'udongman_sut' ? '优动漫 / CSP 原生 .sut（实验）' : requestedTarget === 'udongman_mtd' ? '优动漫 / .mtd 绘画助手包（实验）' : target) + '】');
       if (requestedTarget === 'udongman') lines.push('  兼容说明：导出ABR，不是原生SUT；在子工具面板导入，动态/混色/双笔/纹理效果需目标软件核对。');
       if (requestedTarget === 'udongman_sut') lines.push(brushList.every(function (b) { return rawSutGroup(b, brushList, opts); }) ? '  兼容说明：原生 SUT 完整选择且未改动，整个文件原样保留。' : '  兼容说明：原生SUT导出（实验）；未改动的完整原生SUT可原样保留；重建时有图主笔尖/纹理写入单色素材，无笔尖图时用内置圆形；压感等动态、彩色和复杂混合尚未还原。');
-      if (requestedTarget === 'udongman_mtd') lines.push('  兼容说明：.mtd=zip+sut绘画助手素材包（实验，未真机验证）；素材与参数限制同.sut目标；如绘画助手拒绝导入请改用.sut或ABR兼容目标。');
+      if (requestedTarget === 'udongman_mtd') lines.push('  兼容说明：.mtd=zip+sut绘画助手素材包（实验，未真机验证）；素材与参数限制同.sut目标；无笔尖图时用内置圆形；如绘画助手拒绝导入请改用.sut或ABR兼容目标。');
       if (reason[target]) lines.push('  说明：' + reason[target]);
       let lostTotal = 0, keptTotal = 0, manualTotal = 0;
       brushList.forEach(function (b, i) {
