@@ -2202,7 +2202,10 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.51';
+const APP_VERSION = '2.8.52';
+/* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
+   改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
+const UPDATE_ENABLED = false;
   let lastSavedFiles = null;
   let preparedShare = null;
   let preparedShareSource = null;
@@ -2400,7 +2403,7 @@ const APP_VERSION = '2.8.51';
   /* 必须等脚本全部求值完再跑：checkForUpdate → updateSources() 会读 SITE_BASE，
      而 const SITE_BASE 声明在本文件更靠后。在加载期直接调用会踩 TDZ（ReferenceError 被 catch 吞掉，
      表现成「检查更新永远不会自动触发」）。挂到 load 事件上就绕开了。 */
-  window.addEventListener('load', function () {
+  if (UPDATE_ENABLED) window.addEventListener('load', function () {
     (async function checkVersion() {
       // 安卓 App 跑在 file:///android_asset 下，fetch 本地文件会报 “URL scheme file is not supported”，直接跳过
       if (window.BrushNative) return;
@@ -2635,6 +2638,7 @@ const APP_VERSION = '2.8.51';
   }
   async function checkForUpdate(opts) {
     opts = opts || {};
+    if (!UPDATE_ENABLED) return null;          // 关闭时任何调用都静默退出
     if (UPDATE.checking) return UPDATE.latest;
     UPDATE.checking = true;
     if (!opts.silent) renderUpdate('checking');
@@ -2659,6 +2663,14 @@ const APP_VERSION = '2.8.51';
     } finally { UPDATE.checking = false; }
   }
   (function initUpdateUi() {
+    if (!UPDATE_ENABLED) {
+      /* 暂时关闭：按钮/状态/面板一律隐藏，也不绑任何点击事件（页面底部只剩声明区） */
+      ['btnCheckUpdate', 'btnUpdateGo', 'updateText', 'updateLinks'].forEach(function (id) {
+        const node = document.getElementById(id);
+        if (node) { node.hidden = true; node.style.display = 'none'; }
+      });
+      return;
+    }
     const el = updateEls();
     if (el.current) el.current.textContent = APP_VERSION;
     /* 底栏自带 vX，状态行初始留空（空字符串有 :empty 样式，不占位） */
