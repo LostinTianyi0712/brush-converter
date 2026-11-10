@@ -106,14 +106,26 @@
         rgba[i * 4] = 255; rgba[i * 4 + 1] = 255; rgba[i * 4 + 2] = 255; rgba[i * 4 + 3] = a;
       }
     }
-    cv.width = w; cv.height = h;
+    /* 【第182轮】预览降采样：以前按原始尺寸建 canvas 并跑 w*h 次循环，
+       一支 2048² 的笔尖就是 419 万次 + 16MB 像素；解析 53 支（黄土笔刷那种 brushset）
+       等于 2.2 亿次循环、数百 MB 内存，主线程被占满，界面点两下就没响应。
+       预览只需要 260×96 的画布，笔尖按 256 上限抽样即可，视觉上无差别。 */
+    const MAXP = (opts && opts.maxPreviewPx) || 256;
+    const scale = Math.max(1, Math.ceil(Math.max(w, h) / MAXP));
+    const dw = Math.max(1, Math.floor(w / scale)), dh = Math.max(1, Math.floor(h / scale));
+    cv.width = dw; cv.height = dh;
     const ctx = cv.getContext('2d');
-    const img = ctx.createImageData(w, h);
-    // paint dark on light background so shape is visible
-    for (let i = 0; i < w * h; i++) {
-      const a = rgba[i * 4 + 3] / 255;
-      const v = Math.round(255 * (1 - a) * 0.85 + 30);
-      img.data[i * 4] = v; img.data[i * 4 + 1] = v; img.data[i * 4 + 2] = v; img.data[i * 4 + 3] = 255;
+    const img = ctx.createImageData(dw, dh);
+    // paint dark on light background so shape is visible（最邻近抽样，保留 alpha 对比）
+    for (let y = 0; y < dh; y++) {
+      const sy = y * scale;
+      for (let x = 0; x < dw; x++) {
+        const si = ((sy * w) + (x * scale)) * 4 + 3;
+        const a = rgba[si] / 255;
+        const v = Math.round(255 * (1 - a) * 0.85 + 30);
+        const di = (y * dw + x) * 4;
+        img.data[di] = v; img.data[di + 1] = v; img.data[di + 2] = v; img.data[di + 3] = 255;
+      }
     }
     ctx.putImageData(img, 0, 0);
   }
@@ -2243,7 +2255,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.58';
+const APP_VERSION = '2.8.59';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;
@@ -2930,7 +2942,10 @@ const UPDATE_ENABLED = false;
           if (!downloadTick && !shapeLibDlBusy && progressButton) {
             shapeLibDlBusy = true;
             progressButton.disabled = true;
-            downloadTick = shapeDlProgressStart(progressButton, SHAPE_LIB_PACKS.lite.totalMB * 1048576);
+            /* 这里读的是「本地已下好的包」（可能是 216MB 原图档），不是网络下载：
+               总量优先用已记录的真实字节数，未知就传 0 交给 paint 兜底。 */
+            const knownBytes = Number(state.shapeLibBytes) > 0 ? Number(state.shapeLibBytes) : 0;
+            downloadTick = shapeDlProgressStart(progressButton, knownBytes, '正在读取图库');
           }
           if (downloadTick) downloadTick.set(n);
         });
@@ -3759,19 +3774,27 @@ const UPDATE_ENABLED = false;
   /* 下载进度显示：UI 自己每 200ms 重绘（转圈 + 百分比 + 速度），不依赖下载内核多久回调一次。
      多卷包以前看着就是「一整卷下完才跳一格」——内核只报整卷边界时，界面照样在动。 */
   let shapeDlTick = null;
-  function shapeDlProgressStart(btn, totalBytes) {
+  function shapeDlProgressStart(btn, totalBytes, label) {
     shapeDlProgressStop();
-    const st = { got: 0, total: Number(totalBytes) > 0 ? Number(totalBytes) : 0, t0: Date.now(), frame: 0, timer: null };
+    /* label：这段既用于「下载」，也用于「读取本地已下好的包」，文案要分开，
+       否则读 216MB 文件时用户看到的是「下载中」，以为还在下。
+       total 允许传 0/未知：paint 里用 max(total, got) 兜底，绝不出现分母小于分子。 */
+    const st = { got: 0, total: Number(totalBytes) > 0 ? Number(totalBytes) : 0,
+      label: label || '下载中', t0: Date.now(), frame: 0, timer: null };
     const spin = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
     function paint() {
       if (!btn || btn.isConnected === false) { shapeDlProgressStop(); return; }
       const secs = Math.max(1, (Date.now() - st.t0) / 1000);
       const mb = st.got / 1048576;
       const rate = mb / secs;
-      const totalMB = st.total > 0 ? Math.max(1, Math.round(st.total / 1048576)) : 0;
-      const pct = st.total > 0 ? Math.min(100, Math.floor(st.got * 100 / st.total)) : 0;
+      /* 分母兜底：total 可能是精简档的 32MB，而实际读/下的是 216MB 原图包。
+         以前直接除，结果「206.0/32MB」—— 百分比早就 100%，数字却自相矛盾。 */
+      /* total 未知（0，例如读本地包时还没拿到长度）也要有分母：用已读字节兜底，
+         否则百分比整段消失，只剩「206.0MB」，看不出进度。 */
+      const totalMB = Math.max(Math.ceil((st.total || 0) / 1048576), Math.ceil(mb), 0);
+      const pct = totalMB > 0 ? Math.min(100, Math.floor(mb * 100 / totalMB)) : 0;
       const size = totalMB > 0 ? mb.toFixed(1) + '/' + totalMB + 'MB' : mb.toFixed(1) + 'MB';
-      btn.textContent = spin[st.frame++ % spin.length] + ' 下载中 ' + (totalMB > 0 ? pct + '% · ' : '') + size + ' · ' + rate.toFixed(rate >= 10 ? 0 : 1) + 'MB/s…';
+      btn.textContent = spin[st.frame++ % spin.length] + ' ' + st.label + ' ' + (totalMB > 0 ? pct + '% · ' : '') + size + ' · ' + rate.toFixed(rate >= 10 ? 0 : 1) + 'MB/s…';
     }
     st.set = function (n) { n = Number(n) || 0; if (n > st.got) st.got = n; };
     st.paint = paint;
