@@ -1506,20 +1506,10 @@
           if (texLayerOn) warnings.push('画世界：纹理层只验证过「沙纸（pt24）」；若某些笔刷画不出来，把「画世界真纹理」改回关再转一次。');
         }
       }
-      if (opts.dualCompanion !== false && targets.indexOf('bru') >= 0) {
-        const dualList = list.filter(function (b) { return b.dualOn; });
-        if (dualList.length) {
-          try {
-            const made = BC.convert.makeAbrPack(dualList, Object.assign({}, commonOpts(rec), { maxTipSize: opts.tipSize }));
-            // 多个输入文件各带双笔刷时，固定文件名会在 ZIP 里产生重复条目；
-            // 这里走 uniqueFile，并按前缀/分组命名，避免互相覆盖。
-            const compFolder = opts.groupBySource && rec.baseName ? BC.convert.sanitizeName(rec.baseName, 0, true) + '/' : '';
-            const compBase = compFolder + BC.convert.sanitizeName((opts.prefix || '') + (rec.baseName || rec.name.replace(/\.[^.]+$/, '') || '笔刷集'), 0, true);
-            outFiles.push({ name: uniqueFile(compBase, '.abr'), data: made.bytes });
-            warnings.push('含 ' + dualList.length + ' 支双笔刷：已额外附带 .abr（画世界Pro 3.0 可直接导入，保留原生双重笔刷）');
-          } catch (e) { warnings.push('双笔刷 ABR 附带失败：' + e.message); }
-        }
-      }
+      /* 【第184轮】转 .bru 时不再额外附带 .abr。
+         那个 ABR 是早年 BRU 还不支持双笔刷时的兜底，现在单支 BRU 已能内嵌副笔
+         （f119 + 记录末尾副图），画世界自己就能表达双笔；而额外那个 ABR 在画世界
+         里打开会闪退。实测反馈后直接移除这条出口。 */
       if (opts.target === 'abr' && list.some(function (b) { return b.dualOn && !b._rawPreset; })) {
         warnings.push('已生成 ABR 原生双笔刷结构，请在 Photoshop 验证导入与效果');
       }
@@ -2255,7 +2245,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.62';
+const APP_VERSION = '2.8.63';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;
