@@ -1027,7 +1027,11 @@
       if(sameGrain && !recoveredGrain && brush._rawGrain && brush._rawGrain.length)entries.push({name:'Grain.png',data:normalizeRawGrain(brush._rawGrain)});
       else if(brush.hasTexture){const g=grainPng(brush);if(g)entries.push({name:'Grain.png',data:g});}
       if(brush.dualOn && brush.dualTip)zip.read(writeBrush(subBrush(),opts)).forEach(e=>entries.push({name:'Sub01/'+e.name,data:e.data()}));
-      const originalThumb = !brush.tip && (brush._rawEntries || []).find(e=>e.name==='QuickLook/Thumbnail.png');
+      /* 【第188轮】缩略图优先复用源包的，不再因为有笔尖就重画。
+         实测源包主笔 Thumbnail 是 327×100 灰度+alpha(ct4)、副笔 1060×324 RGBA(ct6)；
+         我们重画成 256×128 RGBA(ct6)，是整包与原生唯一的实质差异。
+         缩略图只是 Procreate 笔刷条里的预览，复用原图最安全（Procreate 会按需重算）。 */
+      const originalThumb = (brush._rawEntries || []).find(e=>e.name==='QuickLook/Thumbnail.png');
       if (originalThumb) entries.push({name:'QuickLook/Thumbnail.png',data:new Uint8Array(originalThumb.data)});
       else {
         let tipRaw = brush.tip ? tipRGBA(brush,opts) : null;
