@@ -2189,10 +2189,29 @@
       const ovRatio = ov / minOp;
       const isComplementary = (ovRatio < 0.25) || (ov / maxOp < 0.25 && ss.op >= ms.op * 1.5 && ss.solidRatio >= 0.50);
       if (ms.op > 0 && ss.op > 0 && isComplementary) {
-        if (ss.solidRatio >= 0.50) {
+        /* 【第183轮】「互补双笔」有两种相反的语义，用「主笔有多少落在副笔之外」区分：
+           a) 主笔是**完整图案**，有大量内容伸出副笔（星星/爱心/尖角/笔画主体）
+              → **只用主笔**。并集会把底板合进来变黑块，差集(a2-a1)会把实心挖成空心。
+                用户「黄土笔刷」的「唔～呜」实测 outsideRatio=0.879，原图实心，旧逻辑出空心。
+           b) 主笔是**细线框**、完全嵌在副笔实心块里（文字印章 / 气泡对话框底板）
+              → 差集(a2-a1)：只留副笔超出主笔的部分，主笔位置镂空。
+                第237轮的两个回归用例就是这种，outsideRatio≈0。
+           阈值 0.10 两边余量都很大（0.879 vs ≈0）。 */
+        let onlyMain = 0;
+        for (let k = 0; k < 256 * 256; k++) if (ms.opGrid[k] && !ss.opGrid[k]) onlyMain++;
+        const outsideRatio = onlyMain / (ms.op || 1);
+        /* 再分一层：副笔是不是「底板」。
+           底板的指纹是**有深层实心核心**（ss.d8 高：成片实心，8px 窗口都实）；
+           而「实心笔画」太细，d8 接近 0。实测：
+             · 用户「唔～呜」副笔（菱形底板）d8=0.135、outsideRatio=0.879 → 只用主笔
+             · 237b「颤抖」副笔（十字笔画）d8≈0                 → 走差集
+             · 237c 气泡底板 d8 也高，但主笔（文字）全在底板内 outsideRatio≈0 → 走差集 */
+        if (outsideRatio > 0.10 && ss.d8 >= 0.10) {
+          nrmlMode = 'main';
+        } else if (ss.solidRatio >= 0.50) {
           nrmlMode = 'sub_cutout';
         } else if (ms.solidRatio >= 0.50) {
-          nrmlMode = 'main_cutout';
+          nrmlMode = 'over';
         }
       }
     }
