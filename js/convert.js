@@ -237,14 +237,26 @@
     return notes;
   }
 
+  /* 【第186轮】sizeScale 的乘法发生在 GUARD 之后。
+     GUARD（sanitizeBrushNumbers）在写出口包装层只消毒「入参 brush」，
+     而 sizeScale 是在这里才乘上去的——sizeScale=1000 时 40px → 40000px，
+     完全绕过 GUARD 的 5000 上限（实测 ABR 回读 Dmtr=40000、sizeScale=1e5 时 4e6，
+     PS/Procreate 读到就是分配巨型缓冲或断言失败）。乘法之后必须再收一次。
+     BRU 那条路径（makeBru 内 Math.min(3000)）本来就有上限，不受影响。 */
+  const SCALED_SIZE_MAX = 5000;
+  function clampScaledSize(v, def) {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) return def;
+    return Math.min(SCALED_SIZE_MAX, Math.max(0.1, n));
+  }
   function withSizeAndSpacing(brush, opts) {    opts = opts || {};
     const b = Object.assign({}, brush);
     if (Number.isFinite(opts.sizeScale) && opts.sizeScale > 0) {
-      b.sizePx = (brush.sizePx || 40) * opts.sizeScale;
+      b.sizePx = clampScaledSize((brush.sizePx || 40) * opts.sizeScale, clampScaledSize(brush.sizePx, 40));
       if (brush.dualBrush && brush.dualBrush.diameter > 0) {
-        b.dualBrush = Object.assign({}, brush.dualBrush, {diameter:brush.dualBrush.diameter * opts.sizeScale});
+        b.dualBrush = Object.assign({}, brush.dualBrush, {diameter:clampScaledSize(brush.dualBrush.diameter * opts.sizeScale, clampScaledSize(brush.dualBrush.diameter, 30))});
       }
-      if(brush.dualSubBrush && brush.dualSubBrush.sizePx>0)b.dualSubBrush=Object.assign({},brush.dualSubBrush,{sizePx:brush.dualSubBrush.sizePx*opts.sizeScale});
+      if(brush.dualSubBrush && brush.dualSubBrush.sizePx>0)b.dualSubBrush=Object.assign({},brush.dualSubBrush,{sizePx:clampScaledSize(brush.dualSubBrush.sizePx*opts.sizeScale, clampScaledSize(brush.dualSubBrush.sizePx, 30))});
     }
     if (Number.isFinite(opts.spacingOverride) && opts.spacingOverride > 0) {
       b.spacingPct = opts.spacingOverride;
