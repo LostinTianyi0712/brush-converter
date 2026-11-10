@@ -1069,13 +1069,23 @@
     });
     if (!files.length) throw new Error('没有可写入 Procreate 的笔刷（都缺少笔尖图像）');
     const setName = opts.setName || opts.name || (brushList[0] && brushList[0]._brushsetName) || (brushList[0] && brushList[0].name) || 'Procreate Brushes';
-    files.unshift({ name: 'brushset.plist', data: buildBrushsetPlist(setName, uuids) });
+    /* 与原生样本一致：brushset.plist 放在包**末尾**（实测源包位置 496/630，
+       原来 unshift 到首位是唯一与原生不同的结构差异）。 */
+    files.push({ name: 'brushset.plist', data: buildBrushsetPlist(setName, uuids) });
     return zip.write(files);
   }
 
   function proUuid() {
     const hex = '0123456789ABCDEF';
     const b = util.randomBytes(16);
+    /* 【第188轮】必须生成合法的 RFC 4122 UUID v4。
+       原来 16 字节纯随机，第 3 段首字符（version）和第 4 段首字符（variant）
+       不受约束：实测源 .brushset 的 53 个目录 UUID 里 version 位 100% 是 '4'，
+       而我们生成的是 0~F 乱分布（只有约 1/16 碰巧是 4）。
+       Procreate 读 brushset 时按 UUID 语义处理这些键值，拿到非法值会崩，
+       所以表现为「转出 Procreate 有概率崩溃」。 */
+    b[6] = (b[6] & 0x0f) | 0x40;  // version 4
+    b[8] = (b[8] & 0x3f) | 0x80;  // variant 10xx
     let s = '';
     for (let i = 0; i < 16; i++) {
       if (i === 4 || i === 6 || i === 8 || i === 10) s += '-';
