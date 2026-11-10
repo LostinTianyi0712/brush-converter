@@ -91,6 +91,13 @@
     // 只写 f28 开关不带 id，App 拿空纹理渲染 → 笔迹几乎不出墨；带上 id 才会按文档空间采样颗粒。
     if (b.texAssetId) parts.push(u8arr(fBytes(6, util.utf8Encode(String(b.texAssetId)))));
     parts.push(u8arr(fBytes(7, util.utf8Encode(b.texId))));     // MASKTEXPATH (image id)
+    /* 第181轮：f119（双笔刷开关）改为**无条件显式写出**。
+       以前只在「内嵌副笔」分支里写，单笔/烘焙后的笔刷根本没有这个字段，App 走缺省值；
+       而 Procreate 双笔转出来的笔刷笔尖里已经烘了一层副笔，缺省值把双笔打开就变成
+       同一笔落两次墨（黄土笔刷实测的「重影」）。
+       判定：确实挂着副笔（内嵌 PNG 或引用 UUID）且没被显式关掉，才写 1，其余写 0。 */
+    const dualFlag = (!!(b.bruDualSubBrush || b.bruDualRefUuid) && b.bruDualEnabled !== false) ? 1 : 0;
+    parts.push(u8arr(fVarint(119, dualFlag)));
     const size = Math.max(1, Math.min(5000, b.sizePx || 100));
     const maxSize=Math.max(size,b.maxSizePx||500);
     const minSize = Math.max(0, Math.min(1, b.minSizeRatio === undefined ? 1 : b.minSizeRatio));
@@ -187,7 +194,6 @@
         ]);
         parts.push(u8arr(fBytes(121, msg)));
         // 真实双笔刷文件里还有 f87 / f158，一并写入（经验值，来自样本）
-        parts.push(u8arr(fVarint(119, b.bruDualEnabled === false ? 0 : 1)));
         parts.push(u8arr(fVarint(122, dualBlendValue(b.dualBlendMode, b.bruDualBlendMode))));
         parts.push(u8arr(fVarint(87, 9629115)));
         parts.push(u8arr(fF32(158, 90)));

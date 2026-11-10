@@ -832,6 +832,15 @@
 
   /* 单支 BRU + 记录末尾内嵌副笔尖 PNG（画世界 3.x 原生单支布局） */
   function makeBruEmbedded(brush, opts) {
+    /* 第181轮：双笔刷语义不同 —— Procreate 的副笔是「与主笔混合」，画世界的双笔刷是
+       「副笔尖各画一笔」（位置/尺寸独立）。把 Procreate 副笔直接内嵌成画世界双笔，
+       一次落笔会出现主笔 + 副笔两层墨 = 用户实测的「重影」（黄土笔刷）。
+       非 BRU 源一律跳过内嵌、走烘焙路径：副笔合成进笔尖，并显式关闭 f119 双笔开关。
+       只有源本来就是 BRU（画世界自己的原生双笔）才保留内嵌语义。 */
+    /* 显式 forceEmbedSubTip 时保留内嵌能力（测试/高级用法），否则非 BRU 源一律烘焙。 */
+    if (brush.source !== 'bru' && !(opts && opts.forceEmbedSubTip)) {
+      return makeBru(brush, Object.assign({}, opts, { embedSubTip: false }));
+    }
     const pair = buildBruDualPairBrushes(brush);
     if (!pair || !pair.secondary || !pair.secondary.tip) return makeBru(brush, Object.assign({}, opts, { embedSubTip: false }));
     // Use the same conversion path as a standalone secondary. This supplies
@@ -1067,7 +1076,11 @@
       bruDualRefUuid: brush.bruDualRefUuid,
       dualSubName: brush.dualSubName,
       bruDualSubBrush: brush.bruDualSubBrush,
-      bruDualEnabled: brush.bruDualEnabled,
+      /* 副笔已经烘焙进笔尖时（bakingDual），画世界的「双笔刷」开关必须显式关掉。
+         bru.js 写 f119 的规则是 `=== false ? 0 : 1`，undefined 也写 1 —— Procreate
+         源的 bruDualEnabled 本来就是 undefined，于是笔尖里含一层副笔、双笔刷又画一层，
+         同一笔落两次墨 = 用户看到的「重影」（黄土笔刷实测）。 */
+      bruDualEnabled: bakingDual ? false : brush.bruDualEnabled,
       embeddedSubPng: brush.embeddedSubPng,
       bruLinkTemplate: brush.bruLinkTemplate,
       dualBlendMode: brush.dualBlendMode === undefined ? (brush.dualBrush && brush.dualBrush.blend) : brush.dualBlendMode,
