@@ -2084,13 +2084,51 @@
   function dualBlendCode(m) {
     if (m === undefined || m === null || m === '') return '';
     if (typeof m === 'number') {
-      return ['', 'drkn', 'mltp', 'drkn', 'mltp', 'lghn', 'scrn', 'mltp', 'ovrl', 'mltp', 'mltp', 'mltp'][m] || '';
+      return ['nrml', 'drkn', 'mltp', 'drkn', 'mltp', 'lghn', 'scrn', 'mltp', 'ovrl', 'mltp', 'mltp', 'mltp'][m] || '';
     }
     const s = String(m).toLowerCase().replace(/[^a-z]/g, '');
+    if (s.indexOf('nrml') >= 0 || s.indexOf('normal') >= 0) return 'nrml';
     if (s.indexOf('scrn') >= 0 || s.indexOf('screen') >= 0 || s.indexOf('lghn') >= 0 || s.indexOf('lighten') >= 0) return 'scrn';
     if (s.indexOf('ovrl') >= 0 || s.indexOf('overlay') >= 0) return 'ovrl';
     if (s.indexOf('drkn') >= 0 || s.indexOf('darken') >= 0) return 'drkn';
     return '';
+  }
+
+  /* 统计双笔刷单层在 256×256 归一化网格上的覆盖率、实心占比与深层核心占比（用于识别
+     Procreate 正常模式下的互补双色描边/气泡底板笔刷，避免把前景与底板同色合并成黑块）。 */
+  function dualLayerStats256(w, h, getAlpha) {
+    const N = 256;
+    const opGrid = new Uint8Array(N * N);
+    const solidGrid = new Uint8Array(N * N);
+    let op = 0, solid = 0;
+    for (let y = 0; y < N; y++) {
+      const sy = Math.min(h - 1, Math.floor(y * h / N));
+      for (let x = 0; x < N; x++) {
+        const sx = Math.min(w - 1, Math.floor(x * w / N));
+        const a = getAlpha(sx, sy);
+        const k = y * N + x;
+        if (a >= 32 / 255) { op++; opGrid[k] = 1; }
+        if (a >= 220 / 255) { solid++; solidGrid[k] = 1; }
+      }
+    }
+    const d = 8;
+    let deep8 = 0;
+    for (let y = d; y < N - d; y++) {
+      for (let x = d; x < N - d; x++) {
+        const k = y * N + x;
+        if (solidGrid[k] && solidGrid[k - d] && solidGrid[k + d] &&
+            solidGrid[(y - d) * N + x] && solidGrid[(y + d) * N + x] &&
+            solidGrid[(y - d) * N + x - d] && solidGrid[(y + d) * N + x + d]) {
+          deep8++;
+        }
+      }
+    }
+    return {
+      op: op,
+      opGrid: opGrid,
+      solidRatio: solid / (op || 1),
+      d8: deep8 / (solid || 1)
+    };
   }
 
   function bakeDualTip(tip, brush) {
@@ -2108,7 +2146,15 @@
     const w = tip.w, h = tip.h;
     const out = new Uint8Array(w * h * 4);
     const blend = dualBlendCode(brush.dualBlendMode !== undefined ? brush.dualBlendMode : info.blend);
-    const ratio = info.diameter > 0 && brush.sizePx > 0 ? info.diameter / brush.sizePx : 1;
+    const subB = brush.dualSubBrush;
+    const mMax = brush._params && Number(brush._params.maxSize) || 0;
+    const sMax = subB && subB._params && Number(subB._params.maxSize) || 0;
+    const uneditedProcreateSub = brush.source === 'procreate' && mMax > 0 && sMax > 0 &&
+      (!subB._rawNormalized || subB.sizePx === subB._rawNormalized.sizePx) &&
+      (!info.diameter || info.diameter === subB.sizePx);
+    const ratio = uneditedProcreateSub
+      ? (sMax / mMax)
+      : (info.diameter > 0 && brush.sizePx > 0 ? info.diameter / brush.sizePx : 1);
     // Convert logical diameter into main-image pixels, then into secondary-image
     // coordinates. Changing the secondary image resolution must not resize it.
     const scale = Math.max(w, h) * ratio / Math.max(d.w, d.h);
@@ -2130,12 +2176,27 @@
       const a = raw(sx, sy);
       return invert ? 1 - a : a;
     };
+    let nrmlMode = 'over';
+    if (blend === 'nrml' && w >= 64 && h >= 64) {
+      const ms = dualLayerStats256(w, h, function (x, y) { return tip.rgba[(y * w + x) * 4 + 3] / 255; });
+      const ss = dualLayerStats256(w, h, dualAlpha);
+      let ov = 0;
+      for (let k = 0; k < 256 * 256; k++) {
+        if (ms.opGrid[k] && ss.opGrid[k]) ov++;
+      }
+      const ovRatio = ov / Math.min(ms.op || 1, ss.op || 1);
+      if (ms.op > 0 && ss.op > 0 && ovRatio < 0.08 && ss.solidRatio >= 0.50) {
+        nrmlMode = ss.d8 <= 0.04 ? 'sub' : 'main';
+      }
+    }
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const a1 = tip.rgba[(y * w + x) * 4 + 3] / 255;
         const a2 = dualAlpha(x, y);
         let a;
-        if (blend === 'scrn' || blend === 'lghn') a = 1 - (1 - a1) * (1 - a2);
+        if (blend === 'nrml') {
+          a = nrmlMode === 'sub' ? a2 : nrmlMode === 'main' ? a1 : (1 - (1 - a1) * (1 - a2));
+        } else if (blend === 'scrn' || blend === 'lghn') a = 1 - (1 - a1) * (1 - a2);
         else if (blend === 'drkn') a = Math.min(a1, a2);
         else if (blend === 'ovrl') a = a1 < 0.5 ? 2 * a1 * a2 : 1 - 2 * (1 - a1) * (1 - a2);
         else a = a1 * a2;
