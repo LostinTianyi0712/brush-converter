@@ -127,6 +127,116 @@
     return true;
   }
 
+  /* ---------- 写入口数值卫生（崩溃防护） ----------
+     源文件可能畸形、截断或来自别的转换器，解析后得到 NaN / Infinity / 负值 /
+     荒谬上限（例如 1e9 px 直径）。这些值一旦编进目标文件，目标软件读到就会
+     分配巨型缓冲或断言失败（PS 的 sampledBrush 直径、Procreate 的
+     ValkyrieStitcher 断言等都是这个路径）。
+     这里只在「明显非法」时改动，合法值原样透传；各格式自己的上限钳制不变，
+     钳制过的字段会挂在 _guardNotes 上，由写出口汇总成警告，不静默吞掉。 */
+  const GUARD_RULES = [
+    // [字段, 默认值, 下限, 上限]
+    ['sizePx', null, 0.1, 5000],          // null = 用笔尖尺寸兜底
+    ['spacingPct', 25, 0, 1000],
+    ['roundness', 100, 0, 100],
+    ['opacity', 1, 0, 1],
+    ['flowPct', 1, 0, 1],
+    ['hardness', 1, 0, 1],
+    ['minSizeRatio', 0, 0, 1],
+    ['minOpacityRatio', 0, 0, 1],
+    ['sizeJitterPct', 0, 0, 100],
+    ['angleJitterDeg', 0, 0, 360],
+    ['roundnessJitterPct', 0, 0, 100],
+    ['countJitterPct', 0, 0, 100],
+    ['opacityJitterPct', 0, 0, 100],
+    ['scatterPct', 0, 0, 1000],
+    ['scatterCount', 1, 0, 100],
+    /* textureDepth 不在这里兜底：NaN 由烘焙路径自己回退（round107 用例
+       「非有限纹理深度回退默认值而不清空笔尖」验证过），写成 0 反而会改变
+       烘焙后的笔尖 alpha。 */
+    ['textureScale', 1, 0.01, 100],
+    ['textureRotate', 0, -360, 360],
+    ['smoothingStrength', 0, 0, 1],
+    ['dualDiameter', 30, 0.1, 5000],
+    ['dualScatterPct', 0, 0, 1000],
+    ['dualScatterCount', 1, 0, 100],
+    ['dualFlow', 1, 0, 1],
+    ['dualHardness', 1, 0, 1]
+  ];
+  const GUARD_DUAL_RULES = [
+    ['diameter', 30, 0.1, 5000],
+    ['scatterPct', 0, 0, 1000],
+    ['count', 1, 0, 100],
+    ['flow', 1, 0, 1],
+    ['hardness', 1, 0, 1],
+    ['spacing', 25, 0, 1000]
+  ];
+
+  function tipFallbackSize(brush) {
+    const t = brush && brush.tip;
+    const n = t && Math.max(Number(t.w) || 0, Number(t.h) || 0);
+    return Number.isFinite(n) && n > 0 ? n : 40;
+  }
+
+  function guardValue(holder, key, def, min, max, notes, label) {
+    const raw = holder[key];
+    if (raw === undefined || raw === null) return null;
+    const n = typeof raw === 'number' ? raw : Number(raw);
+    let v = n;
+    if (!Number.isFinite(n)) v = def;
+    else if (n < min) v = min;
+    else if (n > max) v = max;
+    else return null;
+    notes.push((label || key) + ' ' + (Number.isFinite(n) ? n : String(raw)) + '→' + v);
+    return v;
+  }
+
+  function sanitizeBrushNumbers(brush) {
+    if (!brush || typeof brush !== 'object' || brush instanceof Uint8Array) return brush;
+    const notes = [];
+    const patch = {};
+    const sizeDefault = tipFallbackSize(brush);
+    for (const rule of GUARD_RULES) {
+      const def = rule[1] === null ? sizeDefault : rule[1];
+      const v = guardValue(brush, rule[0], def, rule[2], rule[3], notes);
+      if (v !== null) patch[rule[0]] = v;
+    }
+    // 角度不像尺寸那样有上限，但荒谬角度会让部分写端乘出 Infinity；
+    // 只在超出 ±360 时归一化，避免改动合法的大角度。
+    if (typeof brush.angle === 'number') {
+      if (!Number.isFinite(brush.angle)) { patch.angle = 0; notes.push('angle ' + brush.angle + '→0'); }
+      else if (brush.angle > 360 || brush.angle < -360) {
+        const a = ((brush.angle % 360) + 360) % 360;
+        patch.angle = a; notes.push('angle ' + brush.angle + '→' + a);
+      }
+    }
+    let dualPatch = null;
+    if (brush.dualBrush && typeof brush.dualBrush === 'object') {
+      const dn = [];
+      const dp = {};
+      for (const rule of GUARD_DUAL_RULES) {
+        const def = rule[1] === null ? sizeDefault : rule[1];
+        const v = guardValue(brush.dualBrush, rule[0], def, rule[2], rule[3], dn, 'dualBrush.' + rule[0]);
+        if (v !== null) dp[rule[0]] = v;
+      }
+      if (dn.length) { dualPatch = dp; notes.push(...dn); }
+    }
+    if (!notes.length) return brush;
+    const out = Object.assign({}, brush, patch);
+    if (dualPatch) out.dualBrush = Object.assign({}, brush.dualBrush, dualPatch);
+    Object.defineProperty(out, '_guardNotes', { value: notes, enumerable: false, configurable: true });
+    return out;
+  }
+
+  function collectGuardNotes(list) {
+    const notes = [];
+    const arr = Array.isArray(list) ? list : [list];
+    for (const b of arr) {
+      if (b && b._guardNotes) for (const n of b._guardNotes) if (notes.indexOf(n) < 0) notes.push(n);
+    }
+    return notes;
+  }
+
   function withSizeAndSpacing(brush, opts) {    opts = opts || {};
     const b = Object.assign({}, brush);
     if (Number.isFinite(opts.sizeScale) && opts.sizeScale > 0) {
@@ -3509,6 +3619,42 @@ Write-Host 'restart MediBang Paint Pro'
   }
 
   const api = { detect, parseFile, restoreHsjTips, builtinTipKey, expandArchive, synthTip, makeBru, makeBruPack, makeBruDualPair, buildBruDualPairBrushes, makeAbrPack, makeTplPack, makeUdongmanPack, makeUdongmanSutPack, makeUdongmanMtdPack, parseMtd, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, mergePatternFiles, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, tipSourceAudit, tipSourceHint, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Files, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
+  /* 写出口统一过一遍数值卫生（见 sanitizeBrushNumbers）。包装不改变函数签名：
+     数组入口逐支处理，单支入口直接处理，字节/字符串入口原样放行。
+     只有真的钳制过才替换参数并附加 warnings，合法样本走原路径零影响。 */
+  const GUARDED_WRITERS = ['makeBru', 'makeBruPack', 'makeBruDualPair', 'makeAbrPack', 'makeTplPack',
+    'makeUdongmanPack', 'makeUdongmanSutPack', 'makeUdongmanMtdPack', 'makePatternFile', 'makeTexturePng',
+    'makeProcreateBrush', 'makeProcreateBrushset', 'makeGbr', 'makeMyb', 'makeKpp', 'makeGih',
+    'makePainter', 'makeMdp', 'makeMediBangBrush', 'makeMediBangIniPack', 'makeIpcfg', 'makePrbr',
+    'makeGoPaintAbr', 'makeGoPaintBrush', 'makeGoPaintSet', 'makeGoPaintGroup',
+    'makeSai2Files', 'makeSai2Pack', 'makeKritaBundle', 'makeTipPng', 'makeTipPngPack'];
+  for (const writerName of GUARDED_WRITERS) {
+    const fn = api[writerName];
+    if (typeof fn !== 'function') continue;
+    api[writerName] = function (first) {
+      const args = Array.prototype.slice.call(arguments);
+      let sanitized = first;
+      let touched = false;
+      if (Array.isArray(first)) {
+        sanitized = first.map(sanitizeBrushNumbers);
+        touched = sanitized.some(function (b, i) { return b !== first[i]; });
+      } else if (first && typeof first === 'object' && !(first instanceof Uint8Array)) {
+        sanitized = sanitizeBrushNumbers(first);
+        touched = sanitized !== first;
+      }
+      if (!touched) return fn.apply(this, args);
+      args[0] = sanitized;
+      const out = fn.apply(this, args);
+      const notes = collectGuardNotes(sanitized);
+      if (out && typeof out === 'object' && notes.length) {
+        const msg = '源参数超出目标格式可接受范围，已钳制后再写出：' + notes.slice(0, 6).join('；') +
+          (notes.length > 6 ? ' 等 ' + notes.length + ' 项' : '');
+        out.warnings = (Array.isArray(out.warnings) ? out.warnings : []).concat([msg]);
+      }
+      return out;
+    };
+  }
+
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { convert: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);
