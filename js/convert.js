@@ -358,19 +358,14 @@
       .replace(/&amp;/g, '&');
   }
 
-  /* 内置笔尖引用有两种写法，必须都认：
-     ① 早期样本把 psN 塞进 oldTexId 当占位（目录里确实有同名自定义图）；
-     ② 画世界官方内置笔刷把引用放在 texAssetId = ptN，oldTexId 为空 —— 笔尖完全由
-        App 内置图库提供。第178轮实测：用户「小方块」的 texAssetId=pt65，内置库
-        里的 ps65 正是同一枚立体方块；漏掉 ② 会让这类笔刷被合成为纯圆头。
-     ② 只在 oldTexId 为空时回落，避免抢掉真正的自定义笔尖图。 */
+  /* 内置笔尖引用只有一种写法：oldTexId 里直接放内置图库的键 psN（早期样本如此）。
+     texAssetId 的 ptN 是【纹理】编号，不是笔尖形状编号 —— 第178轮曾按编号相同
+     猜成 psN 去补笔尖，结果用户导入后笔刷图案完全变了（第179轮实测反馈）。
+     拿不到真实笔尖时宁可留空交给上层合成，也不能猜一个形状塞进去。 */
   function builtinTipKey(b) {
     if (!b) return null;
     const old = String(b.oldTexId || '');
-    if (/^ps[1-9][0-9]*$/.test(old)) return old;
-    const m = /^pt([1-9][0-9]*)$/.exec(String(b.texAssetId || ''));
-    if (m && !old) return 'ps' + m[1];
-    return null;
+    return /^ps[1-9][0-9]*$/.test(old) ? old : null;
   }
 
   function restoreHsjTips(result, opts) {
@@ -440,6 +435,12 @@
           if (inv) b.dynamicsControlAngle = inv;
         }
       });
+      /* 画世界的官方/内置笔刷经常【没有内嵌笔尖位图】（实测「小方块」只有 450B，
+         f7 与图长都是空），笔尖由 App 内部资源提供。这种文件重新生成一遍必然
+         变样 —— 单支且参数没被改过时直接抄回原字节，图案与导入前逐字节相同。
+         多支合计成一个文件时不能拿整包字节顶单支，所以只给单支挂。 */
+      if (result.brushes.length === 1) result.brushes[0]._rawBru = new Uint8Array(bytes);
+      result.brushes.forEach(function (b) { b._rawBrushState = util.brushFingerprint(b); });
     } else if (kind === 'csp-decrypted') {
       if (!(opts && opts.decrypted && opts.decrypted.json)) {
         throw new Error('这是 CSP 解密目录里的参数文件；请把整个 _decrypted 目录（或包含它的压缩包）导入');
@@ -886,6 +887,13 @@
     brush = angleControlAliases(brush);
     if (opts && opts.embedSubTip && brush && brush.dualTip) return makeBruEmbedded(brush, opts);
     opts = opts || {};
+    /* 同格式直抄：源就是 .bru、目标也是 .bru，且尺寸/间距/压感/烘焙等选项都没动过
+       —— 原样返回源字节。画世界内置笔刷常常没有内嵌位图（450B 那类），任何重新
+       生成都会换掉笔尖图案；透传是唯一能保证「导入后和原来一模一样」的路径。 */
+    if (brush._rawBru && brush._rawBru.length && rawBrushUnchanged(brush, opts)) {
+      return { bytes: new Uint8Array(brush._rawBru), pngBytes: null, meta: null,
+        tipW: 0, tipH: 0, passthrough: true };
+    }
     let tipImg = tipToRGBA(brush);
     const synthesizedTip = !tipImg;
     if (!tipImg) tipImg = synthTip(brush, 256, opts);
@@ -1095,6 +1103,10 @@
     opts = opts || {};
     const items = [];
     const used = new Map();
+    if (brushList.length === 1) {
+      const only = makeBru(brushList[0], opts);
+      if (only.passthrough) return { bytes: only.bytes, count: 1, meta: null, passthrough: true };
+    }
     brushList.forEach(function (brush, i) {
       const made = makeBru(brush, opts);
       let base = sanitizeName(brush.name, i);
