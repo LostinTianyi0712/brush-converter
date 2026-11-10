@@ -2243,7 +2243,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.56';
+const APP_VERSION = '2.8.57';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;
@@ -3415,7 +3415,7 @@ const UPDATE_ENABLED = false;
     const native = window.BrushNative;
     const list = Array.isArray(urls) ? urls : [urls];
     btn.textContent = '下载中 0/' + totalMB + 'MB…';
-    let lastT = Date.now(), lastGot = null, speed = 0;
+    let lastT = Date.now(), lastGot = null, speed = 0, stagnantSec = 0;
     if (!resume) {
       const started = list.length > 1
         ? (typeof native.shapeLibDownloadMultiStart === 'function' && native.shapeLibDownloadMultiStart(list.join('|')))
@@ -3434,10 +3434,20 @@ const UPDATE_ENABLED = false;
       if (lastGot === null) { lastGot = got; lastT = nowT; }
       if (nowT - lastT >= 1500) {
         speed = Math.max(0, got - lastGot) / ((nowT - lastT) / 1000);
+        /* 【第181轮】接管旧任务时加停滞检测：覆盖安装后原生状态可能卡在 running 且
+           got 不再增长，界面会永久停在「下载中 141.0/32MB」。连续 12 秒没新字节就
+           中止接管（Abort 只清 .part，不动已下好的图库），交给上层恢复界面。 */
+        if (got > lastGot) stagnantSec = 0; else stagnantSec += (nowT - lastT) / 1000;
+        if (resume && stagnantSec >= 12) {
+          try { if (typeof native.shapeLibDownloadAbort === 'function') native.shapeLibDownloadAbort(); } catch (e) { /* ignore */ }
+          throw new Error('上次的下载已停滞，停止接管');
+        }
         lastT = nowT; lastGot = got;
       }
       const mbps = (speed / 1048576).toFixed(2) + 'MB/s';
-      const displayTotal = total >= got && total > 0 ? total : totalMB * 1048576;
+      /* totalMB 传 0（接管分支）时不能除 0，也不能让「141.0/32MB」这种矛盾数字出现：
+         原生 total 不可信时先用已下字节兜底，至少分母不会小于分子。 */
+      const displayTotal = total >= got && total > 0 ? total : (totalMB > 0 ? totalMB * 1048576 : Math.max(got, 1));
       btn.textContent = '下载中 ' + Math.round(got / 1048576) +
         (displayTotal >= got ? '/' + Math.round(displayTotal / 1048576) : '') + 'MB · ' + mbps + '…';
       if (Date.now() - started > 15 * 60 * 1000) throw new Error('下载超时');
@@ -4087,11 +4097,21 @@ const UPDATE_ENABLED = false;
       if (!n || typeof n.shapeLibDownloadStatus !== 'function') return;
       let st = 'idle';
       try { st = String(n.shapeLibDownloadStatus() || 'idle|0|-1').split('|')[0]; } catch (e) { return; }
-      if (st !== 'running' && st !== 'done') return;
+      /* 【第181轮】done 不再"接管"。原生 dlState 是 static 的，下载完成（或覆盖安装）
+         之后一直返回 done；旧代码把 done 也当未完成任务，于是每次启动都重新走一遍
+         "接管→导入 216MB"，按钮还长期停在「下载中 141.0/32MB」（用户实测）。
+         已完成就清掉原生状态直接返回——注意用 Abort（只清 .part）而不是 Clear（会删图库）。 */
+      if (st === 'done') {
+        try { if (typeof n.shapeLibDownloadAbort === 'function') n.shapeLibDownloadAbort(); } catch (e) { /* ignore */ }
+        return;
+      }
+      if (st !== 'running') return;
       const dlBtn = $('#btnShapeLibDownloadFull') || $('#btnShapeLibDownload');
       if (!dlBtn) return;
       dlBtn.hidden = false;
       shapeLibDlBusy = true;
+      const originalLabel = dlBtn.textContent;   // 接管失败时恢复，别把「下载中」留在界面上
+      let resumed = false;
       (async function () {
         try {
           dlBtn.disabled = true;
@@ -4102,6 +4122,7 @@ const UPDATE_ENABLED = false;
           await loadShapeLibraryBytes(got.bytes, recoveredPack.label, false);
           state.shapeLibPackKey = recoveredPack.key;
           dlBtn.textContent = recoveredPack.doneText;
+          resumed = true;
           toast('上次没下完的图库包已接上并完成（不用重新下载）', 5000);
           pushLog('启动时接管了未完成的图库下载：' + got.bytes.length + 'B');
         } catch (e) {
@@ -4109,6 +4130,8 @@ const UPDATE_ENABLED = false;
         } finally {
           shapeLibDlBusy = false;
           if (dlBtn) dlBtn.disabled = false;
+          /* 没接管成功就把按钮文案还原成进入前的样子，避免界面停在「下载中…」 */
+          if (dlBtn && !resumed) dlBtn.textContent = originalLabel;
           refreshShapeLibStoreUI();
         }
       })();
