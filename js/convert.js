@@ -1312,6 +1312,18 @@
       }
       return { bytes: png.encode(w, h, out), w: w, h: h };
     }
+    /* 【第187轮】前三路都是「笔刷自带像素」。BRU 的纹理只有资源 id（f6=ptN），
+       没有像素，所以「导出纹理 PNG」对这类笔刷一直是空的。这里让 textureGray
+       兜底（它会走到内置纹理库），导出的 PNG 才是用户真正看到的那张纹理。 */
+    const t = textureGray(brush);
+    if (t && t.w > 0 && t.h > 0 && t.gray && t.gray.length === t.w * t.h) {
+      const out = new Uint8Array(t.w * t.h * 4);
+      for (let i = 0; i < t.gray.length; i++) {
+        const v = t.gray[i];
+        out[i * 4] = v; out[i * 4 + 1] = v; out[i * 4 + 2] = v; out[i * 4 + 3] = 255;
+      }
+      return { bytes: png.encode(t.w, t.h, out), w: t.w, h: t.h };
+    }
     return null;
   }
 
@@ -1350,6 +1362,27 @@
         gray[i] = inv ? 255 - v : v;
       }
       return { w: g.w, h: g.h, gray: gray };
+    }
+    /* 【第187轮】第四级来源：画世界 App 自带的 156 张内置纹理。
+       画世界 BRU 的 f6 只存**资源 id**（`ptN`），不含像素；这类笔刷转到
+       ABR / Procreate / Krita / GoPaint / SAI2 / SUT 时，过去一律按「缺纹理
+       原图」降级，纹理被静默丢掉（用户反馈过网点笔刷变半透明块）。
+       前面三级全是**用户素材**，任何覆盖都等于改坏原笔刷（第66/179轮踩过），
+       所以内置库只垫在最末位，且必须：id 形如 ptN、库里真有这一号、用户没有
+       显式关掉纹理（hasTexture === false）。
+       解不开（progressive JPEG 等）时 hsj-textures-lib 返回 null，行为与改动前完全一致。 */
+    if (brush.texAssetId && brush.hasTexture !== false) {
+      const lib = isNode ? require('./hsj-textures-lib.js') : (root.BC && root.BC.hsjTextureLib);
+      if (lib && typeof lib.gray === 'function') {
+        const t = lib.gray(brush.texAssetId);
+        if (t && t.w > 0 && t.h > 0 && t.gray && t.gray.length === t.w * t.h) {
+          /* 一律复制：库内是 LRU 缓存数组，就地反相会污染下一个调用者 */
+          const gray = new Uint8Array(t.gray.length);
+          if (inv) { for (let i = 0; i < gray.length; i++) gray[i] = 255 - t.gray[i]; }
+          else gray.set(t.gray);
+          return { w: t.w, h: t.h, gray: gray, builtinTexture: String(brush.texAssetId) };
+        }
+      }
     }
     return null;
   }
