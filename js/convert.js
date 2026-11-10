@@ -974,7 +974,13 @@
     // 而 Procreate 原样张是中灰的半透明颇粒（目标覆盖 ~0.6）。
     // 实测同一支笔刷：不透明度 22% → 亮度 144.1、hf 9.01、颇孔 4.2%。
     // 所以这里按「目标覆盖度」反算每个笔尖应有的 alpha，再折成不透明度。
-    const densityMode = opts.bruDensity === 'auto' ? 'auto' : 'off';
+    /* 【第185轮】间距极小的笔刷要强制做「笔迹浓度归一」。
+       画世界按每个 dab 累加 alpha：间距 0.1% 时同一位置叠几百次，
+       半透明笔尖（网格/网点/纹理）必然糊成实心黑块（用户实测：单点是网格小圆，
+       画出来是一条黑带）。归一后按「目标覆盖度」反算笔尖 alpha，纹理才留得住。
+       用户显式选 auto 也走同一条路；间距 >= 2% 时仍按他的选择来。 */
+    const autoDensity = spacingPct < 2;
+    const densityMode = (opts.bruDensity === 'auto' || autoDensity) ? 'auto' : 'off';
     let densityOpacity = null, densityInfo = null;
     if (brush.source !== 'bru' && densityMode !== 'off') {
       const target = Math.max(0.2, Math.min(1, Number(opts.bruDensityTarget) || 0.6));
@@ -2158,7 +2164,11 @@
     // Convert logical diameter into main-image pixels, then into secondary-image
     // coordinates. Changing the secondary image resolution must not resize it.
     const scale = Math.max(w, h) * ratio / Math.max(d.w, d.h);
-    const ang = ((info.angle || 0) * Math.PI) / 180;
+    /* 【第185轮】Procreate 的 dual brush angle 是「副笔每个 dab 的旋转」，
+       不是整张副笔图的重采样旋转。烘焙成单 dab 图案时若整图旋转，多笔尖布局
+       会被翻到对角——用户「喘气 1」实测：5 个气泡的描边环全部错位到对面。
+       副笔 dab 自身的旋转已由 BRU 的笔尖角度字段表达，这里不应用。 */
+    const ang = 0;
     const round = Math.max(0.05, Math.min(1, (info.roundness === undefined ? 100 : info.roundness) / 100));
     const flipX = !!info.flipX, flipY = !!info.flipY, invert = !!info.flip;
     const cos = Math.cos(-ang), sin = Math.sin(-ang);
