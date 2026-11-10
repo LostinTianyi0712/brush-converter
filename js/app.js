@@ -685,7 +685,46 @@
     return count;
   }
 
+  /* 【第187轮】解析落地前按「笔尖最大边长」降采样。
+     53 支 Procreate brushset 解析完是 939 个 ArrayBuffer / 1437MB（其中原始
+     15.5MB 字节被 495 个视图共享），转 .brushset 时还要再翻一份，内存峰值直接
+     把浏览器/WebView 压崩——用户报的「转出 Procreate 有概率崩溃」就是这个。
+     默认上限 512 与设置里一致；用户显式选了更大值就按他的来（并自行承担内存）。 */
+  function downsampleParsedTips(parsed) {
+    let cap = 512;
+    try {
+      const el = document.getElementById('optTipSize');
+      const v = Number(el && el.value);
+      if (v > 0) cap = Math.max(64, Math.min(2048, v));
+    } catch (e) { /* 用默认 512 */ }
+    const list = (parsed && parsed.brushes) || [];
+    let scaled = 0;
+    function shrink(t) {
+      if (!t || !t.rgba || !t.w || !t.h) return t;
+      const side = Math.max(t.w, t.h);
+      if (side <= cap) return t;
+      const k = cap / side;
+      const nw = Math.max(1, Math.round(t.w * k)), nh = Math.max(1, Math.round(t.h * k));
+      try {
+        const rgba = BC.png.resize(t.rgba, t.w, t.h, nw, nh);
+        scaled++;
+        return { w: nw, h: nh, rgba: rgba };
+      } catch (e) { return t; }
+    }
+    for (let i = 0; i < list.length; i++) {
+      const b = list[i];
+      if (!b) continue;
+      b.tip = shrink(b.tip);
+      b.dualTip = shrink(b.dualTip);
+      /* 已解出的内嵌副笔/纹理同样收口，避免绕过上限 */
+      if (b.embeddedTips && b.embeddedTips.length) b.embeddedTips = b.embeddedTips.map(shrink);
+    }
+    if (scaled) pushLog('解析后按 ' + cap + 'px 上限压缩了 ' + scaled + ' 张笔尖（防止内存峰值崩溃）');
+    return parsed;
+  }
+
   function adoptParsed(rec, bytes, parsed, displayName) {
+    try { downsampleParsedTips(parsed); } catch (e) { pushLog('笔尖压缩失败（继续用原图）：' + ((e && e.message) || e)); }
     rec.sizeBytes = bytes ? bytes.length : 0;
     rec.pkgId = BC.util.uid();
     rec.baseName = (displayName || rec.name).replace(/\.[^.]+$/, '').split('/').pop();
@@ -2245,7 +2284,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.65';
+const APP_VERSION = '2.8.66';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;
