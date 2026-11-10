@@ -967,6 +967,12 @@
     if (!isFinite(sizePx) || sizePx <= 0) sizePx = Math.max(4, Math.max(w, h));
     sizePx = Math.max(1, Math.min(3000, Math.round(sizePx * 100) / 100));
     let spacingPct = opts.spacingOverride > 0 ? opts.spacingOverride : (brush.spacingPct === undefined ? 10 : brush.spacingPct);
+    /* 【第186轮】Procreate 的 spacing 最小可调值是 1%，存成 0 表示「自动间距」而不是
+       「无限密」。以前一律钳到 BRU 下限 0.1%，画世界按 dab 逐个盖印，256px 笔尖
+       每 0.25px 落一次，网格/网点/描边这类低 alpha 笔尖的间隙被相邻 dab 填满，
+       整支笔刷糊成一坨（用户实测两张截图：先黑带、后被我错误归一再变淡块）。
+       现在 0（或负值/非数）按 10% 自动间距处理；明确的小值仍保 0.1 下限。 */
+    if (!(spacingPct > 0)) spacingPct = 10;
     spacingPct = Math.max(0.1, Math.min(1000, spacingPct));
     const usePressure = opts.pressure === undefined ? (pressureSizeOn(brush) || !!brush.pressureOpacity) : !!opts.pressure;
     // 笔迹浓度归一（画世界）：真机标定发现画世界按每个笔尖累加 alpha——间距 4.2% 时同一位置叠约 24 次，
@@ -974,13 +980,12 @@
     // 而 Procreate 原样张是中灰的半透明颇粒（目标覆盖 ~0.6）。
     // 实测同一支笔刷：不透明度 22% → 亮度 144.1、hf 9.01、颇孔 4.2%。
     // 所以这里按「目标覆盖度」反算每个笔尖应有的 alpha，再折成不透明度。
-    /* 【第185轮】间距极小的笔刷要强制做「笔迹浓度归一」。
-       画世界按每个 dab 累加 alpha：间距 0.1% 时同一位置叠几百次，
-       半透明笔尖（网格/网点/纹理）必然糊成实心黑块（用户实测：单点是网格小圆，
-       画出来是一条黑带）。归一后按「目标覆盖度」反算笔尖 alpha，纹理才留得住。
-       用户显式选 auto 也走同一条路；间距 >= 2% 时仍按他的选择来。 */
-    const autoDensity = spacingPct < 2;
-    const densityMode = (opts.bruDensity === 'auto' || autoDensity) ? 'auto' : 'off';
+    /* 【第185轮撤回】曾在这里对 spacingPct<2 的笔刷强制开启浓度归一，
+       结果 opacity 被反算到 0.05，网点/描边/双色笔刷整支变成半透明淡块
+       （用户实测截图：像喷枪糊了一片）。归一的前提是「笔尖实心、叠加变黑」，
+       而这些笔刷的笔尖本来就是低 alpha 的网纹/描边，归一等于把它抹平。
+       恢复为只按用户选项决定。 */
+    const densityMode = opts.bruDensity === 'auto' ? 'auto' : 'off';
     let densityOpacity = null, densityInfo = null;
     if (brush.source !== 'bru' && densityMode !== 'off') {
       const target = Math.max(0.2, Math.min(1, Number(opts.bruDensityTarget) || 0.6));
