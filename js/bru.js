@@ -289,6 +289,10 @@
     opts = opts || {};
     if (!brushes || !brushes.length) throw new Error('没有可打包的笔刷');
     if (brushes.length > 3000) throw new Error('单个 .bru 笔刷数量过多');
+    /* 单支必须走单支布局：画世界自己导出的 .bru 一律是 version 8 / flag 1，
+       而多支布局写的是 version 7 / flag 0。界面默认按"整包"分支导出，单支笔刷
+       以前也被包进 v7，结果与 App 原生导出不一致（第179轮实测差异）。 */
+    if (brushes.length === 1) return writeBrush(brushes[0], opts);
     const items = brushes.map(function (b) {
       const pngBytes = b.png;
       if (!pngBytes || !pngBytes.length) throw new Error('缺少笔尖图像数据: ' + (b.name || ''));

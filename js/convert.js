@@ -981,19 +981,17 @@
       name: brush.name || '',
       bruShapeInverted: !!brush.bruShapeInverted,
       pkgId: brush.pkgId || opts.pkgId,
-      /* 笔尖从哪来，决定 f7(MASKTEXPATH) 写什么：
-         · 源自己的自定义图（oldTexId 就是它的 mask 名）→ 原样保留；
-         · 内置图库提供的形状 → 写空。源官方笔刷的 f7 本来就是空，塞一个 md5 会让
-           App 去 textures/<md5> 找一张不存在的图，笔刷变空白；留空它才继续按
-           texAssetId(ptN) 取内置纹理。 */
-      texId: (function () {
-        if (brush.source === 'bru' && opts.fidelity !== false && !opts.forceRebuild) {
-          const key = brush._tipFromBuiltin;
-          if (key && key === brush.oldTexId) return brush.oldTexId;
-          if (key) return '';
-        }
-        return util.md5(pngBytes).toUpperCase();
-      })(),
+      /* f7(MASKTEXPATH) = 笔尖图在 App 里的文件名。第179轮用 exportBrushes 的两支
+         原生样本验证：App 导出时 oldTexId 逐字节等于内嵌 PNG 的 md5，导入时 App 就
+         按这个值在 textures/ 下建文件。据此定规则：
+         · 源自己的 mask 名仍然对得上（_tipFromBuiltin === oldTexId，含 psN 占位）
+           → 原样保留，别无谓改写用户文件；
+         · 笔尖是补回来的内置图 / 重新烘焙过的 → 用内容 md5，保证名字与图一一对应；
+         · 绝不能写空：v2.8.53 曾把内置来源的 f7 留空，App 没有文件名可用，
+           导入后笔刷空白（这正是「导出还是不行」的原因之一）。 */
+      texId: brush.source === 'bru' && brush._tipFromBuiltin && brush._tipFromBuiltin === brush.oldTexId &&
+        opts.fidelity !== false && !opts.forceRebuild
+        ? brush.oldTexId : util.md5(pngBytes).toUpperCase(),
       sizePx,
       maxSizePx:Math.max(sizePx,brush._rawMaxWidth||500),
       spacingPct,
