@@ -2184,9 +2184,16 @@
       for (let k = 0; k < 256 * 256; k++) {
         if (ms.opGrid[k] && ss.opGrid[k]) ov++;
       }
-      const ovRatio = ov / Math.min(ms.op || 1, ss.op || 1);
-      if (ms.op > 0 && ss.op > 0 && ovRatio < 0.08 && ss.solidRatio >= 0.50) {
-        nrmlMode = ss.d8 <= 0.04 ? 'sub' : 'main';
+      const minOp = Math.min(ms.op || 1, ss.op || 1);
+      const maxOp = Math.max(ms.op || 1, ss.op || 1);
+      const ovRatio = ov / minOp;
+      const isComplementary = (ovRatio < 0.25) || (ov / maxOp < 0.25 && ss.op >= ms.op * 1.5 && ss.solidRatio >= 0.50);
+      if (ms.op > 0 && ss.op > 0 && isComplementary) {
+        if (ss.solidRatio >= 0.50) {
+          nrmlMode = 'sub_cutout';
+        } else if (ms.solidRatio >= 0.50) {
+          nrmlMode = 'main_cutout';
+        }
       }
     }
     for (let y = 0; y < h; y++) {
@@ -2195,7 +2202,11 @@
         const a2 = dualAlpha(x, y);
         let a;
         if (blend === 'nrml') {
-          a = nrmlMode === 'sub' ? a2 : nrmlMode === 'main' ? a1 : (1 - (1 - a1) * (1 - a2));
+          a = nrmlMode === 'sub_cutout' ? Math.max(0, a2 - a1)
+            : nrmlMode === 'main_cutout' ? Math.max(0, a1 - a2)
+            : nrmlMode === 'sub' ? a2
+            : nrmlMode === 'main' ? a1
+            : (1 - (1 - a1) * (1 - a2));
         } else if (blend === 'scrn' || blend === 'lghn') a = 1 - (1 - a1) * (1 - a2);
         else if (blend === 'drkn') a = Math.min(a1, a2);
         else if (blend === 'ovrl') a = a1 < 0.5 ? 2 * a1 * a2 : 1 - 2 * (1 - a1) * (1 - a2);
