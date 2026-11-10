@@ -1567,7 +1567,9 @@
         for (const fmt of targets) {
           try {
             if (fmt === 'brushset') {
-              const made = BC.convert.makeProcreateBrushset(list, commonOpts(rec));
+              // 组名必须用包名（文件名），否则会回落到 brushList[0].name，
+              // 导入 Procreate 后整包显示成第一支笔刷的名字（如「感谢支持」）。
+              const made = BC.convert.makeProcreateBrushset(list, Object.assign(commonOpts(rec), { setName: base }));
               outFiles.push({ name: uniqueFile(base, '.brushset'), data: made.bytes });
             } else if (fmt === 'brush' || fmt === 'gbr' || fmt === 'myb') {
               for (const b of list) {
@@ -2284,7 +2286,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.69';
+const APP_VERSION = '2.8.70';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;
