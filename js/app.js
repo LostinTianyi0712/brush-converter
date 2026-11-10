@@ -957,6 +957,154 @@
     return false;
   }
 
+  /* 【第187轮】画世界内置纹理库（core/hsj-textures.js，31MB，156 张 ptN）。
+     与笔尖库同一套懒加载策略：IndexedDB 缓存 → 同源 → 站点绝对地址 → gh 镜像 → jsDelivr。
+     单独写一份而不去改造笔尖库那套：那套已经稳定运行、又被多个测试锁着，为复用动它不值。
+     注意 SITE_* 常量声明在文件后部，只能**在函数内**引用——顶层读会 TDZ ReferenceError，
+     v2.8.45 就因为这个一路带 5 个版本没人发现（图库按钮消失、检查更新失效）。 */
+  const HSJ_TEX_KEY = 'hsjTex';
+  const HSJ_TEX_NAME = 'js/hsj-textures.js';
+  const HSJ_TEX_MB = 31;
+  let hsjTexState = 'unknown';        // unknown | missing | loading | ready
+  const hsjTexFailed = Object.create(null);
+  let hsjTexAbort = null;
+
+  function hsjTexReady() { return !!BC.hsjTextures; }
+  function hsjTexElements() {
+    return {
+      text: document.getElementById('hsjTexText'),
+      btn: document.getElementById('btnHsjTexDownload')
+    };
+  }
+  function renderHsjTexState(msg) {
+    const el = hsjTexElements();
+    const label = '下载纹理库（' + HSJ_TEX_MB + 'MB）';
+    if (el.btn) {
+      el.btn.disabled = false;
+      el.btn.textContent = hsjTexState === 'loading' ? '取消下载纹理' : label;
+      el.btn.hidden = hsjTexState === 'ready';
+    }
+    if (el.text) {
+      if (hsjTexState === 'ready') el.text.textContent = '已就绪：画世界 BRU 的内置纹理（pt*）可直接补像素（随 App 或已下载）';
+      else if (hsjTexState === 'loading') el.text.textContent = msg || '正在下载画世界内置纹理库…';
+      else if (hsjTexState === 'missing') el.text.textContent = '未安装：BRU 带纹理引用却没有像素时纹理只能留空，点右侧按钮下载（' + HSJ_TEX_MB + 'MB，仅一次）';
+      else el.text.textContent = '画世界内置纹理库（可选）：BRU 的纹理（pt*，156 张）需要它补上纹理像素';
+    }
+  }
+  function hsjTexLocalSrc() {
+    const scripts = Array.prototype.slice.call(document.scripts || []);
+    const inJsDir = scripts.some(function (sc) { return /\/js\/app\.js(\?|$)/.test(sc.src || ''); });
+    return inJsDir ? HSJ_TEX_NAME : '../core/hsj-textures.js';
+  }
+  /* 线上仓库根就是网页包内容，文件在 js/ 下（core/ 不在线上，实测 404），
+     所以镜像与 CDN 一律拼 js/ 路径。 */
+  function hsjTexCandidates() {
+    const list = [hsjTexLocalSrc()];
+    list.push(SITE_BASE + HSJ_TEX_NAME);
+    for (let i = 0; i < SITE_MIRRORS.length; i++) list.push(SITE_MIRRORS[i] + SITE_RAW_BASE + HSJ_TEX_NAME);
+    for (let i = 0; i < SITE_CDN.length; i++) list.push(SITE_CDN[i] + HSJ_TEX_NAME);
+    return list;
+  }
+  async function loadScriptFromBytes(bytes) {
+    const url = URL.createObjectURL(new Blob([bytes], { type: 'text/javascript' }));
+    try { await loadHsjScript(url); } finally { URL.revokeObjectURL(url); }
+  }
+  async function ensureHsjTextures() {
+    if (hsjTexReady()) { hsjTexState = 'ready'; renderHsjTexState(); return true; }
+    hsjTexState = 'loading'; renderHsjTexState('正在加载画世界纹理库…');
+    try {
+      const cached = await ShapeLibStore.get(HSJ_TEX_KEY);
+      if (cached) {
+        try {
+          await loadScriptFromBytes(cached);
+          if (hsjTexReady()) { hsjTexState = 'ready'; renderHsjTexState(); return true; }
+        } catch (e) { hsjTexFailed.cache = true; }
+      }
+    } catch (e) { /* 缓存不可用：继续在线 */ }
+    const urls = hsjTexCandidates().filter(function (u) { return !hsjTexFailed[u]; });
+    for (const u of urls) {
+      try { await loadHsjScript(u); } catch (e) { hsjTexFailed[u] = true; continue; }
+      if (hsjTexReady()) { hsjTexState = 'ready'; renderHsjTexState(); return true; }
+      hsjTexFailed[u] = true;
+    }
+    hsjTexState = 'missing'; renderHsjTexState();
+    return false;
+  }
+  async function installHsjTexBytes(bytes) {
+    if (!bytes || !bytes.length) throw new Error('空文件');
+    await ShapeLibStore.put(bytes, HSJ_TEX_KEY);
+    await loadScriptFromBytes(bytes);
+    if (hsjTexReady()) {
+      hsjTexState = 'ready'; renderHsjTexState();
+      toast('画世界内置纹理库已就绪（' + HSJ_TEX_MB + 'MB，已缓存，156 张纹理可用）', 3500);
+      return true;
+    }
+    throw new Error('脚本载入后没有注册 hsjTextures');
+  }
+  function cancelHsjTexDownload() {
+    if (hsjTexAbort) { try { hsjTexAbort.abort(); } catch (e) { /* 忽略 */ } }
+    hsjTexAbort = null;
+    hsjTexState = 'unknown';
+    hsjTexFailed.cancel = true;
+    renderHsjTexState();
+    toast('已取消下载纹理库', 2500);
+  }
+  async function downloadHsjTexLib(btn) {
+    if (hsjTexState === 'loading') { cancelHsjTexDownload(); return false; }
+    hsjTexState = 'loading';
+    hsjTexAbort = (typeof AbortController === 'function') ? new AbortController() : null;
+    const signal = hsjTexAbort ? hsjTexAbort.signal : undefined;
+    renderHsjTexState('连接中…');
+    const urls = hsjTexCandidates();
+    let lastErr = null;
+    /* 1) 多源并发分块：大文件走 4 路 Range 才跑得动（单连接实测约 21KB/s） */
+    try {
+      const blob = await parallelRangeBlob(urls, function (got) {
+        renderHsjTexState('下载中 ' + (got / 1048576).toFixed(1) + 'MB / ' + HSJ_TEX_MB + 'MB');
+      }, { chunkBytes: 2 * 1048576, parallel: 4, signal: signal });
+      if (blob && blob.size) {
+        try { return await installHsjTexBytes(new Uint8Array(await blob.arrayBuffer())); }
+        catch (e) { lastErr = e; }
+      }
+    } catch (e) { lastErr = e; }
+    /* 2) 单连接兜底：源不支持 Range 时流式读取 */
+    for (const u of urls) {
+      try {
+        renderHsjTexState('下载中…');
+        const res = await fetch(u, { cache: 'no-store', signal: signal });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const total = Number(res.headers.get('content-length')) || 0;
+        let got = 0;
+        const reader = res.body && res.body.getReader ? res.body.getReader() : null;
+        let bytes;
+        if (reader) {
+          const parts = [];
+          for (;;) {
+            const r = await reader.read();
+            if (r.done) break;
+            parts.push(r.value); got += r.value.length;
+            const pct = total ? Math.min(99, Math.round(got * 100 / total)) : null;
+            renderHsjTexState(pct === null ? ('下载中 ' + (got / 1048576).toFixed(1) + 'MB') : ('下载中 ' + pct + '%'));
+          }
+          bytes = new Uint8Array(got);
+          let off = 0;
+          parts.forEach(function (part) { bytes.set(part, off); off += part.length; });
+        } else {
+          bytes = new Uint8Array(await res.arrayBuffer());
+        }
+        return await installHsjTexBytes(bytes);
+      } catch (e) {
+        if (e && e.name === 'AbortError') { hsjTexAbort = null; return false; }
+        lastErr = e; hsjTexFailed[u] = true;
+      }
+    }
+    hsjTexAbort = null;
+    if (hsjTexFailed.cancel) { hsjTexFailed.cancel = false; return false; }
+    hsjTexState = 'missing'; renderHsjTexState();
+    toast('纹理库下载失败：' + ((lastErr && lastErr.message) || '网络不可用') + '，可稍后重试', 6000);
+    return false;
+  }
+
   /* SAI2 笔刷文件夹（桌面版）：自动定位 文档\SYSTEMAX Software Development，
      转换 SAI2 时把 scatter/brushtex 文件直接写进去，省掉下载解压拖拽。 */
   const SAI2_DIR = { ok: false, dir: '', settings: '' };
@@ -2286,7 +2434,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.72';
+const APP_VERSION = '2.8.74';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;
@@ -4312,6 +4460,23 @@ const UPDATE_ENABLED = false;
             renderHsjLibState();
             if (typeof backfillHsjShapesInFiles === 'function') backfillHsjShapesInFiles();
           }
+        });
+      }).catch(function () { /* 忽略缓存读取异常 */ });
+    }
+  })();
+
+  /* 【第187轮】纹理库初始化：随 App 内置的包直接置 ready；只有 IndexedDB 里已有缓存时才
+     静默载入。31MB 一律不主动联网——必须用户自己点按钮，避免开页面就吃流量。 */
+  (function initHsjTextures() {
+    const btn = document.getElementById('btnHsjTexDownload');
+    if (!btn) return;
+    btn.addEventListener('click', function () { downloadHsjTexLib(btn); });
+    if (BC.hsjTextures) { hsjTexState = 'ready'; renderHsjTexState(); return; }
+    if (typeof ShapeLibStore !== 'undefined' && ShapeLibStore && typeof ShapeLibStore.get === 'function') {
+      ShapeLibStore.get(HSJ_TEX_KEY).then(function (cached) {
+        if (!cached || BC.hsjTextures) return;
+        return loadScriptFromBytes(cached).then(function () {
+          if (BC.hsjTextures) { hsjTexState = 'ready'; renderHsjTexState(); }
         });
       }).catch(function () { /* 忽略缓存读取异常 */ });
     }
