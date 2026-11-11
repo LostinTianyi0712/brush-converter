@@ -1036,7 +1036,7 @@
       const transform = brush.source === 'procreate' ? Object.assign({},brush,{angle:0,roundness:100}) : brush;
       tipImg = bakeTipTransform(tipImg, transform);
     }
-    const maxTip = Math.max(16, Math.min(2048, opts.maxTipSize || 512));
+    const maxTip = Math.max(16, Math.min(2048, opts.maxTipSize || 2048));
     let w = tipImg.w, h = tipImg.h, rgba = tipImg.rgba;
     const maxSide = Math.max(w, h);
     if (maxSide > maxTip) {
@@ -1533,7 +1533,7 @@
       let tipImg = tipToRGBA(brush);
       if (!tipImg) tipImg = synthTip(brush, 256, opts);
       const synthesizeDual = brush.dualOn && brush.dualTip && (!keepRaw || !brush._rawDualObjc || dualTipChanged);
-      const maxTip = Math.max(64, Math.min(2048, opts.maxTipSize || 512));
+      const maxTip = Math.max(64, Math.min(2048, opts.maxTipSize || 2048));
       const dualCap = {};   // 副笔尖缩放后的实际尺寸（写 dualW/dualH 用）
       let w = tipImg.w, h = tipImg.h, rgba = tipImg.rgba;
       const maxSide = Math.max(w, h);
@@ -2601,7 +2601,7 @@
         w = nw;
       }
     }
-    const limit = Math.max(1, Math.min(2048, opts.maxTipSize || 512));
+    const limit = Math.max(1, Math.min(2048, opts.maxTipSize || 2048));
     const maxSide = Math.max(w, h);
     let target = null;
     if (flags.fit && brush.sizePx) target = Math.max(1, Math.min(limit, Math.round(brush.sizePx)));
@@ -2806,7 +2806,7 @@ Write-Host 'restart MediBang Paint Pro'
       MediBang Paint / Infinite Painter: create a custom brush from an image). */
   function makeTipPng(brush, opts) {
     opts = opts || {};
-    const maxTip = Math.max(64, Math.min(2048, opts.maxTipSize || 512));
+    const maxTip = Math.max(64, Math.min(2048, opts.maxTipSize || 2048));
     const adjusted = withExportSettings(brush, opts);
     const img = withTipRGBA(adjusted, Object.assign({}, opts, { maxTipSize: maxTip }), { transform: true }).tip;
     return {
@@ -3188,7 +3188,7 @@ Write-Host 'restart MediBang Paint Pro'
       const requested = withExportSettings(brush, opts).sizePx;
       if (target === 'bru' && (requested < 1 || requested > 3000)) return '近似（当前BRU转换写端限制1–3000px，实际为' + Math.max(1, Math.min(3000, requested)) + 'px；未据写端常量推定原生上限）';
       if (target === 'gbr' || target === 'gih') {
-        const limit = Math.max(1, Math.min(2048, opts.maxTipSize || 512));
+        const limit = Math.max(1, Math.min(2048, opts.maxTipSize || 2048));
         const actual = Math.max(1, Math.min(limit, Math.round(requested)));
         if (actual !== requested) return '近似（图像像素即尺寸，受笔尖最大边长' + limit + 'px及整数像素限制，当前单笔资源为' + actual + 'px；图像管还使用公共单元）';
       }
@@ -3615,7 +3615,7 @@ Write-Host 'restart MediBang Paint Pro'
     const entries = [];
     const used = new Map();
     brushList.forEach(function (b, i) {
-      const made = makeTipPng(b, Object.assign({}, opts, { maxTipSize: Math.max(opts.maxTipSize || 512, 512) }));
+      const made = makeTipPng(b, Object.assign({}, opts, { maxTipSize: Math.max(opts.maxTipSize || 2048, 512) }));
       let base = sanitizeName(b.name, i, true);
       let name = base, k = 2;
       while (used.has(name.toLowerCase())) { name = base + ' (' + k + ')'; k++; }

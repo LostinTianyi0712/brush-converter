@@ -1445,7 +1445,7 @@
 
   /* ---------------- convert ---------------- */
   function getOpts() {
-    const tipSize = parseInt($('#optTipSize').value, 10) || 512;
+    const tipSize = parseInt($('#optTipSize').value, 10) || 2048;   // 第199轮：默认取上限，避免缩笔尖
     const sizeScale = Math.max(0.05, Math.min(10, parseFloat($('#optSizeScale').value) || 1));
     const spacingVal = parseFloat($('#optSpacing').value);
     const spacingOverride = isFinite(spacingVal) && spacingVal > 0 ? spacingVal : 0;
@@ -2463,7 +2463,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.84';
+const APP_VERSION = '2.8.85';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;
