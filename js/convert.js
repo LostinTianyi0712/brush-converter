@@ -1146,7 +1146,9 @@
         opts.fidelity !== false && !opts.forceRebuild
         ? brush.oldTexId : util.md5(pngBytes).toUpperCase(),
       sizePx,
-      maxSizePx:Math.max(sizePx,brush._rawMaxWidth||500),
+      /* 【第195轮】优先用公开字段 maxSizePx（BRU 解析侧现在会回填 f12），再用私有 _rawMaxWidth 兜底。
+         旧写法只认 _rawMaxWidth，导致 maxSizePx=800 的笔刷被压到 500，f12/f135/f136 全部失真。 */
+      maxSizePx:Math.max(sizePx,brush.maxSizePx||brush._rawMaxWidth||500),
       spacingPct,
       opacity: densityOpacity !== null ? densityOpacity : (brush.opacity === undefined ? 1 : brush.opacity),
       minSizeRatio: usePressure ? (brush.minSizeRatio === undefined ? 0.1 : brush.minSizeRatio) : 1,

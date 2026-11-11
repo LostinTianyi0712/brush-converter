@@ -1,4 +1,4 @@
-﻿/* 画世界Pro .bru container + Brush protobuf reader/writer */
+﻿﻿/* 画世界Pro .bru container + Brush protobuf reader/writer */
 (function (root) {
   'use strict';
   const isNode = typeof module !== 'undefined' && module.exports && typeof process !== 'undefined';
@@ -144,6 +144,7 @@
        这样 Procreate「最小不透明度 30%」这类笔刷转过去不再被丢掉，既有输出不变。 */
     if (minOp > 0 && minOp < 1) parts.push(u8arr(fF32(14, minOp)));         // SMALLALPHA（显式最小不透明度，面板绝对值）
     else if (minOp >= 1 && !sizePressOn && !transferOn) parts.push(u8arr(fF32(14, 0.13))); // 无压感默认落值
+    else if (minOp >= 1) parts.push(u8arr(fF32(14, 1)));                    // 【第195轮】有压感 + 面板 100%（旧版省略 → App 显示 0%）
     parts.push(u8arr(fVarint(16, -1)));                         // COLOR (white)
     const spacing = Math.max(0.001, Math.min(10, (b.spacingPct === undefined ? 10 : b.spacingPct) / 100));
     parts.push(u8arr(fF32(17, spacing)));                       // SPACING
@@ -168,8 +169,14 @@
       const pct = Math.max(-100, Math.min(100, n));
       return Math.max(-2, Math.min(0, pct / 100 - 1)); // -100%→-2，0%→-1，100%→0
     };
-    const fingerPressVal = Math.max(0, Math.min(1, 1 - Math.max(0, Math.min(100, b.bruFingerPressurePct === undefined || !isFinite(Number(b.bruFingerPressurePct)) ? 100 : Number(b.bruFingerPressurePct))) / 100));
-    const fadeInOutOn = b.bruFadeInOut === undefined ? true : !!b.bruFadeInOut;
+    /* 【第195轮】null / NaN / 非数值一律当「未传」= 100%（其余 4 个压力字段同此语义）。
+       旧写法只挡 undefined，而 Number(null)===0 能通过 isFinite，于是 null 被当成 0% 强度，
+       写出一支「手指压力全失效」的笔刷。 */
+    const fingerRaw = (b.bruFingerPressurePct === undefined || b.bruFingerPressurePct === null || !isFinite(Number(b.bruFingerPressurePct))) ? 100 : Number(b.bruFingerPressurePct);
+    const fingerPressVal = Math.max(0, Math.min(1, 1 - Math.max(0, Math.min(100, fingerRaw)) / 100));
+    /* 【第195轮】f134 是反相字段（1=关闭），所以「未传」必须落到 true=开启。
+       旧写法只挡 undefined：null → !!null=false → 写出 f134=1，把淡入淡出关掉了；NaN 同理。 */
+    const fadeInOutOn = (b.bruFadeInOut === undefined || b.bruFadeInOut === null || (typeof b.bruFadeInOut === 'number' && !isFinite(b.bruFadeInOut))) ? true : !!b.bruFadeInOut;
     const sizeInfluence = influenceVal(b.bruPressureSizeInfluence);
     const flowInfluence = influenceVal(b.bruPressureFlowInfluence);
     parts.push(u8arr(fF32(26, flow * minFlow)));                // SMALLBRUSHFLOW
@@ -662,8 +669,13 @@
         flowPct: Math.max(0, Math.min(1, flowPct)),
         /* 第194轮：f14 按 App 面板百分比直接读（见写出口注释：s10 的 f13=0.8 / f14=0.5 且面板显示
            50%，证明 f14 是面板绝对值而不是「opacity 的比例」）。缺省（没有 f14）仍是 1 = 未限制。 */
-        minOpacityRatio: o[14] === undefined ? 1 : Math.max(0, Math.min(1, smallAlpha)),
-        minFlowRatio: flowPct > 0 ? Math.max(0, Math.min(1, minFlowPct / flowPct)) : 1,
+        /* 第195轮：无 f14 == App 面板「最小不透明度 0%」（s7 单变量：改成 0% 后该字段消失，
+           protobuf 不写默认值 0）。旧版读成 1（未限制），会让 0% 的笔刷往返后变成 100%。 */
+        minOpacityRatio: o[14] === undefined ? 0 : Math.max(0, Math.min(1, smallAlpha)),
+        /* 第195轮：f51 与 f14 同理是**面板绝对值**（第193轮标定：f51 = 流量压力·最小值 %/100，
+           不乘 flow）。旧版这里除以 flowPct，flow<1 的笔刷往返一次最小值就被放大（0.3→0.6，
+           0.5@flow=0.2 直接夹到 1）。 */
+        minFlowRatio: o[51] === undefined ? 1 : Math.max(0, Math.min(1, minFlowPct)),
         pressure: pressureSize || transferOn,
         pressureSize: pressureSize,
         pressureOpacity: transferOn,
@@ -728,6 +740,9 @@
         colorJitterVal: colorVal,
         _rawMeta: rawMeta,
         _rawMaxWidth:num(o[12],500),
+        /* 【第195轮】f12 同时回填公开字段，否则绕过 convert.makeBru（它用 _rawMaxWidth 兜底）
+           直接调 bru.writeBrush 重建时，最大宽度上限会从 800 静默掉到 500，f135/f136 随之失真。 */
+        maxSizePx: num(o[12], 500),
         oldTexId: (function (v) {
           if (!v) return '';
           if (typeof v === 'string') return v;
