@@ -107,8 +107,11 @@
        App 侧把 0 视作「未设置最小宽度」退回默认值，压感就表现为不生效。
        0.01（1% 宽度）在视觉上仍是完全收尖，但不会再撞到这个边界值。
        注意只钳下限，无压感的笔刷（minSizeRatio=1）不受影响。 */
-    const minSizeRaw = Math.max(0, Math.min(1, b.minSizeRatio === undefined ? 1 : b.minSizeRatio));
-    const minSize = minSizeRaw <= 0 ? 0.01 : minSizeRaw;
+    /* 【第192轮调查结论·暂不钳制】曾尝试把 minSizeRatio=0 钳到 0.01（依据：真实画世界 BRU
+       的 f50 从不出现 0）。实测会破坏既有约定「仅透明度压感不得变成大小压感」
+       （fidelity 用例锁着），且无法在 App 端证实 0 会被当成无效值，故退回原样写出。
+       若要再动，必须先拿到「同一支笔刷在画世界原生导出」的 BRU 做字段级对照。 */
+    const minSize = Math.max(0, Math.min(1, b.minSizeRatio === undefined ? 1 : b.minSizeRatio));
     const opacity = Math.max(0, Math.min(1, b.opacity === undefined ? 1 : b.opacity));
     const minOp = Math.max(0, Math.min(1, b.minOpacityRatio === undefined ? 1 : b.minOpacityRatio));
     parts.push(u8arr(fF32(8, size)));                           // WIDTH
@@ -117,7 +120,18 @@
     parts.push(u8arr(fF32(11, 1)));                             // MINWIDTH
     parts.push(u8arr(fF32(12, maxSize)));                      // MAXWIDTH
     parts.push(u8arr(fF32(13, opacity)));                       // ALPHA
-    parts.push(u8arr(fF32(14, opacity * minOp)));               // SMALLALPHA
+    /* 【第192轮】SMALLALPHA（零压感 alpha）只在**完全没有压感**时才写。
+       证据：用户提供的同一支笔刷「调前 / 调后」两个画世界原生导出对照——
+         调前（无压感）：有 f14 = 0.13，没有 f36、没有 f47
+         调后（开了大小压力 + 传递）：**f14 消失**，多出 f36=1、f47=1
+       其它真实样本一致：双笔样本 f47=1 且没有 f14；压感硬圆/硬圆（都没有 f47）都有 f14=0.13。
+       所以 f14 是「没有压力动态时」的最小 alpha 落值；一旦开了 f36/f47，App 自己按压力
+       曲线算 alpha，此时再写 f14 会让它变成固定下限、把压力效果压平——这正是用户反馈的
+       「Procreate 转画世界后不透明度不对」。
+       0.13 是画世界写这个字段时的默认值（两个真实样本一致）。 */
+    const sizePressOn = !!(b.pressureSize === undefined ? b.pressure : b.pressureSize);
+    const transferOn = !!b.pressureOpacity;
+    if (!sizePressOn && !transferOn) parts.push(u8arr(fF32(14, 0.13)));  // SMALLALPHA（仅无压感时）
     parts.push(u8arr(fVarint(16, -1)));                         // COLOR (white)
     const spacing = Math.max(0.001, Math.min(10, (b.spacingPct === undefined ? 10 : b.spacingPct) / 100));
     parts.push(u8arr(fF32(17, spacing)));                       // SPACING
@@ -139,8 +153,8 @@
     parts.push(u8arr(fF32(35, Math.max(0, Math.min(100, b.textureBrightness === undefined ? 51 : b.textureBrightness))))); // TEXBRIGHTNESS
     parts.push(u8arr(fVarint(33, Math.max(0, Math.min(200, Math.round(b.textureContrast === undefined ? 100 : b.textureContrast)))))); // CONTRAST
     if (b.textureDepth) parts.push(u8arr(fF32(123, Math.max(0, Math.min(1, b.textureDepth))))); // TEXTUREDEPTH
-    if (b.pressureSize === undefined ? b.pressure : b.pressureSize) parts.push(u8arr(fVarint(36, 1))); // SUPPORTPRESSURE
-    if (b.pressureOpacity) parts.push(u8arr(fVarint(47, 1)));   // TRANSFER
+    if (sizePressOn) parts.push(u8arr(fVarint(36, 1)));         // SUPPORTPRESSURE
+    if (transferOn) parts.push(u8arr(fVarint(47, 1)));          // TRANSFER
     if (b.sizeJitterPct) parts.push(u8arr(fF32(10, Math.min(1, b.sizeJitterPct / 100)))); // SIZE JITTER
     if (b.spacingJitterPct) parts.push(u8arr(fF32(18, Math.min(10, b.spacingJitterPct / 100)))); // SPACING JITTER
     if (b.flowJitterPct) parts.push(u8arr(fF32(27, Math.min(1, b.flowJitterPct / 100)))); // FLOW JITTER
