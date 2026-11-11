@@ -2091,7 +2091,21 @@
       return Object.assign({}, b, { tip: { w: tip.w, h: tip.h, rgba: tip.rgba } });
     });
     const bytes = procreate.writeBrushset(list, opts);
-    return { bytes: bytes, count: list.length };
+    /* 【第194轮】纹理丢失必须报出来。画世界 BRU 的 texAssetId 有两种形态：
+         ptN（内置素材库能解）→ 现在会写进 Grain.png；
+         32 位 UUID（画世界私有材质，库里没有）→ Grain.png 只能留空。
+       以前这里连 warnings 字段都没有，用户拿到的 brushset 里几十支笔刷没纹理却毫无提示，
+       在 Procreate 里表现就是笔尖发糊/发花（楠.bru 实测 38/46 支属后者）。 */
+    const warnings = [];
+    const noTex = list.filter(function (b) {
+      try { return b && b.hasTexture && !textureGray(b); } catch (e) { return false; }
+    });
+    if (noTex.length) {
+      const sample = noTex.slice(0, 3).map(function (b) { return String(b.name || '未命名'); }).join('、');
+      warnings.push('纹理：' + noTex.length + ' 支笔刷引用的画世界私有材质（32 位 UUID）不在内置素材库中，' +
+        'Grain.png 已留空（' + sample + (noTex.length > 3 ? ' 等' : '') + '）——这会让它们在 Procreate 里缺少纹理质感');
+    }
+    return { bytes: bytes, count: list.length, warnings: warnings };
   }
 
   function bytesToB64(bytes) {

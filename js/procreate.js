@@ -746,6 +746,25 @@
     }
     // A missing source image cannot be reconstructed from a texture flag.
     if (brush._rawGrain) return normalizeRawGrain(brush._rawGrain);
+    /* 【第194轮】第四级兜底：走 convert 的 textureGray 收口。
+       实测 楠.bru 的 46 支带纹理笔刷里，有 8 支 texAssetId 是 ptN（画世界内置库能解出像素），
+       但上面三级都取不到，于是 Grain.png 一个都没写出来（Grain 数 = 0），
+       转出的 brushset 在 Procreate 里就等于「无纹理」——用户看到的就是笔尖发糊/发花。
+       第187轮已经在 textureGray 里接了内置纹理库，这里没接上，属于漏掉的一环。
+       无法还原的更彻底：另 38 支的 texAssetId 是 32 位 UUID（画世界私有材质，不在库里），
+       只能由上层给「纹理缺失」警告，不在这里伪造。 */
+    try {
+      const conv = isNode ? require('./convert.js') : root.BC.convert;
+      const t = conv && typeof conv.textureGray === 'function' ? conv.textureGray(brush) : null;
+      if (t && t.w > 0 && t.h > 0 && t.gray && t.gray.length === t.w * t.h) {
+        const out = new Uint8Array(t.w * t.h * 4);
+        for (let i = 0; i < t.gray.length; i++) {
+          const v = t.gray[i];
+          out[i * 4] = v; out[i * 4 + 1] = v; out[i * 4 + 2] = v; out[i * 4 + 3] = 255;
+        }
+        return encodeNormalizedGrain(t.w, t.h, out);
+      }
+    } catch (e) { /* 收口不可用：保持原行为（无 Grain） */ }
     return null;
   }
 
