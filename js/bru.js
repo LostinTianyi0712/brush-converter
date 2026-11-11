@@ -131,7 +131,19 @@
        0.13 是画世界写这个字段时的默认值（两个真实样本一致）。 */
     const sizePressOn = !!(b.pressureSize === undefined ? b.pressure : b.pressureSize);
     const transferOn = !!b.pressureOpacity;
-    if (!sizePressOn && !transferOn) parts.push(u8arr(fF32(14, 0.13)));  // SMALLALPHA（仅无压感时）
+    /* 【第194轮】f14 = 面板「最小不透明度」百分比 / 100（**绝对值，不乘 opacity**），
+       与压感开关无关，为 0 时 App 直接省略。证据（_probe/pressure193）：
+         s7 最小不透明度 0%  → 无 f14（此时 f36=1、f47=1 都开着）
+         s8 最小不透明度 50% → f14=0.5（f36/f47 仍开着）
+         s10 同一支 f13=0.8、f14=0.5 且面板显示 50% → 证伪「f14 = opacity × 最小不透明度」
+       第192轮「开压感就不写 f14」是从「该笔刷最小不透明度恰好 0%」误推出来的相关性；
+       那条结论在 0%/未设置场景下依然成立，故默认值路径原样保留：
+         · 0 < minOp < 1（用户/来源明确设过）→ 写标定值 minOp；
+         · minOp = 0 → 省略（App 行为）；
+         · minOp = 1（默认，未设置）→ 沿用第192轮逻辑：只在完全无压感时写 0.13。
+       这样 Procreate「最小不透明度 30%」这类笔刷转过去不再被丢掉，既有输出不变。 */
+    if (minOp > 0 && minOp < 1) parts.push(u8arr(fF32(14, minOp)));         // SMALLALPHA（显式最小不透明度，面板绝对值）
+    else if (minOp >= 1 && !sizePressOn && !transferOn) parts.push(u8arr(fF32(14, 0.13))); // 无压感默认落值
     parts.push(u8arr(fVarint(16, -1)));                         // COLOR (white)
     const spacing = Math.max(0.001, Math.min(10, (b.spacingPct === undefined ? 10 : b.spacingPct) / 100));
     parts.push(u8arr(fF32(17, spacing)));                       // SPACING
@@ -145,6 +157,21 @@
     const flow = Math.max(0, Math.min(1, b.flowPct === undefined ? 1 : b.flowPct));
     parts.push(u8arr(fF32(25, flow)));                          // BRUSHFLOW
     const minFlow = Math.max(0, Math.min(1, b.minFlowRatio === undefined ? Math.min(1, flow * 0.13 + 0.01) : b.minFlowRatio));
+    /* 【第194轮】压力页新增字段的取值（默认值 = 画世界面板默认状态，不传时输出与旧版逐字节一致）：
+       · bruFlowSmooth（f67）        流量平滑开关，面板默认「关闭」→ 不写
+       · bruFingerPressurePct（f117）手指压力·强度，面板默认 100% → 1-100/100 = 0 → 不写
+       · bruFadeInOut（f134）        淡入淡出，面板默认「开启」→ 不写；关闭才写 1（反相！）
+       · bruPressureSizeInfluence（f138）/ bruPressureFlowInfluence（f139）
+                                     「压力影响」滑块，范围 -100%..+100%，中点 100%=0 → 不写 */
+    const influenceVal = function (v) {
+      const n = (v === undefined || v === null || !isFinite(Number(v))) ? 100 : Number(v);
+      const pct = Math.max(-100, Math.min(100, n));
+      return Math.max(-2, Math.min(0, pct / 100 - 1)); // -100%→-2，0%→-1，100%→0
+    };
+    const fingerPressVal = Math.max(0, Math.min(1, 1 - Math.max(0, Math.min(100, b.bruFingerPressurePct === undefined || !isFinite(Number(b.bruFingerPressurePct)) ? 100 : Number(b.bruFingerPressurePct))) / 100));
+    const fadeInOutOn = b.bruFadeInOut === undefined ? true : !!b.bruFadeInOut;
+    const sizeInfluence = influenceVal(b.bruPressureSizeInfluence);
+    const flowInfluence = influenceVal(b.bruPressureFlowInfluence);
     parts.push(u8arr(fF32(26, flow * minFlow)));                // SMALLBRUSHFLOW
     parts.push(u8arr(fVarint(32, b.bruShapeInverted ? 1 : 0))); // REVERSESHAPE (native nib invert toggle)
     parts.push(u8arr(fVarint(31, 1)));                          // USESHAPE
@@ -178,6 +205,9 @@
        最小百分比就会偏小——这也是「流量压力最小值不对」的直接原因。 */
     parts.push(u8arr(fF32(51, Math.min(1, minFlow))));          // SMALLBRUSHFLOWPERCENT
     parts.push(u8arr(fVarint(65, 1)));                          // ALLBRUSHRECT
+    /* f67 = 流量平滑开关。标定证据：p193_s5(关闭) → s6(开启)，diff 只有 `f67: — → 1`，
+       反向 s10→s11 之外再关回也是一样（不写即关闭）。面板默认关闭，所以默认不写。 */
+    if (b.bruFlowSmooth) parts.push(u8arr(fVarint(67, 1)));      // FLOWSMOOTH
     if (b.taperOn) {
       parts.push(u8arr(fVarint(74, 1)));
       parts.push(u8arr(fF32(77, Math.max(0, Math.min(1, b.taperSize === undefined ? 1 : b.taperSize)))));
@@ -244,8 +274,19 @@
     parts.push(u8arr(fVarint(95, b.borderBlend === undefined ? 4 : Math.max(0, Math.round(b.borderBlend)))));
     parts.push(u8arr(fVarint(97, Math.max(1, Math.round(b.renderCount || 1))))); // RENDERCOUNT
     parts.push(u8arr(fVarint(115, b.bruRotationMode === undefined ? 1 : b.bruRotationMode))); // native rotation control
+    /* f117 = 手指压力·强度。标定：s9(100%) → s10(55%) 得 `f117: — → 0.45`；
+       s11(55%) → s12(27%) 得 `0.45 → 0.73`，即 `1 − 强度/100`。100% 时 = 0，App 省略。 */
+    if (fingerPressVal > 1e-6) parts.push(u8arr(fF32(117, fingerPressVal))); // FINGERPRESSURE
+    /* f134 = 淡入淡出。**1 = 关闭（反相）**，不写 = 开启。
+       标定：s6(开)→s7(误触关) 出现 `f134: — → 1`；s10(关)→s11(开) 又变回 `1 → —`。 */
+    if (!fadeInOutOn) parts.push(u8arr(fVarint(134, 1)));       // FADEOFF
     parts.push(u8arr(fF32(135, maxSize / 500)));                // BRUWMAXSCALE
     parts.push(u8arr(fF32(136, size / maxSize)));               // BRUWSCALE
+    /* f138 / f139 = 大小压力·压力影响 / 流量压力·压力影响，取值为 `面板%/100 − 1`（-2..0）。
+       标定：s3→s3b `-1 → -1.5`（0%→-50%）、s3b→s3c `-1.5 → -0.51`（-50%→49%）；
+       s3c→s4 出现 `f138: — → -1`。面板 100%（默认）时值为 0，App 省略不写。 */
+    if (sizeInfluence < -1e-6) parts.push(u8arr(fF32(138, sizeInfluence))); // SIZEPRESSUREINFLUENCE
+    if (flowInfluence < -1e-6) parts.push(u8arr(fF32(139, flowInfluence))); // FLOWPRESSUREINFLUENCE
     return util.concat(parts.map(u8arr));
   }
 
@@ -574,6 +615,17 @@
       const speedPressure = !!o[43];                                  // 速度模拟压感（f43）
       const pressureSize = !!o[36];                                   // 大小压力（f36）
       const transferOn = !!o[47];                                     // 传递（f47）
+      /* 【第194轮】压力页字段回读（第193轮真机标定）：
+         f67 开关 / f117 `1−强度/100` / f134 `1=关闭`（反相）/ f138·f139 `面板%/100−1`。
+         不读回来的话，原生 BRU 一旦走重建路径（改尺寸、forceRebuild）这几项就丢成默认值。 */
+      const flowSmooth = !!o[67];                                     // 流量平滑（f67）
+      const fingerPressPct = o[117] === undefined ? 100
+        : Math.max(0, Math.min(100, (1 - num(o[117], 0)) * 100));      // 手指压力强度（f117）
+      const fadeInOut = o[134] === undefined ? true : !o[134];         // 淡入淡出（f134：1=关闭）
+      const sizeInfluencePct = o[138] === undefined ? 100
+        : Math.max(-100, Math.min(100, (num(o[138], 0) + 1) * 100));   // 大小压力·压力影响（f138）
+      const flowInfluencePct = o[139] === undefined ? 100
+        : Math.max(-100, Math.min(100, (num(o[139], 0) + 1) * 100));   // 流量压力·压力影响（f139）
       let tip = null;
       if (pngStart >= 0 && pngEnd > pngStart) {
         try {
@@ -608,11 +660,19 @@
         minSizeRatio: minSizePct !== null ? Math.max(0, Math.min(1, minSizePct)) : 1,
         opacity: alpha,
         flowPct: Math.max(0, Math.min(1, flowPct)),
-        minOpacityRatio: alpha > 0 ? Math.max(0, Math.min(1, smallAlpha / alpha)) : 1,
+        /* 第194轮：f14 按 App 面板百分比直接读（见写出口注释：s10 的 f13=0.8 / f14=0.5 且面板显示
+           50%，证明 f14 是面板绝对值而不是「opacity 的比例」）。缺省（没有 f14）仍是 1 = 未限制。 */
+        minOpacityRatio: o[14] === undefined ? 1 : Math.max(0, Math.min(1, smallAlpha)),
         minFlowRatio: flowPct > 0 ? Math.max(0, Math.min(1, minFlowPct / flowPct)) : 1,
         pressure: pressureSize || transferOn,
         pressureSize: pressureSize,
         pressureOpacity: transferOn,
+        // 第194轮：压力页标定字段（默认值即画世界面板默认，回写时不会平白多出字段）
+        bruFlowSmooth: flowSmooth,
+        bruFingerPressurePct: fingerPressPct,
+        bruFadeInOut: fadeInOut,
+        bruPressureSizeInfluence: sizeInfluencePct,
+        bruPressureFlowInfluence: flowInfluencePct,
         sizeJitterPct: sizeJitterPct,
         spacingJitterPct: spacingJitterPct,
         flowJitterPct: flowJitterPct,

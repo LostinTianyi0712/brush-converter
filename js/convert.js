@@ -1155,6 +1155,13 @@
       // 把能写进 .bru 的其它参数一起带上（纹理/散布/抖动/锥度/湿边/混色/颜色动态/圆度硬度/流量）
       pressureSize: opts.pressure === undefined ? pressureSizeOn(brush) : !!opts.pressure,
       pressureOpacity: opts.pressure === false ? false : !!brush.pressureOpacity,
+      /* 第194轮：压力页标定字段（f67/f117/f134/f138/f139）。默认值 = 画世界面板默认，
+         undefined 时 bru.js 不写这些字段，输出与旧版完全一致。 */
+      bruFlowSmooth: brush.bruFlowSmooth,
+      bruFingerPressurePct: brush.bruFingerPressurePct,
+      bruFadeInOut: brush.bruFadeInOut,
+      bruPressureSizeInfluence: brush.bruPressureSizeInfluence,
+      bruPressureFlowInfluence: brush.bruPressureFlowInfluence,
       flowPct: brush.flowPct,
       minFlowRatio: brush.minFlowRatio,
       roundness: brush.roundness,
@@ -1234,7 +1241,9 @@
         scatterPct:[58],scatterCount:[59],scatterBothAxes:[57],taperOn:[74,77,78],taperSize:[77],taperOpacity:[78],wetEdgesOn:[100,101,129],
         wetEdgesAmount:[101],wetEdgesDepth:[129],borderOn:[92],borderBlend:[95],borderBrightness:[93],borderStrength:[94],renderCount:[97],
         bruUuid:[120],bruDualRefUuid:[119,120,121,122],dualSubName:[121],bruDualEnabled:[119],dualBlendMode:[122],
-        smudgeOn:[103,104],smudgeAmount:[104],smoothingStrength:[80],hollowPct:[44],antialiasLevel:[96]};
+        smudgeOn:[103,104],smudgeAmount:[104],smoothingStrength:[80],hollowPct:[44],antialiasLevel:[96],
+        bruFlowSmooth:[67],bruFingerPressurePct:[117],bruFadeInOut:[134],
+        bruPressureSizeInfluence:[138],bruPressureFlowInfluence:[139]};
       Object.keys(mapping).forEach(k=>{if(meta[k]!==old[k])mapping[k].forEach(f=>fields.add(f));});
       if(meta.texId!==brush.oldTexId)fields.add(7);
       if(brush.bruDualSubBrush)fields.add(121);
