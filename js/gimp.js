@@ -1,4 +1,4 @@
-﻿/* GIMP brush formats: .gbr (single brush) and .gih (brush pipe).
+/* GIMP brush formats: .gbr (single brush) and .gih (brush pipe).
    Spec (GIMP gimpbrush-header.h): header_size, version, width, height,
    bytes, magic ("GIMP" as u32), spacing, name (NUL-terminated), pixel data.
    A .gih starts with a text line (pipe name), a line with the brush count
@@ -123,13 +123,17 @@
       pos = h.dataStart + h.width * h.height * h.bpp;
     }
     if (!brushes.length) warnings.push('GIH 中没有可用笔刷');
+    /* 【第189轮】sel0:random 且多 cell 的 pipe 是「散布笔刷」：这些 cell 是同一个笔尖的
+       偏移副本，GIMP 里仍然是**一支**笔刷（每次落笔随机挑一个 cell）。
+       上层据此区分「N 个 cell」与「N 支笔刷」——否则散布笔刷会被误当成多支。 */
+    const scatterPipe = /sel0:random/i.test(line2) && count > 1;
     const rawGroup = {bytes:bytes,count:brushes.length,name:pipeName};
     brushes.forEach(function (b, index) {
       b._rawFile = bytes; b._rawKind = 'gih';
       b._rawGroup = rawGroup; b._rawGroupIndex = index;
       b._rawBrushState = util.brushFingerprint(b);
     });
-    return { brushes: brushes, warnings: warnings, pipeName: pipeName };
+    return { brushes: brushes, warnings: warnings, pipeName: pipeName, scatterPipe: scatterPipe };
   }
 
   function cstr(str) {
@@ -203,19 +207,28 @@
 
   /* GIMP image pipe (.gih): two text header lines, then one GBR per cell.
      Header line 2 is the documented attribute list, e.g.
-       "2 ncells:2 cellwidth:532 cellheight:400 step:100 dim:1 cols:1 rows:1 placement:constant rank0:2 sel0:incremental" */
-  function writeGih(brushes, pipeName) {
+       "2 ncells:2 cellwidth:532 cellheight:400 step:100 dim:1 cols:1 rows:1 placement:constant rank0:2 sel0:incremental"
+
+     【第189轮】`sel0` 的取值受 GIMP 2.10 `app/core/gimpbrushpipe.c:gimp_brush_pipe_select_brush`
+     约束：只有 incremental / angular / velocity / random / pressure / xtilt / ytilt 有效，
+     其余字符串一律降级成 constant（constant 意味着永远是第 0 个 cell）。
+     参数名是 `sel%d`（`gimp_pixpipe_params_parse` 用 strncmp("sel") + atoi(下标)），
+     不是 2003 年那版文档里的 `selection:`。
+     opts.sel 留出 random 的入口：散布笔刷要把同一个笔尖的多个偏移副本当一个 pipe 的 cell，
+     靠 random 在落笔时随机挑一个——这是 GIMP 表达散布的唯一机制（它没有 ABR 那种 jitter 参数）。 */
+  function writeGih(brushes, pipeName, opts) {
     if (!brushes || !brushes.length) throw new Error('没有可写入 GIH 的笔刷');
     const tips = brushes.map(grayOf);
     let w = 1, h = 1;
     for (const t of tips) { w = Math.max(w, t.w); h = Math.max(h, t.h); }
     const n = brushes.length;
     const spacing = Math.max(1, Math.min(1000, Math.round(brushes[0].spacingPct === undefined ? 10 : brushes[0].spacingPct)));
+    const sel = (opts && typeof opts.sel === 'string') ? opts.sel : 'incremental';
     const LF = new Uint8Array([0x0a]);
     const line1 = util.utf8Encode(String(pipeName || 'brushconv'));
     const line2 = util.utf8Encode(
       n + ' ncells:' + n + ' cellwidth:' + w + ' cellheight:' + h +
-      ' step:' + spacing + ' dim:1 cols:1 rows:1 placement:constant rank0:' + n + ' sel0:incremental'
+      ' step:' + spacing + ' dim:1 cols:1 rows:1 placement:constant rank0:' + n + ' sel0:' + sel
     );
     const parts = [line1, LF, line2, LF];
     for (let i = 0; i < n; i++) {
@@ -226,7 +239,56 @@
     return util.concat(parts);
   }
 
-  const api = { isGbr, parseGbr, parseGih, writeGbr, writeGih };
+  /* 【第189轮】把一个笔尖拆成 N 个「偏移副本」当 pipe 的 cell，用 sel0:random 在落笔时
+     随机挑一个——这是 GIMP 表达散布的唯一机制（它没有 ABR 那种 jitter 参数）。
+     做法：把画布放大到 笔尖 + 2×散布半径，每次把笔尖画在随机偏移的位置；没画到的地方是 0（无墨）。
+     代价：GIMP 里这支笔刷的显示尺寸会变成放大后的画布（GIMP 按 cell 尺寸当笔刷尺寸），
+     所以半径上限压在笔尖的 0.5 倍，避免糊成一大团。
+     偏移用确定性伪随机：同一支笔刷每次导出结果一致，测试才能断言。 */
+  function scatterCells(brush, opts) {
+    opts = opts || {};
+    const tip = grayOf(brush);
+    const w = tip.w, h = tip.h;
+    const pct = Number(brush.scatterPct);
+    if (!(pct > 0) || !(w > 0 && h > 0)) return null;
+    const n = Math.max(2, Math.min(8, Math.round(opts.scatterCells || 4)));
+    const ratio = Math.min(0.5, (pct / 100) * 0.5);
+    const r = Math.max(1, Math.round(Math.max(w, h) * ratio));
+    const cw = w + r * 2, ch = h + r * 2;
+    if (cw * ch * n > 64 * 1024 * 1024) return null;   /* 防御：4 倍放大 + 8 cell 仍超 64MB 就不做 */
+    function rnd(k, salt) {
+      let x = (k * 1103515245 + salt * 12345 + 0x9e3779b9) >>> 0;
+      x ^= x >>> 15; x = Math.imul(x, 2246822519) >>> 0;
+      x ^= x >>> 13; x = Math.imul(x, 3266489917) >>> 0;
+      x ^= x >>> 16;
+      return (x >>> 0) / 4294967296;
+    }
+    const cells = [];
+    const baseName = String(brush.name || 'brush');
+    for (let k = 0; k < n; k++) {
+      const dx = Math.round((rnd(k, 1) * 2 - 1) * r);
+      const dy = Math.round((rnd(k, 2) * 2 - 1) * r);
+      const cell = new Uint8Array(cw * ch);            /* 0 = 无墨 */
+      const ox = r + dx, oy = r + dy;
+      for (let y = 0; y < h; y++) {
+        const ty = oy + y;
+        if (ty < 0 || ty >= ch) continue;
+        for (let x = 0; x < w; x++) {
+          const tx = ox + x;
+          if (tx < 0 || tx >= cw) continue;
+          cell[ty * cw + tx] = tip.data[y * w + x];
+        }
+      }
+      cells.push({
+        name: baseName + ' #' + (k + 1),
+        spacingPct: brush.spacingPct,
+        tip: { w: cw, h: ch, data: cell }
+      });
+    }
+    return cells;
+  }
+
+  const api = { isGbr, parseGbr, parseGih, writeGbr, writeGih, scatterCells };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { gimp: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

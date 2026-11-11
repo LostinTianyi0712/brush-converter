@@ -1740,8 +1740,13 @@
               outFiles.push({ name: uniqueFile(base, '.bundle'), data: made.bytes });
               if (made.warnings && made.warnings.length) warnings.push(...made.warnings);
             } else if (fmt === 'gih') {
-              const made = BC.convert.makeGih(list, commonOpts(rec));
-              outFiles.push({ name: uniqueFile(base, '.gih'), data: made.bytes });
+              /* 【第189轮】GIMP 的 .gih 是「一支笔刷的多 cell 数组」，GIMP 内部
+                 gimp_brush_pipe_select_brush 每次落笔只从里面挑一个 cell 给画笔用。
+                 以前把整组塞进一个 pipe，用户在 GIMP 里只拿到一支「每次落笔换图案」的笔刷，
+                 不是 N 支笔刷。改成逐支输出（同名自动加 _2 后缀）。
+                 单支笔刷若开了散布，makeGih 内部会做成「N 个偏移副本 + sel0:random」。 */
+              const made = BC.convert.makeGihFiles(list, commonOpts(rec));
+              for (const f of made.files) outFiles.push({ name: uniqueFile(f.name, '.gih'), data: f.bytes });
               if (made.warnings && made.warnings.length) warnings.push(...made.warnings);
             } else if (fmt === 'painter') {
               const made = BC.convert.makePainter(list, commonOpts(rec), sourceName);
@@ -2434,7 +2439,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.74';
+const APP_VERSION = '2.8.75';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;

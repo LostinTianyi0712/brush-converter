@@ -703,6 +703,9 @@
       });
     }
     const out = { kind, kindLabel: extLabel(kind), brushes: result.brushes, warnings: result.warnings || [] };
+    /* 【第189轮】散布 pipe（sel0:random 多 cell）里 cell 数 ≠ 笔刷数，透传这个标记，
+       上层才不会把「4 个偏移副本」当成「4 支笔刷」。 */
+    if (result.scatterPipe) out.scatterPipe = true;
     // Procreate .brushset 的组名（brushset.plist 的 name）：导出时原样写回，避免退回第一支笔刷名
     if (result.name !== undefined) out.name = result.name;
     return out;
@@ -2468,12 +2471,57 @@
       warnings.push('GIH：同一笔刷管内所有笔尖尺寸必须一致，已统一为 ' + maxSize + 'px（最大笔尖）；' +
         sizes.size + ' 种原始尺寸不可恢复，导出的笔刷再导入时尺寸都会变成 ' + maxSize + 'px');
     }
+    /* 【第189轮】单支笔刷 + 开启散布 → 用「同一个笔尖的 N 个偏移副本」当 pipe 的 cell，
+       并把 sel0 写成 random。依据 GIMP 2.10 `app/core/gimpbrushpipe.c`：
+       PIPE_SELECT_RANDOM 的实现是 `g_random_int_range(0, rank[i])`，即每次落笔随机挑一个
+       cell；GIMP 没有 ABR 那种位置/数量 jitter 参数，这是它唯一的散布机制。
+       注意 pipe 永远是**一支**笔刷（select_brush 在内部 N 个 cell 之间切换），所以这里只
+       在单支导出时启用——多支笔刷各自成文件由 makeGihFiles 负责。 */
+    if (list.length === 1 && list[0] && list[0].scatterOn && Number(list[0].scatterPct) > 0) {
+      const cells = gimp.scatterCells(list[0], opts);
+      if (cells && cells.length > 1) {
+        warnings.push('GIH：散布用「' + cells.length + ' 个偏移副本 + 随机选取」表达（GIMP 无 jitter 参数）；' +
+          '笔刷在 GIMP 里的显示尺寸会变成放大后的 cell 尺寸');
+        return {
+          bytes: gimp.writeGih(cells, name, { sel: 'random' }),
+          /* count 是「笔刷数」不是 cell 数：散布 pipe 在 GIMP 里仍然是一支笔刷 */
+          count: 1,
+          cells: cells.length,
+          scatterPipe: true,
+          warnings: warnings
+        };
+      }
+    }
     const lossy = list.some(function (b) {
       return b && (b.flowPct !== undefined || b.hardness !== undefined || b.hasTexture ||
         (b.scatterOn && (b.scatterPct || b.scatterCount)));
     });
     if (lossy) warnings.push('GIH：GIMP 位图笔刷不保存流量、硬度、散布与纹理参数，再导入时会重置为默认值');
     return { bytes: gimp.writeGih(list, name), count: list.length, warnings: warnings };
+  }
+
+  /* 【第189轮】多支笔刷 → 多个 .gih 文件（每支一个）。
+     为什么必须拆：GIMP 的 `.gih` 是「一支笔刷的 n 维 cell 数组」，`gimp_brush_pipe_select_brush`
+     永远只返回其中一个 cell 给画笔用。把 5 支笔刷塞进一个 pipe，用户在 GIMP 里只得到
+     **一支**每次落笔换图案的笔刷，而不是 5 支笔刷。旧实现在这一点上是错的。
+     单支导出仍走 makeGih（它会顺带处理散布 pipe）。 */
+  function makeGihFiles(brushList, opts) {
+    opts = opts || {};
+    const files = [];
+    const warnings = [];
+    const used = Object.create(null);
+    for (const b of (brushList || [])) {
+      const made = makeGih([b], opts);
+      let base = sanitizeName(String(b && b.name || 'brush'), 0, true) || 'brush';
+      /* 同名笔刷不能互相覆盖（GIMP 按文件名建索引，重名会只留一个） */
+      let uniq = base;
+      let k = 2;
+      while (used[uniq.toLowerCase()]) { uniq = base + '_' + k; k++; }
+      used[uniq.toLowerCase()] = true;
+      files.push({ name: uniq, bytes: made.bytes, scatterPipe: !!made.scatterPipe });
+      if (made.warnings && made.warnings.length) for (const w of made.warnings) if (warnings.indexOf(w) < 0) warnings.push(w);
+    }
+    return { files: files, count: files.length, warnings: warnings };
   }
 
   /** Brush list -> Corel Painter .brushcategory XML (heuristic). */
@@ -3663,13 +3711,13 @@ Write-Host 'restart MediBang Paint Pro'
     });
   }
 
-  const api = { detect, parseFile, restoreHsjTips, builtinTipKey, expandArchive, synthTip, makeBru, makeBruPack, makeBruDualPair, buildBruDualPairBrushes, makeAbrPack, makeTplPack, makeUdongmanPack, makeUdongmanSutPack, makeUdongmanMtdPack, parseMtd, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, mergePatternFiles, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, tipSourceAudit, tipSourceHint, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Files, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
+  const api = { detect, parseFile, restoreHsjTips, builtinTipKey, expandArchive, synthTip, makeBru, makeBruPack, makeBruDualPair, buildBruDualPairBrushes, makeAbrPack, makeTplPack, makeUdongmanPack, makeUdongmanSutPack, makeUdongmanMtdPack, parseMtd, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, mergePatternFiles, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, tipSourceAudit, tipSourceHint, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makeGihFiles, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Files, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
   /* 写出口统一过一遍数值卫生（见 sanitizeBrushNumbers）。包装不改变函数签名：
      数组入口逐支处理，单支入口直接处理，字节/字符串入口原样放行。
      只有真的钳制过才替换参数并附加 warnings，合法样本走原路径零影响。 */
   const GUARDED_WRITERS = ['makeBru', 'makeBruPack', 'makeBruDualPair', 'makeAbrPack', 'makeTplPack',
     'makeUdongmanPack', 'makeUdongmanSutPack', 'makeUdongmanMtdPack', 'makePatternFile', 'makeTexturePng',
-    'makeProcreateBrush', 'makeProcreateBrushset', 'makeGbr', 'makeMyb', 'makeKpp', 'makeGih',
+    'makeProcreateBrush', 'makeProcreateBrushset', 'makeGbr', 'makeMyb', 'makeKpp', 'makeGih', 'makeGihFiles',
     'makePainter', 'makeMdp', 'makeMediBangBrush', 'makeMediBangIniPack', 'makeIpcfg', 'makePrbr',
     'makeGoPaintAbr', 'makeGoPaintBrush', 'makeGoPaintSet', 'makeGoPaintGroup',
     'makeSai2Files', 'makeSai2Pack', 'makeKritaBundle', 'makeTipPng', 'makeTipPngPack'];
