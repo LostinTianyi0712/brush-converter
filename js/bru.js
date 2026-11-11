@@ -170,7 +170,13 @@
     parts.push(u8arr(fVarint(37, 31)));                         // VER
     parts.push(u8arr(fBytes(42, new Uint8Array(0))));           // RGBTOALPHA
     parts.push(u8arr(fVarint(49, 1)));                          // PRESSUSEPERCENT
-    parts.push(u8arr(fF32(51, Math.min(1, flow * minFlow))));   // SMALLBRUSHFLOWPERCENT
+    /* 【第193轮真机标定】f51 = 面板「流量压力·最小值」/ 100，**不与 flow 相乘**。
+       证据：MuMu + 画世界 3.4.5 上把该滑块 14%→60% 导出，diff 只有 `f51: 0.14→0.6`；
+       60%→30% 再取一点，diff 只有 `f51: 0.6→0.3`。同一批样本里 `f26` 恒定不变（0.14），
+       所以 f26 不是这一项的落点，保持原写法不动。
+       旧代码写 `min(1, flow*minFlow)`，当 flow<1 时会把最小值再乘一次流量，App 里显示的
+       最小百分比就会偏小——这也是「流量压力最小值不对」的直接原因。 */
+    parts.push(u8arr(fF32(51, Math.min(1, minFlow))));          // SMALLBRUSHFLOWPERCENT
     parts.push(u8arr(fVarint(65, 1)));                          // ALLBRUSHRECT
     if (b.taperOn) {
       parts.push(u8arr(fVarint(74, 1)));
