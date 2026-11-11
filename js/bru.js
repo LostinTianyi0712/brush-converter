@@ -100,7 +100,15 @@
     parts.push(u8arr(fVarint(119, dualFlag)));
     const size = Math.max(1, Math.min(5000, b.sizePx || 100));
     const maxSize=Math.max(size,b.maxSizePx||500);
-    const minSize = Math.max(0, Math.min(1, b.minSizeRatio === undefined ? 1 : b.minSizeRatio));
+    /* 【第192轮】minSizeRatio 不能写 0。
+       真实画世界原生 BRU 里 f50（MINWIDTHPERCENT）从不出现 0：实测「压感硬圆.bru」
+       是 0.033（f9=1px / f8=30px）、双笔样本是 0.5。而 Procreate 里 dynamicsPressureSize=1
+       的笔刷会算出 minSizeRatio=0（例如「吹石-圆笔 润」），照原样写就是 f9=0、f50=0——
+       App 侧把 0 视作「未设置最小宽度」退回默认值，压感就表现为不生效。
+       0.01（1% 宽度）在视觉上仍是完全收尖，但不会再撞到这个边界值。
+       注意只钳下限，无压感的笔刷（minSizeRatio=1）不受影响。 */
+    const minSizeRaw = Math.max(0, Math.min(1, b.minSizeRatio === undefined ? 1 : b.minSizeRatio));
+    const minSize = minSizeRaw <= 0 ? 0.01 : minSizeRaw;
     const opacity = Math.max(0, Math.min(1, b.opacity === undefined ? 1 : b.opacity));
     const minOp = Math.max(0, Math.min(1, b.minOpacityRatio === undefined ? 1 : b.minOpacityRatio));
     parts.push(u8arr(fF32(8, size)));                           // WIDTH
