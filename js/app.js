@@ -1508,6 +1508,7 @@
       case 'medibang': case 'mbini': return 'MediBang笔刷';
       case 'sai2': return 'SAI2笔刷';
       case 'png': return '笔尖PNG';
+      case 'texture_png': return '纹理PNG';
       case 'all': return '全部格式笔刷';
       default: return '笔刷包';
     }
@@ -1634,6 +1635,10 @@
         outFiles.push({ name: '参数对比.html', data: new TextEncoder().encode(cmpHtml) });
       }
     } catch (e) { /* 对比页失败不影响转换 */ }
+    /* 【第190轮审批】texture_png **故意不放进 ALL_FORMATS**：它是「把某支笔刷的纹理图导出来看」
+       的辅助目标，不是一种笔刷格式。放进批量清单会让用户点「全部格式」时每支笔刷多产一个
+       _纹理.png，而且没有纹理的笔刷各刷一条「没有纹理，已跳过」——79 支的包里能刷出几十条
+       噪音，把真正重要的警告（丢参数、近似映射）淹掉。用户需要时在目标下拉里单独选。 */
     const ALL_FORMATS = ['bru', 'abr', 'tpl', 'udongman', 'gopaint', 'gopaint_set', 'brushset', 'brush', 'gbr', 'gih',
       'myb', 'kbundle', 'sai2', 'png', 'painter', 'medibang', 'mbini'];
     const usedFileNames = new Set();
@@ -1645,6 +1650,18 @@
       while (usedFileNames.has((name + ext).toLowerCase())) { name = base + ' (' + k + ')'; k++; }
       usedFileNames.add((name + ext).toLowerCase());
       return name + ext;
+    }
+    /* 【第190轮】「纹理 PNG」目标：逐支调用 makeTexturePng（它内部会让 textureGray
+       兜底到画世界内置纹理库）。没有纹理的笔刷不能静默掉，必须给一条跳过警告。
+       输出名走 uniqueFile + sanitizeName，与其它格式完全一致。 */
+    function emitTexturePng(b, nameBase) {
+      const made = BC.convert.makeTexturePng(b);
+      if (made && made.bytes && made.bytes.length) {
+        outFiles.push({ name: uniqueFile(nameBase + '_纹理', '.png'), data: made.bytes });
+        return true;
+      }
+      warnings.push((b.name || '未命名') + '：没有纹理，已跳过');
+      return false;
     }
     function pressureOpt() {
       return opts.pressureMode === 'on' ? true : opts.pressureMode === 'off' ? false : undefined;
@@ -1766,6 +1783,11 @@
             } else if (fmt === 'png') {
               const made = BC.convert.makeTipPngPack(list, commonOpts(rec));
               outFiles.push({ name: uniqueFile(base, '.zip'), data: made.bytes });
+            } else if (fmt === 'texture_png') {
+              for (const b of list) {
+                const bname = BC.convert.sanitizeName(opts.prefix + (b.name || 'brush'), 0, true);
+                emitTexturePng(b, bname);
+              }
             } else if (fmt === 'gopaint_set') {
               const made = BC.convert.makeGoPaintGroup(list, Object.assign({}, commonOpts(rec), { groupName: (opts.prefix || '') + sourceName }));
               outFiles.push({ name: uniqueFile(base, '.gobrushes'), data: made.bytes });
@@ -1854,6 +1876,7 @@
           : (opts.groupBySource && rec.baseName ? BC.convert.sanitizeName(rec.baseName, 0, true) + '/' : '');
         for (const fmt of targets) {
           try {
+            if (fmt === 'texture_png') { emitTexturePng(b, folder + base); continue; }
             const co = commonOpts(rec);
             if (fmt === 'bru' && opts.bruEmbed !== false && b.dualTip && BC.convert.makeBru) {
               const made = BC.convert.makeBru(b, Object.assign({}, co, { embedSubTip: true }));
@@ -2439,7 +2462,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.75';
+const APP_VERSION = '2.8.76';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;

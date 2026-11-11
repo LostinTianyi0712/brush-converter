@@ -185,6 +185,15 @@
     }
     const ini = util.utf8Encode(lines.join('\n'));
     const files = [{ name: 'Brush2.ini', data: ini }].concat(images);
+    /* 【第191轮·缺口⑨】纹理 PNG 作为「附加素材」由 convert.js 算好后传入，
+       追加在所有笔尖 PNG 之后：读端 decodeBitmap / 安装脚本取第一个 PNG 时仍拿到笔尖，
+       不会把纹理误当笔尖。注意 bs_texture / bs_textureid 的语义未标定（见 convert.js
+       的 medibangTexturePng 注释），这里不写任何纹理键，也不引用这些附加素材。 */
+    if (Array.isArray(opts.extraImages)) {
+      for (const f of opts.extraImages) {
+        if (f && f.name && f.data) files.push({ name: f.name, data: f.data });
+      }
+    }
     const bytes = zip.write(files);
     return { bytes: bytes, count: idx, fileName: ((opts.name && sanitize(opts.name)) || 'MediBang笔刷') + '_云笔刷包.zip' };
   }

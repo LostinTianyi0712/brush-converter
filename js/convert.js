@@ -2632,19 +2632,63 @@
     return { files: chunks, count: chunks.length, warnings: warnings };
   }
 
+  /* 【第191轮·缺口⑨】MediBang 纹理写出——只做能标定的部分，不编造字段值。
+     标定结论（证据见 test/medibang_texture_write_test.js 开头与结论汇报）：
+       · bs_texture / bs_textureid **不是 Brush2.ini 的键**。唯一「读取」在
+         medibangIni.js:134 的 parseBsScript()，是对 .bs **Lua 笔刷脚本源码**做的
+         存在性正则 /bs_texture|bs_textureid/，只产出布尔 hasTexture，不解析值/类型/路径；
+         parseIni 也不读这两个键。
+       · 本机 6 个真实 .bs 样本（MediBang APK 的 assets/brush_files/*.bs）、APK dex、
+         5 支真实 .mdp 标定文档（参考/格式标定/07）里都没有这两个标识符的取值样本，
+         公开资料也无可用的格式规范。第187轮方案文档把它们写成「.ini 的键」与代码不符。
+       → 类型（文件名 / id / 路径 / 数字）、取值格式、纹理引用路径**均未标定**。
+         按任务「标定不到的就不要写，别猜」：这里**不写** bs_texture / bs_textureid，
+         也**不**在 .ini 里引用纹理 PNG。写错的键会让 MediBang 打不开文件，比不写更糟。
+     能确定、且不依赖上述未标定项的部分：
+       · 走 textureGray 收口拿灰度像素（BRU 声明的 ptN 内置纹理会自动补位），编成 PNG；
+       · 纹理 PNG 作为**附加素材**放进唯一已知的图像目录 brush_bitmap/（读端
+         decodeBitmap 也在此查找），追加在笔尖 PNG 之后，不被 MediBang 自动引用；
+       · 在 warnings 里如实说明「MediBang 不支持写出纹理」。 */
+  function medibangTexturePng(brush) {
+    const t = textureGray(brush);
+    if (!t || !(t.w > 0) || !(t.h > 0) || !t.gray || t.gray.length !== t.w * t.h) return null;
+    const rgba = new Uint8Array(t.w * t.h * 4);
+    for (let i = 0; i < t.gray.length; i++) {
+      const v = t.gray[i];
+      rgba[i * 4] = v; rgba[i * 4 + 1] = v; rgba[i * 4 + 2] = v; rgba[i * 4 + 3] = 255;
+    }
+    return { bytes: png.encode(t.w, t.h, rgba), w: t.w, h: t.h };
+  }
+  /* 未标定 → 不写。这条警告同时是给用户和给后续维护者的说明。 */
+  const MEDIBANG_TEX_WARNING = 'MediBang 不支持写出纹理：bs_texture/bs_textureid 字段语义未标定（仅见于 .bs 脚本标识符，无值样本、无格式规范），已把纹理灰度 PNG 作为附加素材放进 brush_bitmap/，MediBang 不会自动引用';
+
   /** Build a MediBang Paint brush package: black-shape tip PNG + Brush2.ini entry.
       Install: copy the PNG into %LOCALAPPDATA%\\Medibang\\CloudAlpaca\\brush_bitmap\\
       and append the ini snippet to Brush2.ini, then restart MediBang. */
   function makeMediBangIniPack(brushList, opts) {
+    opts = opts || {};
     // 保证每支都有笔尖（程序笔刷也转成位图笔刷，否则缺少 .bs 脚本无法被 MediBang 识别）
     const list = (brushList || []).map(function (b) {
       try { return withTipRGBA(withExportSettings(b, opts), opts || {}, { transform: true }); } catch (e) { return b; }
     });
-    return medibangIni.writeIniPack(list, opts || {});
+    /* 逐支按 textureGray 收口导出纹理 PNG；命名带 _texture 后缀，排在笔尖 PNG 之后。 */
+    const extraImages = [];
+    let anyTexture = false;
+    (brushList || []).forEach(function (b, i) {
+      const tex = medibangTexturePng(b);
+      if (!tex) return;
+      anyTexture = true;
+      extraImages.push({ name: 'brush_bitmap/brushconv_' + (i + 1) + '_texture.png', data: tex.bytes });
+    });
+    const made = medibangIni.writeIniPack(list, Object.assign({}, opts, { extraImages: extraImages }));
+    /* 未标定的 bs_texture / bs_textureid 在此保持「不写」，见上面的注释。 */
+    return Object.assign({}, made, { warnings: anyTexture ? [MEDIBANG_TEX_WARNING] : [] });
   }
 
   function makeMediBangBrush(brush, opts) {
     opts = opts || {};
+    /* 用原始 brush 走 textureGray 收口（含 BRU 的 ptN 内置纹理补位）。*/
+    const tex = medibangTexturePng(brush);
     brush = withExportSettings(brush, opts);
     const b2 = withTipRGBA(brush, opts, { transform: true, fit: true });
     const w = b2.tip.w, h = b2.tip.h;
@@ -2710,14 +2754,18 @@ Write-Host ('installed section [' + $next + '] bitmap: ' + $png.Name)
 Write-Host 'restart MediBang Paint Pro'
 `;
     const zipMod = isNode ? require('./zip.js') : root.BC.zip;
-    const bytes = zipMod.write([
+    const zipFiles = [
       { name: 'brush_bitmap/' + pngName, data: pngBytes },
       { name: 'Brush2.ini.snippet.txt', data: util.utf8Encode(section) },
       { name: '安装.bat', data: util.utf8Encode(installBat) },
       { name: 'install.ps1', data: util.utf8Encode(String.fromCharCode(0xfeff) + installPs1) },
       { name: '安装说明.txt', data: util.utf8Encode(readme) }
-    ]);
-    return { bytes: bytes, name: pngName, section: section, count: 1 };
+    ];
+    /* 纹理 PNG 作为附加素材排在笔尖之后；.ini 段里不写未标定的 bs_texture / bs_textureid。 */
+    if (tex) zipFiles.push({ name: 'brush_bitmap/' + base + '_texture.png', data: tex.bytes });
+    const bytes = zipMod.write(zipFiles);
+    return { bytes: bytes, name: pngName, section: section, count: 1,
+      warnings: tex ? [MEDIBANG_TEX_WARNING] : [] };
   }
 
   /** 天生会画(GoPaint) 目前只支持导入 .abr 与原生 .gobrush；这里按 ABR 导出。 */
@@ -2761,7 +2809,15 @@ Write-Host 'restart MediBang Paint Pro'
       散布: b.scatterOn ? '开' : '关',
       散布强度百分比: b.scatterOn ? num(b.scatterPct, 0, 0) : '',
       散布数量: b.scatterOn ? num(b.scatterCount, 1, 0) : '',
-      纹理: b.hasTexture ? '有' : '无',
+      /* 【第190轮】textureGray 命中内置库时会带 builtinTexture=ptN（BRU 的 f6 只有
+         资源 id、没有像素）。信息面板必须把它和「源文件自带像素」区分开，否则用户
+         以为导出的纹理是原笔刷自带的。用户素材优先，取不到 builtinTexture 就按原样
+         只报「有」，绝不误标成内置库。 */
+      纹理: (function () {
+        const t = textureGray(b);
+        if (t && t.builtinTexture) return '内置库 ' + t.builtinTexture + '（画世界自带，非源文件自带像素）';
+        return b.hasTexture ? '有' : '无';
+      })(),
       压感大小: (b.pressureSize === undefined ? b.pressure : b.pressureSize) ? '是' : '否',
       压感不透明度: b.pressureOpacity ? '是' : '否',
       来源格式: b.source || ''
@@ -3499,6 +3555,13 @@ Write-Host 'restart MediBang Paint Pro'
           else { lost.push(entry); lostTotal++; }
         }
         lines.push('  ' + (i + 1) + '. ' + (b.name || '未命名'));
+        /* 【第190轮】内置纹理库补位要在参数报告里明说：只有 textureGray 带
+           builtinTexture 时才加这一行；源文件自带像素（_patternPixels / grain 等）
+           与无纹理都不加，避免把用户自己的纹理误标成「画世界自带」。 */
+        const texSrc = textureGray(b);
+        if (texSrc && texSrc.builtinTexture) {
+          lines.push('     纹理：内置库 ' + texSrc.builtinTexture + '（画世界自带，非源文件自带像素）');
+        }
         lines.push('     写入：' + (has.length ? has.join('、') : '（基础字段）'));
         if (lost.length) lines.push('     丢失：' + lost.join('、'));
         if (manual.length) lines.push('     旁带/手动设置：' + manual.join('、'));
