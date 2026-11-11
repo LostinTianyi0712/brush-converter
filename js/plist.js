@@ -124,12 +124,28 @@
       if (i < 0 || i >= arr.length) throw new Error('plist UID 越界: ' + i);
       return readObject(arr[i], 0);
     }
+    /* 【第196轮】resolve 的结果缓存：uid → 已展开的值；resolving 用于检测环。 */
+    const resolveMemo = new Map();
+    const resolving = new Set();
     function resolve(v, depth, stack) {
       if (depth > MAX_DEPTH) return null;
       if (v === null || v === undefined) return v;
       if (typeof v !== 'object') return v;
       if (v instanceof Uint8Array || v instanceof Date) return v;
-      if (v.$uid !== undefined) return resolve(objAt(v.$uid), depth + 1, stack);
+      /* 【第196轮】按 uid 记忆化 + 循环断开。旧实现每次遇到同一个 $uid 都重新展开整棵子树，
+         互相引用的数组因此呈**指数**增长：链长 22 要 569ms，26 直接堆溢出（第189轮审查 P1-#1）。
+         合法 plist 里同一对象本来就该只解析一次，memo 化不改变语义。 */
+      if (v.$uid !== undefined) {
+        const uid = v.$uid;
+        if (resolveMemo.has(uid)) return resolveMemo.get(uid);
+        if (resolving.has(uid)) return null;           // 自引用/环：断开而不是无限递归
+        resolving.add(uid);
+        let r;
+        try { r = resolve(objAt(uid), depth + 1, stack); }
+        finally { resolving.delete(uid); }
+        resolveMemo.set(uid, r);
+        return r;
+      }
       if (v.$array) {
         const out = [];
         for (const r of v.$array) out.push(resolve(readObject(r, depth + 1), depth + 1, stack));

@@ -113,9 +113,23 @@
       throw new Error('bad huffman');
     }
 
+    /* 【第196轮】采样因子与容量的硬校验（第189轮审查 P1-#2 反例：27 字节畸形 JPEG 让进程挂死）。
+       hs/vs 按 JPEG 规范只能是 1..4；一旦出现 0，hmax=0 → mcusX = w/(8*0) = Infinity，
+       下面的 MCU 双层循环永不收敛（或直接吃光内存）。同时给总 MCU 数设上限：
+       1e6 个 MCU = 64M 像素，远超笔刷纹理实际需要的 4096x4096。 */
+    for (const c of frame.comps) {
+      if (!(c.hs >= 1 && c.hs <= 4) || !(c.vs >= 1 && c.vs <= 4)) {
+        throw new Error('JPEG 采样因子非法（须为 1..4）: ' + c.hs + 'x' + c.vs);
+      }
+    }
+    if (!(frame.w > 0 && frame.h > 0) || !isFinite(frame.w) || !isFinite(frame.h)) throw new Error('JPEG 尺寸非法');
     const hmax = Math.max.apply(null, frame.comps.map(c => c.hs));
     const vmax = Math.max.apply(null, frame.comps.map(c => c.vs));
+    if (!(hmax >= 1) || !(vmax >= 1)) throw new Error("JPEG 采样因子非法: " + hmax + "x" + vmax);
     const mcusX = Math.ceil(frame.w / (8 * hmax)), mcusY = Math.ceil(frame.h / (8 * vmax));
+    if (!isFinite(mcusX) || !isFinite(mcusY) || mcusX * mcusY > 1000000) {
+      throw new Error("JPEG 数据量超限: " + frame.w + "x" + frame.h + " (MCU " + mcusX + "x" + mcusY + ")");
+    }
     const planes = frame.comps.map(c => {
       const cw = Math.ceil(Math.ceil(frame.w * c.hs / hmax) / 8) * 8;
       const ch = Math.ceil(Math.ceil(frame.h * c.vs / vmax) / 8) * 8;

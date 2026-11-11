@@ -167,8 +167,12 @@
     return util.utf8Encode(lines.join('\r\n'));
   }
 
+  /* SAI2 的 <name>.bmp / <name>.ini 直接落盘，必须是合法文件名。
+     第189轮 P2-#22：原来只替换了 \/:*?"<>| 并截 60 字符，CON/COM1/CONIN$ 这类
+     Windows 保留名、尾随点空格、控制字符、双向隔离字符都会原样写到磁盘。
+     规则统一收在 util.fileBase（替换字符保持历史上的下划线，别改已产出的名字口径）。 */
   function sanitize(name) {
-    return String(name || 'brush').replace(/[\\/:*?"<>|]/g, '_').slice(0, 60) || 'brush';
+    return util.fileBase(name, { illegal: '_', collapse: false, maxLen: 60, fallback: 'brush' });
   }
 
   function makeSai2Brush(brush, opts) {

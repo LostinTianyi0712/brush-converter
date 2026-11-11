@@ -619,8 +619,11 @@
     const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const re = new RegExp('<param\\b[^>]*name="' + esc + '"[^>]*>[\\s\\S]*?</param>');
     const repl = '<param type="' + (type || 'string') + '" name="' + name + '"><![CDATA[' + value + ']]></param>';
-    if (re.test(xml)) return xml.replace(re, repl);
-    return xml.replace('</Preset>', repl + '</Preset>');
+    /* 第189轮：替换串里带的是用户数据（CDATA 内容），String.replace 会把 $&、$'、$`、$1
+       当特殊模式解释，直接把 XML 写坏（x$&y → name="xname="Basic_circle"amp;y"）。
+       一律用函数式替换：替换串按字面量处理，不再经过 $ 模式解析。 */
+    if (re.test(xml)) return xml.replace(re, function () { return repl; });
+    return xml.replace('</Preset>', function () { return repl + '</Preset>'; });
   }
 
   /* Clone a real Krita png_brush preset and swap tip file / scale / spacing / opacity. */
@@ -634,7 +637,9 @@
     const scale = size / tipSide;
     const def = '<Brush type="png_brush" brushApplication="0" ColorAsMask="1" BrushVersion="2" filename="' + tipName + '" scale="' + scale +
       '" spacing="' + spacing.toFixed(4) + '" angle="' + angleRad + '" useAutoSpacing="0"/>';
-    let xml = tpl.replace(/name="[^"]*"/, 'name="' + xmlEsc(brush.name || 'brush') + '"');
+    /* 第189轮：笔刷名直接当替换串时，$ 模式会被解释（x$&y 把匹配到的 name="…" 又插回来，
+       Preset XML 直接断掉）。函数式替换，名字永远按字面量写入。 */
+    let xml = tpl.replace(/name="[^"]*"/, function () { return 'name="' + xmlEsc(brush.name || 'brush') + '"'; });
     xml = setParam(xml, 'brush_definition', def);
     xml = setParam(xml, 'requiredBrushFile', tipName);
     xml = setParam(xml, 'requiredBrushFilesList', tipName);
@@ -742,7 +747,7 @@
               tag=tag.replace(/(\bspacing=")[^"]*(")/g,function(_,a,c){return a+(opts.spacingOverride/100).toFixed(4)+c;});
               tag=tag.replace(/\buseAutoSpacing="[^"]*"/g,'useAutoSpacing="0"');
             }
-            tag=tag.replace(/\bfilename="[^"]*"/g,'filename="'+tipName+'"');
+            tag=tag.replace(/\bfilename="[^"]*"/g,function(){return 'filename="'+tipName+'"';});
             return tag;
           });
           xml=setParam(xml,'brush_definition',patched);

@@ -8,10 +8,10 @@ var CORE = [
   'pako.min.js', 'util.js', 'zlib.js', 'png.js', 'zip.js', 'plist.js',
   'descriptor.js', 'bplist.js', 'procreateDefaults.js',
   'sqlite.js', 'sutWrite.js', 'udongmanTemplate.js', 'cspMaterialTemplate.js', 'cspMaterial.js', 'csp.js', 'medibang.js', 'medibangIni.js', 'infpainter.js', 'gobrush.js', 'gobrushWrite.js',
-  'gimp.js', 'kritaPreview.js', 'kritaPresetTemplate.js', 'sai2.js', 'sai2read.js', 'sai2dat.js', 'sai2settings.js', 'mypaint.js', 'krita.js',
+  'gimp.js', 'kritaPreview.js', 'kritaPresetTemplate.js', 'kritaPresetTemplatePencil.js', 'sai2.js', 'sai2read.js', 'sai2dat.js', 'sai2settings.js', 'mypaint.js', 'krita.js',
   'jpeg.js', 'jpegEncode.js', 'genericbrush.js', 'painterlib.js',
   'abrUuidPool.js', 'abrPatternTemplate.js', 'pat.js', 'patRead.js', 'abr.js', 'tplTemplate.js', 'tpl.js',
-  'procreate.js', 'bru.js', 'convert.js', 'update.js'
+  'procreate.js', 'bru.js', 'hsj-textures-lib.js', 'convert.js', 'update.js'
 ];
 
 var loaded = false;

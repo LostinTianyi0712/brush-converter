@@ -32,6 +32,9 @@
     return out;
   }
   function decodePlane(data, w, h, depthBytes, compression) {
+  /* 【第196轮】w*h 决定 new Uint8Array(n) 的分配量，先卡上限再分配（第189轮审查 P1-#5）。 */
+  if (!(w > 0) || !(h > 0)) throw new Error("PAT 数据不完整：尺寸无效 " + w + "x" + h);
+  if (w * h > 100000000) throw new Error("PAT 尺寸超限: " + w + "x" + h);
     const n = w * h;
     if (compression === 0) {
       const out = new Uint8Array(n);
@@ -99,6 +102,8 @@
       }
       p = listStart + listLen;
       // 组装灰度
+  if (!(w > 0) || !(h > 0)) throw new Error("PAT 数据不完整：尺寸无效 " + w + "x" + h);
+      if (w * h > 100000000) throw new Error("PAT 尺寸超限: " + w + "x" + h);
       const n = w * h;
       const gray = new Uint8Array(n);
       if (mode === 2 && palette) {

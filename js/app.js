@@ -280,7 +280,8 @@
     fileInput.disabled = busy;
     btnClear.disabled = busy;
     ['#btnLog', '#btnShare', '#btnShareResult', '#btnSelectAll', '#btnSaveDirectory', '#btnCompare'].forEach(function (id) { const el=$(id); if(el)el.disabled=busy; });
-    document.querySelectorAll('#options input, #options select').forEach(function (el) { el.disabled=busy; });
+    // data-dep-off：由设置分组按其它选项暂时禁用的项（如「按来源分文件夹」只在单独文件模式可用），转换结束后不能被这里重新放开
+    document.querySelectorAll('#options input, #options select').forEach(function (el) { el.disabled = busy || el.dataset.depOff === '1'; });
     filesEl.classList.toggle('locked', busy);
     // 转换/保存期间卡片内的勾选框也要禁用：pointer-events 只挡鼠标，Tab+空格仍能改状态，
     // 会让输出结果随按键漂移（#259）。
@@ -2462,7 +2463,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.82';
+const APP_VERSION = '2.8.83';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;
@@ -4508,6 +4509,92 @@ const UPDATE_ENABLED = false;
         });
       }).catch(function () { /* 忽略缓存读取异常 */ });
     }
+  })();
+
+  /* ---------- 设置分组（第197轮）----------
+     高级设置里的「格式专属」面板跟随目标格式显示；两个折叠组标题右侧显示当前取值摘要；
+     改过默认值的组标「已改 N 项」，底部「恢复默认」。只改显示，不改任何选项的 id 与取值。 */
+  (function initOptionGroups() {
+    const root = $('#options');
+    const target = $('#optTarget');
+    if (!root || !target) return;
+    // 参与计数/恢复默认的设置项；目标格式本身不算
+    const fields = Array.prototype.slice.call(root.querySelectorAll('select[id^="opt"], input[id^="opt"]'))
+      .filter(function (el) { return el.id !== 'optTarget'; });
+    function defaultOf(el) {
+      if (el.tagName === 'SELECT') {
+        for (let i = 0; i < el.options.length; i++) if (el.options[i].defaultSelected) return el.options[i].value;
+        return el.options.length ? el.options[0].value : '';
+      }
+      return el.defaultValue;
+    }
+    const defaults = new Map(fields.map(function (el) { return [el, defaultOf(el)]; }));
+    function isChanged(el) { return el.value !== defaults.get(el); }
+    function shortText(id) {
+      const el = document.getElementById(id);
+      if (!el || el.selectedIndex < 0) return '';
+      return el.options[el.selectedIndex].text.replace(/[（(].*$/, '').trim();
+    }
+    function setHidden(el, hide) { if (el && el.hidden !== hide) el.hidden = hide; }
+    function setText(el, text) { if (el && el.textContent !== text) el.textContent = text; }
+
+    function update() {
+      const t = target.value;
+      const names = [];
+      root.querySelectorAll('.fmt-panel').forEach(function (p) {
+        const wanted = (p.getAttribute('data-for') || '').split(/\s+/).indexOf(t) >= 0;
+        // 面板里的行可能被别处隐藏（如 SAI2 文件夹只在桌面版出现）；一行都不显示时整块不显示
+        let anyRow = false;
+        p.querySelectorAll('.opt-row > .opt').forEach(function (r) { if (!r.hidden) anyRow = true; });
+        const show = wanted && anyRow;
+        setHidden(p, !show);
+        if (show) names.push(p.querySelector('.fmt-title').textContent.replace(/\s*专属$/, ''));
+      });
+      setHidden($('#fmtNone'), names.length > 0);
+
+      // 「按来源分文件夹」只在每支单独文件时生效
+      const single = $('#optMode') && $('#optMode').value === 'single';
+      const grp = $('#optGroup');
+      if (grp) {
+        grp.dataset.depOff = single ? '' : '1';
+        grp.disabled = !single || isBusy();
+      }
+      setHidden($('#optGroupHint'), !!single);
+
+      setText($('#advSum'), (names.length ? names.join(' / ') + ' 专属 · ' : '') + '还原与近似 · 素材库');
+      setText($('#outSum'), [shortText('optMode'), shortText('optPack'), shortText('optBatchN')].filter(Boolean).join(' · '));
+
+      root.querySelectorAll('.opt-group').forEach(function (g) {
+        const n = fields.filter(function (el) { return g.contains(el) && isChanged(el); }).length;
+        const badge = g.querySelector('.og-changed');
+        setText(badge, '已改 ' + n + ' 项');
+        setHidden(badge, n === 0);
+      });
+      const total = fields.filter(isChanged).length;
+      setText($('#optChangedText'), '有 ' + total + ' 项不是默认值');
+      setHidden($('#optFoot'), total === 0);
+    }
+
+    const reset = $('#btnOptReset');
+    if (reset) reset.addEventListener('click', function () {
+      if (isBusy()) return;
+      fields.forEach(function (el) {
+        if (!isChanged(el)) return;
+        el.value = defaults.get(el);
+        // 让 app.js 里监听这些选项的逻辑（按钮文案、预检等）跟着刷新
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      update();
+      toast('已恢复默认设置');
+    });
+    root.addEventListener('change', update);
+    root.addEventListener('input', update);
+    // 其它代码切换某行的 hidden（SAI2 文件夹/列表）时同步面板；update 只在值变化时才写，不会自激
+    if (typeof MutationObserver === 'function') {
+      new MutationObserver(update).observe(root, { subtree: true, attributes: true, attributeFilter: ['hidden'] });
+    }
+    update();
   })();
 
   $('#ver').textContent = 'v' + APP_VERSION;

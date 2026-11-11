@@ -64,6 +64,22 @@
       entries.push({ name, flags, method, compSize, size, localOff, crc, dir: name.endsWith('/') });
       p += 46 + nameLen + extraLen + commentLen;
     }
+    /* 【第196轮】解压前的前置闸门（第189轮审查 P1-#4：100KB 的 zip 能展开成 1.36GB 常驻）。
+       pako 不支持 maxOutputLength，所以只能在 inflate 之前用 ZIP 头声明的 size 拦：
+       单条目 ≤512MB、全包合计 ≤1GB、单条目压缩比 ≤1000:1（笔刷纹理远低于此）。
+       头里的 size 是攻击者可控的——正因如此不能照单分配，超限直接拒绝。 */
+    const MAX_ENTRY = 512 * 1024 * 1024, MAX_TOTAL = 1024 * 1024 * 1024, MAX_RATIO = 1000;
+    const spans = [];
+    let totalSize = 0;
+    for (const e of entries) {
+      if (!(e.size >= 0) || !(e.compSize >= 0)) throw new Error('ZIP 条目长度非法: ' + e.name);
+      if (e.size > MAX_ENTRY) throw new Error('ZIP 条目解压后过大（' + e.size + 'B）: ' + e.name);
+      totalSize += e.size;
+      if (totalSize > MAX_TOTAL) throw new Error('ZIP 解压总量超限（>1GB）: ' + e.name);
+      if (e.size > 0 && e.compSize > 0 && e.size / e.compSize > MAX_RATIO) {
+        throw new Error('ZIP 压缩比异常（' + Math.round(e.size / e.compSize) + ':1）: ' + e.name);
+      }
+    }
     for (const e of entries) {
       if (e.dir) continue;
       const lp = e.localOff;
@@ -73,6 +89,7 @@
       const lnl = le16(lp + 26), lel = le16(lp + 28);
       const start = lp + 30 + lnl + lel;
       if (start + e.compSize > cdOff) throw new Error('ZIP 数据截断或长度异常: ' + e.name);
+      spans.push([start, start + e.compSize, e.name]);
       e._raw = bytes.subarray(start, start + e.compSize);
       e.data = function () {
         let data;
@@ -86,6 +103,12 @@
         if (util.crc32(data) !== this.crc) throw new Error('ZIP 数据校验失败，文件可能已损坏: ' + this.name);
         return data;
       };
+    }
+    /* 条目数据区间不得互相重叠：12 个条目共用同一段 100MB 流时，逐个 inflate 会把同一块
+       数据反复展开（第189轮反例 rss 1.36GB）。合法 zip 里不会出现重叠。 */
+    spans.sort(function (a, b) { return a[0] - b[0]; });
+    for (let i = 1; i < spans.length; i++) {
+      if (spans[i][0] < spans[i - 1][1]) throw new Error('ZIP 条目数据重叠: ' + spans[i - 1][2] + ' 与 ' + spans[i][2]);
     }
     return entries;
   }

@@ -50,6 +50,10 @@
     if (!channels) throw new Error('不支持的 PNG 颜色类型: ' + ct);
     const depths = { 0: [1,2,4,8,16], 2: [8,16], 3: [1,2,4,8], 4: [8,16], 6: [8,16] };
     if (!w || !h || !depths[ct].includes(bd) || ihdr.compression !== 0 || ihdr.filter !== 0) throw new Error('PNG 尺寸、位深或编码方式异常');
+    /* 【第196轮】像素数上限：w/h 直接决定下面 zlib.inflate 后的 new Uint8Array(w*h*4)。
+       文件头声明 30000×30000 时会一次性索要 36GB（第189轮审查 P1-#5：94 字节 .pat / 47KB .kpp 即可触发）。
+       笔刷纹理实际最大 4096×4096，1e8 像素已极宽松。 */
+    if (!(w > 0) || !(h > 0) || w * h > 100000000) throw new Error('PNG 尺寸超限: ' + w + 'x' + h);
     if (ct === 3 && (!plte || !plte.length || plte.length % 3 || plte.length > 768)) throw new Error('PNG 调色板异常');
     if (trns && ((ct === 0 && trns.length !== 2) || (ct === 2 && trns.length !== 6) ||
       (ct === 3 && trns.length > plte.length / 3) || ct === 4 || ct === 6)) throw new Error('PNG 透明度数据长度或类型异常');

@@ -861,21 +861,17 @@
     return { w: cw, h: ch, rgba: cropped };
   }
 
+  /* 文件系统安全的基名。第189轮审查 P2-#22：保留设备名（含 CONIN$/CONOUT$/CLOCK$ 与
+     COM¹/LPT² 上标变体）、尾随点空格、控制字符、双向隔离字符 U+2066-2069、以及
+     preserveFileName 完全不限长（300 字符原样落盘）都要收口；截断必须按码点，别切代理对。
+     具体规则在 util.fileBase，SAI2 那条独立路径共用同一份实现。 */
   function sanitizeName(name, index, preserveFileName) {
-    // #48（WorkBuddy 第106轮）：补充控制字符（\x00-\x1f）与零宽/双向控制字符（U+200B-F、U+202A-E、U+FEFF）
-    // NFD（macOS 解压）先归一化，避免同名被当成两份
-    let n = (name || '').normalize('NFC').replace(/[\\/:*?"<>|\x00-\x1f\x7f\u200b-\u200f\u202a-\u202e\ufeff]/g, ' ');
-    if (!preserveFileName) n = n.replace(/\s+/g, ' ');
-    n = n.trim();
-    // Windows 不允许文件名以点/空格结尾（"a." 会被系统截断或创建失败）
-    n = n.replace(/[. ]+$/, '');
-    if (!n) n = 'brush_' + String(index + 1).padStart(3, '0');
-    // Resource labels keep their format limits; external files keep source names.
-    if (!preserveFileName && n.length > 60) n = n.slice(0, 60).replace(/[. ]+$/, '').trim();
-    // Windows 保留设备名：CON/PRN/AUX/NUL/COM1-9/LPT1-9，带扩展名同样不可用
-    // 截断后可能又变回保留名（CONSOLE… → CON），这里再查一次
-    if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(n)) n = '_' + n;
-    return n;
+    // NFD（macOS 解压）先在 util 里归一化成 NFC，避免同名被当成两份
+    return util.fileBase(name, {
+      maxLen: preserveFileName ? 120 : 60,
+      collapse: !preserveFileName,
+      fallback: 'brush_' + String(index + 1).padStart(3, '0')
+    });
   }
 
   /**
@@ -2569,11 +2565,9 @@
     }
   }
 
-  /** Brush list -> MediBang .mdp (heuristic zip). */
-  function makeMdp(brushList, opts, name) {
-    const list = brushList.map(function (b) { return withTipRGBA(b, opts, { bake: true, fit: true }); });
-    return { bytes: genericBrush.writeMdp(list, name || 'BrushConv'), count: list.length };
-  }
+  /* 第189轮：这里原本还有一份 `makeMdp(brushList, opts, name)`（走 genericBrush.writeMdp）。
+     函数声明提升让下面那份覆盖了它，这一份永远不可达，属死代码——已删除。
+     真正生效的实现见下方「One brush -> MediBang .mdp material」。 */
 
   /** One brush -> .ipcfg JSON (ibisPaint-style config exchange). */
   function makeIpcfg(brush) {
@@ -2645,9 +2639,23 @@
   function makeMdp(brushList, opts) {
     const list = Array.isArray(brushList) ? brushList : [brushList];
     const chunks = [];
+    /* 第189轮：同名笔刷过去会产出两个同名 .mdp，批量保存时后者覆盖前者（只剩一支）。
+       与 makeTipPngPack / makeGihFiles 同一口径：NFC 归一 + 大小写折叠去重，
+       重名追加 _2/_3；追加后仍守住 60 字符上限（按码点截断，不切代理对）。 */
+    const used = new Map();
     for (const b of list) {
       const b2 = withTipRGBA(withExportSettings(b, opts), opts, { bake: true, fit: true });
-      chunks.push({ name: (sanitizeName(b2.name || 'material', 0)) + '.mdp', data: medibang.writeMdp(b2) });
+      const base = sanitizeName(b2.name || 'material', 0);
+      let name = base;
+      let k = 2;
+      while (used.has(name.normalize('NFC').toLowerCase())) {
+        const suffix = '_' + k;
+        k++;
+        const room = 60 - suffix.length;
+        name = (base.length > room ? util.cutUtf16(base, room).replace(/[. ]+$/, '') : base) + suffix;
+      }
+      used.set(name.normalize('NFC').toLowerCase(), true);
+      chunks.push({ name: name + '.mdp', data: medibang.writeMdp(b2) });
     }
     /* 第165轮：.mdp 是「材质/图章文档」，XML 只带图像宽高，不存任意笔刷参数；
        parseMdp 回读时 sizePx 由裁切后的位图反推、spacingPct 固定 25。

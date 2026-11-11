@@ -225,6 +225,54 @@
     return (n / 1048576).toFixed(1) + ' MB';
   };
 
+  /* ---------- 文件名安全（第189轮审查 P2-#22） ----------
+     Windows 上这些名字拿到手就不是「文件名」而是设备：CON/PRN/AUX/NUL、COM1-9、LPT1-9
+     （含上标变体 COM¹/COM²/COM³、LPT¹-LPT³），以及 CONIN$/CONOUT$/CLOCK$。
+     带扩展名一样无效（CON.txt、CON.tar.gz 都打不开）。 */
+  u.WIN_RESERVED = /^(con|prn|aux|nul|conin\$|conout\$|clock\$|com[1-9\u00b9\u00b2\u00b3]|lpt[1-9\u00b9\u00b2\u00b3])(\..*)?$/i;
+
+  /* UTF-16 安全截断：不留孤立代理。emoji 名字按码元直接 slice 会切出半个代理对，
+     写进文件名/XML 都是非法序列（第189轮 P3：krita.js 把代理对按码元写成实体）。 */
+  u.cutUtf16 = function (s, max) {
+    s = String(s == null ? '' : s);
+    if (!(max > 0) || s.length <= max) return s;
+    let out = s.slice(0, max);
+    const last = out.charCodeAt(out.length - 1);
+    if (last >= 0xD800 && last <= 0xDBFF) out = out.slice(0, -1);
+    return out;
+  };
+
+  /* 落到磁盘上的基名（不含扩展名）。只处理「作为文件名必然非法/会被静默改写」的部分：
+     非法字符、控制字符、零宽与双向隔离字符、尾随点/空格、Windows 保留设备名、超长。
+     **不负责**格式内部的笔刷名清洗——内部名该保留什么字符是格式的事，两件事不能混。
+       opts.illegal   非法字符替换成什么（默认空格；SAI2 历史上用下划线）
+       opts.collapse  是否折叠连续空白（默认 true）
+       opts.maxLen    基名上限（默认 60）
+       opts.fallback  清空后的兜底名（默认 'brush'） */
+  u.fileBase = function (name, opts) {
+    opts = opts || {};
+    const illegal = opts.illegal === undefined ? ' ' : opts.illegal;
+    const maxLen = opts.maxLen === undefined ? 60 : opts.maxLen;
+    const fallback = opts.fallback || 'brush';
+    /* \x00-\x1f\x7f 控制字符；\u200b-\u200f 零宽；\u202a-\u202e 嵌入/覆盖；
+       \u2066-\u2069 隔离（LRI/RLI/FSI/PDI，过去漏了这一段）；\ufeff BOM */
+    let n = String(name == null ? '' : name).normalize('NFC')
+      .replace(/[\\/:*?"<>|\x00-\x1f\x7f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, illegal);
+    if (opts.collapse !== false) n = n.replace(/\s+/g, ' ');
+    n = n.trim().replace(/[. ]+$/, '');
+    if (!n) n = fallback;
+    if (n.length > maxLen) {
+      n = u.cutUtf16(n, maxLen).replace(/[. ]+$/, '').trim();
+      if (!n) n = u.cutUtf16(fallback, maxLen);
+    }
+    /* 截断后可能又变回保留名（CONSOLE… → CON），所以放在最后查。
+       下划线插在设备名后面而不是整串末尾：CON.txt 要变成 CON_.txt，
+       写成 CON.txt_ 的话「第一个点之前仍是 CON」，Windows 照样当设备打开；
+       名字本身也还认得出来，排序不跑到最前。 */
+    n = n.replace(u.WIN_RESERVED, function (m, dev, rest) { return dev + '_' + (rest || ''); });
+    return n;
+  };
+
   if (isNode()) module.exports = u;
   else root.BC = Object.assign(root.BC || {}, { util: u });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

@@ -20,6 +20,18 @@
     left: function () { return this.b.length - this.p; }
   };
 
+  /* 【第196轮】所有「u32 当计数」的地方都必须先过这里：
+     第189轮审查 P1-#3 的反例是 52 字节 ABR 里声明 1e8 个路径点，旧代码照单全收，
+     主线程解析耗时 2.6s（0xFFFFFFFF 推算约 110s），界面直接卡死。
+     unit 是「每项最少多少字节」，n*unit 超过剩余字节就说明文件是坏的。 */
+  function guardCount(r, n, unit, what) {
+    if (!Number.isFinite(n) || n < 0) throw new Error("descriptor " + what + " 计数非法: " + n);
+    if (n * unit > r.left()) {
+      throw new Error("descriptor " + what + " 越界: " + n + " 项 × " + unit + "B > 剩余 " + r.left() + "B");
+    }
+    return n;
+  }
+
   function readId(r) {
     const len = r.u32();
     if (len === 0) {
@@ -49,6 +61,7 @@
 
   function readReference(r) {
     const n = r.u32();
+    guardCount(r, n, 4, 'reference'); // 【第196轮】计数不得超出剩余字节（第189轮审查 P1-#3：52 字节 ABR 声明 1e8 项会卡死界面）
     const items = [];
     for (let i = 0; i < n; i++) {
       const t = readTypeTag(r);
@@ -75,6 +88,7 @@
       case 'UntF': return { type: 'unit', unit: util().ascii(r.b, r.p, 4), value: (r.p += 4, r.f64()) };
       case 'VlLs': {
         const n = r.u32(); const arr = [];
+    guardCount(r, n, 4, 'VlLs'); // 【第196轮】计数不得超出剩余字节（第189轮审查 P1-#3：52 字节 ABR 声明 1e8 项会卡死界面）
         for (let i = 0; i < n; i++) {
           const t = readTypeTag(r);
           arr.push(readValue(r, t, depth + 1));
@@ -87,11 +101,12 @@
         v._span = [st, r.p];
         return v;
       }
-      case 'tdta': { const n = r.u32(); return { type: 'data', bytes: r.raw(n) }; }
-      case 'alis': { const n = r.u32(); return { type: 'alias', bytes: r.raw(n) }; }
+      case 'tdta': { const n = r.u32(); guardCount(r, n, 1, 'data'); return { type: 'data', bytes: r.raw(n) }; }
+      case 'alis': { const n = r.u32(); guardCount(r, n, 1, 'alias'); return { type: 'alias', bytes: r.raw(n) }; }
       case 'obj ': return readReference(r);
       case 'Pth ': {
         const n = r.u32();
+    guardCount(r, n, 12, 'path'); // 【第196轮】计数不得超出剩余字节（第189轮审查 P1-#3：52 字节 ABR 声明 1e8 项会卡死界面）
         for (let i = 0; i < n; i++) { r.u16(); r.u16(); r.u16(); r.u16(); r.u16(); r.u16(); }
         return { type: 'path', n };
       }
@@ -104,6 +119,7 @@
       }
       case 'ObAr': {
         const n = r.u32();
+    guardCount(r, n, 4, 'ObAr'); // 【第196轮】计数不得超出剩余字节（第189轮审查 P1-#3：52 字节 ABR 声明 1e8 项会卡死界面）
         const desc = readDescriptorBody(r, depth + 1);
         const items = [];
         for (let i = 0; i < n; i++) {
@@ -125,6 +141,7 @@
       case 'GlbO': return readDescriptorBody(r, depth + 1);
       case 'Clr ': {
         const n = r.u32();
+    guardCount(r, n, 8, 'color'); // 【第196轮】计数不得超出剩余字节（第189轮审查 P1-#3：52 字节 ABR 声明 1e8 项会卡死界面）
         const items = [];
         for (let i = 0; i < n; i++) { const k = readId(r); const t = readTypeTag(r); items.push([k, t, readValue(r, t, depth + 1)]); }
         return { type: 'color', items };
@@ -140,6 +157,7 @@
     const classId = readId(r);
     const countAt=r.p;
     const n = r.u32();
+    guardCount(r, n, 8, 'dict'); // 【第196轮】计数不得超出剩余字节（第189轮审查 P1-#3：52 字节 ABR 声明 1e8 项会卡死界面）
     const items = [];
     for (let i = 0; i < n; i++) {
       const itemStart=r.p;
