@@ -1146,6 +1146,9 @@
     if (!(spacingPct > 0)) spacingPct = 10;
     spacingPct = Math.max(0.1, Math.min(1000, spacingPct));
     const usePressure = opts.pressure === undefined ? (pressureSizeOn(brush) || !!brush.pressureOpacity) : !!opts.pressure;
+    const bruPressure = brush.source === 'procreate' && opts.pressure === undefined ? brush._bruPressure : null;
+    const useOriginalMinOpacity = bruPressure && brush._rawNormalized &&
+      brush.minOpacityRatio === brush._rawNormalized.minOpacityRatio;
     // 笔迹浓度归一（画世界）：真机标定发现画世界按每个笔尖累加 alpha——间距 4.2% 时同一位置叠约 24 次，
     // α=0.18 的笔尖最终覆盖 1-(0.82)^24≈99%，必然画成纯黑（实测亮度 26.8、颇粒 hf 2.68），
     // 而 Procreate 原样张是中灰的半透明颇粒（目标覆盖 ~0.6）。
@@ -1199,6 +1202,7 @@
       opacity: densityOpacity !== null ? densityOpacity : (brush.opacity === undefined ? 1 : brush.opacity),
       minSizeRatio: usePressure ? (brush.minSizeRatio === undefined ? 0.1 : brush.minSizeRatio) : 1,
       minOpacityRatio: usePressure ? (brush.minOpacityRatio === undefined ? 0.25 : brush.minOpacityRatio) : 1,
+      bruSmallAlpha: useOriginalMinOpacity ? bruPressure.minOpacity : undefined,
       pressure: usePressure,
       // 把能写进 .bru 的其它参数一起带上（纹理/散布/抖动/锥度/湿边/混色/颜色动态/圆度硬度/流量）
       pressureSize: opts.pressure === undefined ? pressureSizeOn(brush) : !!opts.pressure,
@@ -1210,8 +1214,11 @@
       bruFadeInOut: brush.bruFadeInOut,
       bruPressureSizeInfluence: brush.bruPressureSizeInfluence,
       bruPressureFlowInfluence: brush.bruPressureFlowInfluence,
-      flowPct: brush.flowPct,
-      minFlowRatio: brush.minFlowRatio,
+      flowPct: brush.flowPct === undefined && bruPressure ? bruPressure.flow : brush.flowPct,
+      minFlowRatio: brush.minFlowRatio === undefined && bruPressure ? bruPressure.minFlow : brush.minFlowRatio,
+      bruSmallFlow: bruPressure && brush.flowPct === undefined && brush.minFlowRatio === undefined ? bruPressure.smallFlow : undefined,
+      bruLegacyMinWidth: opts.pressure === undefined && pressureSizeOn(brush) &&
+        (brush.source === 'bru' ? brush.bruLegacyMinWidth : !!(bruPressure && bruPressure.legacyMinWidth)),
       roundness: brush.roundness,
       hardness: texMatchNoShape ? 1 : (brush.hardness === undefined ? hardnessFromAlpha(rgba, w, h) : brush.hardness),
       smoothingStrength: brush.smoothingStrength,

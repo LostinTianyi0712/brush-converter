@@ -23,6 +23,25 @@
     return v;
   }
 
+  // BRU values without a native Procreate control travel in a namespaced
+  // scalar for reimport into the converter, leaving native switches intact.
+  function readBruPressure(params) {
+    const raw = params.brushConvBruPressure;
+    if (typeof raw !== 'string' || raw.length > 512) return null;
+    try {
+      const data = JSON.parse(raw);
+      if (!data || typeof data.legacyMinWidth !== 'boolean') return null;
+      if (![data.minOpacity, data.nativeMinOpacity, data.flow, data.minFlow].every(v => Number.isFinite(v) && v >= 0 && v <= 1)) return null;
+      if (data.smallFlow !== undefined && (!Number.isFinite(data.smallFlow) || data.smallFlow < 0 || data.smallFlow > 1)) return null;
+      const nativeMinOpacity = Number.isFinite(params.minOpacity) ? Math.max(0, Math.min(1, params.minOpacity)) : data.nativeMinOpacity;
+      // Only a change to the native minimum replaces the original BRU
+      // minimum. The maximum and the pressure switch are independent.
+      const minOpacity = nativeMinOpacity === data.nativeMinOpacity ? data.minOpacity : nativeMinOpacity;
+      return { legacyMinWidth: data.legacyMinWidth, minOpacity, flow: data.flow,
+        minFlow: data.minFlow, smallFlow: data.smallFlow, nativeMinOpacity };
+    } catch (e) { return null; }
+  }
+
   // 5.3.8 (50521) native lerpAndClampSize + particleQuad: radius is
   // 128 * lerp(min,max,slider); the nominal tip side/diameter is 2 * radius.
   // Default shape rotation cancels the quad's pi/4 basis. AA padding is not size.
@@ -390,6 +409,7 @@
       jitterStrokeSecondary: nv('jitterStrokeSecondary'),
       blendMode: params.blendMode,
       _params: params,
+      _bruPressure: readBruPressure(params),
       scatterOn: scatterPct > 0.01 || scatterCount > 1,
       angleJitterDeg: Math.max(0, Math.min(360, shapeScatterRaw * 180)),
       procreateRotationScatterPct: rotationScatterPct,
@@ -872,7 +892,15 @@
     return params;
   }
   function buildArchive(brush, opts) {
-    return bplist.writeKeyedArchive(archiveParams(brush,opts), 'SilicaBrush', ['SilicaBrush', 'ValkyrieBrush', 'NSObject']);
+    const params = archiveParams(brush, opts);
+    if (brush.source === 'bru' && Number.isFinite(brush.minOpacityRatio) && Number.isFinite(brush.flowPct) && Number.isFinite(brush.minFlowRatio)) {
+      params.brushConvBruPressure = JSON.stringify({ legacyMinWidth: !!brush.bruLegacyMinWidth && !!brush.pressureSize,
+        minOpacity: brush.minOpacityRatio, flow: brush.flowPct, minFlow: brush.minFlowRatio,
+        smallFlow: brush.bruSmallFlow, nativeMinOpacity: params.minOpacity });
+    } else if (brush._bruPressure) {
+      params.brushConvBruPressure = JSON.stringify(brush._bruPressure);
+    }
+    return bplist.writeKeyedArchive(params, 'SilicaBrush', ['SilicaBrush', 'ValkyrieBrush', 'NSObject']);
   }
 
   function isValidNativeArchive(rawBytes) {

@@ -118,7 +118,7 @@
     const minOp = Math.max(0, Math.min(1, b.minOpacityRatio === undefined ? 1 : b.minOpacityRatio));
     parts.push(u8arr(fF32(8, size)));                           // WIDTH
     parts.push(u8arr(fF32(9, size * minSize)));                 // SMALLWIDTH (零压感宽度)
-    parts.push(u8arr(fF32(50, minSize)));                       // MINWIDTHPERCENT（最小直径，App 用这个字段）
+    if (!b.bruLegacyMinWidth) parts.push(u8arr(fF32(50, minSize))); // MINWIDTHPERCENT
     parts.push(u8arr(fF32(11, 1)));                             // MINWIDTH
     parts.push(u8arr(fF32(12, maxSize)));                      // MAXWIDTH
     parts.push(u8arr(fF32(13, opacity)));                       // ALPHA
@@ -144,7 +144,9 @@
          · minOp = 0 → 省略（App 行为）；
          · minOp = 1（默认，未设置）→ 沿用第192轮逻辑：只在完全无压感时写 0.13。
        这样 Procreate「最小不透明度 30%」这类笔刷转过去不再被丢掉，既有输出不变。 */
-    if (minOp > 0 && minOp < 1) parts.push(u8arr(fF32(14, minOp)));         // SMALLALPHA（显式最小不透明度，面板绝对值）
+    if (Number.isFinite(b.bruSmallAlpha)) {
+      if (b.bruSmallAlpha > 0) parts.push(u8arr(fF32(14, Math.min(1, b.bruSmallAlpha))));
+    } else if (minOp > 0 && minOp < 1) parts.push(u8arr(fF32(14, minOp)));   // SMALLALPHA（显式最小不透明度，面板绝对值）
     else if (minOp >= 1 && !sizePressOn && !transferOn) parts.push(u8arr(fF32(14, 0.13))); // 无压感默认落值
     else if (minOp >= 1) parts.push(u8arr(fF32(14, 1)));                    // 【第195轮】有压感 + 面板 100%（旧版省略 → App 显示 0%）
     /* f16：原生样本（官方小方块、塑形扁刷 160+ 份标定件）一律 0xFF000000（黑）；旧写法固定 -1（白）。
@@ -183,7 +185,8 @@
     const fadeInOutOn = (b.bruFadeInOut === undefined || b.bruFadeInOut === null || (typeof b.bruFadeInOut === 'number' && !isFinite(b.bruFadeInOut))) ? true : !!b.bruFadeInOut;
     const sizeInfluence = influenceVal(b.bruPressureSizeInfluence);
     const flowInfluence = influenceVal(b.bruPressureFlowInfluence);
-    parts.push(u8arr(fF32(26, flow * minFlow)));                // SMALLBRUSHFLOW
+    const smallFlow = Number.isFinite(b.bruSmallFlow) ? Math.max(0, Math.min(1, b.bruSmallFlow)) : flow * minFlow;
+    parts.push(u8arr(fF32(26, smallFlow)));                     // SMALLBRUSHFLOW
     if (!b.noShape) {
       parts.push(u8arr(fVarint(32, b.bruShapeInverted ? 1 : 0))); // REVERSESHAPE (native nib invert toggle)
       parts.push(u8arr(fVarint(31, 1)));                          // USESHAPE
@@ -643,6 +646,7 @@
       const renderCount = Math.max(1, Math.round(num(o[97], 1)));     // 渲染数量（f97）
       const speedPressure = !!o[43];                                  // 速度模拟压感（f43）
       const pressureSize = !!o[36];                                   // 大小压力（f36）
+      const legacyMinWidth = pressureSize && minSizePct === null && Number.isFinite(o[9]) && o[9] >= 0 && size > 0;
       const transferOn = !!o[47];                                     // 传递（f47）
       /* 【第194轮】压力页字段回读（第193轮真机标定）：
          f67 开关 / f117 `1−强度/100` / f134 `1=关闭`（反相）/ f138·f139 `面板%/100−1`。
@@ -686,7 +690,9 @@
         tip,
         sizePx: size,
         spacingPct: spacing * 100,
-        minSizeRatio: minSizePct !== null ? Math.max(0, Math.min(1, minSizePct)) : 1,
+        minSizeRatio: Math.max(0, Math.min(1, minSizePct !== null ? minSizePct : legacyMinWidth ? o[9] / size : 1)),
+        bruLegacyMinWidth: legacyMinWidth,
+        bruSmallFlow: Number.isFinite(o[26]) ? Math.max(0, Math.min(1, o[26])) : undefined,
         opacity: alpha,
         flowPct: Math.max(0, Math.min(1, flowPct)),
         /* 第194轮：f14 按 App 面板百分比直接读（见写出口注释：s10 的 f13=0.8 / f14=0.5 且面板显示
