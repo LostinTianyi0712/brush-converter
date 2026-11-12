@@ -3083,6 +3083,9 @@ const UPDATE_ENABLED = false;
         await sleep(0);
       }
     }
+    if (index && Number.isFinite(index.count) && index.count > map.size) {
+      throw new Error('图库资源数量不足：声明 ' + index.count + ' 张，实际 ' + map.size + ' 张');
+    }
     if (onProgress) onProgress(entries.length, entries.length);
     return { map: map, index: index };
   }
@@ -3280,9 +3283,12 @@ const UPDATE_ENABLED = false;
     }
     return 'jpeg';
   }
-  async function loadShapeLibrary(fileList, libLabel, forceReparse) {
+  async function loadShapeLibrary(fileList, libLabel, forceReparse, strictPack) {
     const list = Array.prototype.slice.call(fileList || []);
-    if (!list.length) return;
+    if (!list.length) {
+      if (strictPack) throw new Error('图库包没有内容');
+      return;
+    }
     toast('正在读取图库…', 8000);
     const map = new Map();
     let undecoded = 0;
@@ -3293,9 +3299,12 @@ const UPDATE_ENABLED = false;
        PNG 与 baseline JPEG 只存原始字节，core 用到时才同步解码；
        只有 progressive JPEG 必须在这解一次，解完烘成灰度 PNG 存起来（同样不常驻 RGBA）。 */
     let hsjScriptBytes = null;
-    async function addOne(name, bytes) {
+    /* R205-01/02：每个输入文件先写进独立的 out，整包读全了才并进总 map / hsjScriptBytes。
+       一个坏 ZIP 不会留下半张图，也不会把随包的笔尖库脚本装上去。 */
+    function newOut() { return { map: new Map(), script: null, count: 0 }; }
+    async function addOne(name, bytes, out) {
       const base = String(name || '').split(/[\\/]/).pop().toLowerCase();
-      if (base === 'hsj-shapes.js' && bytes && bytes.length > 1024) { hsjScriptBytes = bytes; return; }
+      if (base === 'hsj-shapes.js' && bytes && bytes.length > 1024) { out.script = bytes; return; }
       if (!/\.(png|jpe?g)$/i.test(base)) return;
       let entry = bytes;
       if (/\.jpe?g$/i.test(base) && jpegScanKind(bytes) === 'progressive') {
@@ -3310,34 +3319,83 @@ const UPDATE_ENABLED = false;
           entry = BC.png.encodeGray(dec.w, dec.h, gray, 6);
           converted++;
         } else {
+          /* 解码失败是设备解码能力问题，不是包被损坏：仍按原策略记日志降级，
+             不让一台解不开 progressive JPEG 的设备连整个图库都装不上。
+             ZIP/条目数据损坏（CRC 等）由外层 catch 走 strictPack 的整包失败。 */
           undecoded++;
           undecodedNames.push(base);
         }
       }
-      map.set(base, entry);
+      out.map.set(base, entry);
     }
+    let packError = null;
+    let zipFailed = false;
     for (const f of list) {
+      const isZip = /\.zip$/i.test(f.name);
       try {
-        if (/\.zip$/i.test(f.name)) {
+        if (isZip) {
           const raw = await f.arrayBuffer();
           const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
           const entries = BC.zip.read(bytes);
-          inputBytes += bytes.byteLength;
+          const out = newOut();
+          /* R205-01：目录条目（name 以 / 结尾）没有 data()，7-Zip/资源管理器打的包几乎都带；
+             以前无条件 entries[i].data() 一抛 TypeError，整个 ZIP 后面所有资源都读不到，
+             下载入口严格模式还会把这种完全合法的包判成坏包。
+             R205-01/02：先按名字筛再解压，index.json 之类的非资源条目不牵连整包。 */
           for (let i = 0; i < entries.length; i++) {
-            await addOne(entries[i].name, entries[i].data());
+            const e = entries[i];
+            if (e.dir) continue;
+            const base = String(e.name || '').split(/[\\/]/).pop().toLowerCase();
+            if (base === 'index.json') {
+              try {
+                const idxText = (BC.util && typeof BC.util.utf8Decode === 'function')
+                  ? BC.util.utf8Decode(e.data()) : new TextDecoder().decode(e.data());
+                const idx = JSON.parse(idxText);
+                if (idx && Number.isFinite(idx.count) && idx.count > 0) out.count = idx.count;
+              } catch (err) { /* 旧包/自定义包索引不可用：按实际读到的资源数装载 */ }
+              continue;
+            }
+            await addOne(base, e.data(), out);
             // 安卓：整包解压会把界面钉住 → 每 16 张让出一帧并报进度
             if ((i & 15) === 15) {
               setProgress(0.15 + 0.5 * (i / (entries.length || 1)), '正在读取图库 ' + map.size + ' 张…');
               await sleep(0);
             }
           }
+          /* R205-03：发布包自带 index.json 声明资源数。少一张都说明这不是完整发布版，
+             严格模式必须整包作废——否则「合法但只剩 2 张图」的坏包照样替换 292 张旧图库。 */
+          if (strictPack && out.count && out.map.size < out.count) {
+            throw new Error('图库资源数量不足：声明 ' + out.count + ' 张，实际 ' + out.map.size + ' 张');
+          }
+          for (const [k, v] of out.map) map.set(k, v);
+          if (out.script) hsjScriptBytes = out.script;
+          inputBytes += bytes.byteLength;
           setProgress(null);
         } else {
           const imageBytes = new Uint8Array(await f.arrayBuffer());
-          await addOne(f.name, imageBytes);
+          const out = newOut();
+          await addOne(f.name, imageBytes, out);
+          for (const [k, v] of out.map) map.set(k, v);
+          if (out.script) hsjScriptBytes = out.script;
           inputBytes += imageBytes.byteLength;
         }
-      } catch (e) { pushLog('图库读取失败 ' + f.name + '：' + e.message); }
+      } catch (e) {
+        pushLog('图库读取失败 ' + f.name + '：' + e.message);
+        if (!packError) packError = e;
+        /* R205-02：散图保持「坏一张不牵连其余」，ZIP 必须整包不作废才算成功。
+           否则半张图会提交成新图库，还会被 takeFiles 当成成功去覆盖持久化缓存。 */
+        if (isZip) zipFailed = true;
+        if (strictPack) break;
+      }
+    }
+    /* R202-01 + R205-02：必须在提交 state.shapeLib、安装随包脚本、写任何缓存之前判定整包成败。
+       以前外层 catch 只写日志，读到 b.png 的 CRC 错误后照样把 a.png 当新图库返回成功。 */
+    if (strictPack && packError) {
+      throw new Error('图库压缩包不完整（' + ((packError && packError.message) || packError) + '），未替换已有图库');
+    }
+    if (zipFailed) {
+      toast('图库 ZIP 不完整，已忽略这批文件；原有图库保持不变', 8000);
+      return false;
     }
     if (hsjScriptBytes) {
       if (typeof installHsjBytes === 'function') {
@@ -3364,7 +3422,8 @@ const UPDATE_ENABLED = false;
 
   async function loadShapeLibraryBytes(bytes, label, forceReparse) {
     // Reuse downloaded bytes directly instead of File -> arrayBuffer copies.
-    const loaded = await loadShapeLibrary([{ name: 'shape-library.zip', arrayBuffer: async function () { return bytes; } }], label, forceReparse);
+    // R202-01：下载入口走严格模式；半包/CRC 错误必须整包失败，旧图库与旧缓存保持不动
+    const loaded = await loadShapeLibrary([{ name: 'shape-library.zip', arrayBuffer: async function () { return bytes; } }], label, forceReparse, true);
     if (!loaded) throw new Error('图库读取失败，未替换已有图库');
   }
 
@@ -4172,9 +4231,12 @@ const UPDATE_ENABLED = false;
     async function takeFiles(el) {
       if (isBusy()) { el.value = ''; toast('正在转换，稍后再加载图库', 5000); return; }
       const picked = el.target.files;
-      await loadShapeLibrary(picked);
+      /* R205-02：只有本次完整装载成功才落盘。以前只看 state.shapeLib 非空——
+         已经加载过图库的用户再选一个坏 ZIP，半包替换内存图库后，原始坏包照样写进
+         App 私有目录/程序目录，下次启动又把坏缓存恢复出来。 */
+      const loaded = await loadShapeLibrary(picked);
       el.value = '';
-      if (state.shapeLib) await persistPickedLib(picked);
+      if (loaded && state.shapeLib && state.shapeLib.size) await persistPickedLib(picked);
     }
     if (input) input.addEventListener('change', takeFiles);
     if (dirInput) dirInput.addEventListener('change', takeFiles);
@@ -4299,8 +4361,8 @@ const UPDATE_ENABLED = false;
           if (!size) continue;
           const name = key === 'full' ? SHAPE_LIB_PACKS.full.zipName : SHAPE_LIB_PACKS.lite.zipName;
           const file = new File([cached], name, { type: 'application/zip' });
-          await loadShapeLibrary([file], key === 'full' ? '上次下载的原图图库（已缓存）' : '上次下载的精简图库（已缓存）', false);
-          if (state.shapeLib && state.shapeLib.size) {
+          const loaded = await loadShapeLibrary([file], key === 'full' ? '上次下载的原图图库（已缓存）' : '上次下载的精简图库（已缓存）', false, true);
+          if (loaded && state.shapeLib && state.shapeLib.size) {
             state.shapeLibPackKey = key;
             window.__shapeLibCacheText = 'App 数据已缓存下载过的图库（' + Math.round(size / 1048576) + 'MB，升级安装不丢，卸载一起删）';
             pushLog('启动时从 App 数据恢复图库 ' + key + '：' + state.shapeLib.size + ' 张 / ' + size + 'B');

@@ -1013,6 +1013,24 @@
     return Math.max(0.20, Math.min(1, 1 - Math.min(1, frac * 0.6)));
   }
 
+  /* 【第206轮 R204-02（作者：Claude）】笔尖是不是「普通硬边实心圆」。
+     画世界内置网点笔刷（官方「小方块」450B）不带笔尖图，用 App 的程序化圆头 + 内置纹理 ptN；
+     转到 Procreate 时我们按 synthTip 合成了 256² 硬边圆当 Shape。回转时认出这张圆，
+     就能还原成和官方一样的「无笔尖图 + 纹理引用」结构，而不是 USESHAPE + 一张圆图。
+     判据：正方形、凡有覆盖处 RGB 全白、alpha 与同尺寸 hardness=1 的 synthTip 逐像素差 ≤ 8 的比例 ≥ 99.5%。 */
+  function isPlainHardDisc(rgba, w, h) {
+    if (!rgba || !(w > 0) || w !== h || w < 16 || rgba.length !== w * h * 4) return false;
+    const ref = synthTip({ hardness: 1, roundness: 100, angle: 0 }, w);
+    let bad = 0;
+    const n = w * h, limit = Math.floor(n * 0.005);
+    for (let i = 0; i < n; i++) {
+      const o = i * 4, a = rgba[o + 3];
+      if (a > 8 && (rgba[o] < 248 || rgba[o + 1] < 248 || rgba[o + 2] < 248)) return false;
+      if (Math.abs(a - ref.rgba[o + 3]) > 8 && ++bad > limit) return false;
+    }
+    return true;
+  }
+
   function makeBru(brush, opts) {
     brush = angleControlAliases(brush);
     if (opts && opts.embedSubTip && brush && brush.dualTip) return makeBruEmbedded(brush, opts);
@@ -1020,7 +1038,9 @@
     /* 同格式直抄：源就是 .bru、目标也是 .bru，且尺寸/间距/压感/烘焙等选项都没动过
        —— 原样返回源字节。画世界内置笔刷常常没有内嵌位图（450B 那类），任何重新
        生成都会换掉笔尖图案；透传是唯一能保证「导入后和原来一模一样」的路径。 */
-    if (brush._rawBru && brush._rawBru.length && rawBrushUnchanged(brush, opts)) {
+    /* _noFilePassthrough：makeBruPack 合多支时用。整文件透传的结果是一个完整的单支 .bru，
+       没有 meta/PNG，不能当包内条目（AUDIT-20261111-06）；合包时改走重建，仍保留 _rawMeta 字段级原样。 */
+    if (brush._rawBru && brush._rawBru.length && !opts._noFilePassthrough && rawBrushUnchanged(brush, opts)) {
       return { bytes: new Uint8Array(brush._rawBru), pngBytes: null, meta: null,
         tipW: 0, tipH: 0, passthrough: true };
     }
@@ -1049,8 +1069,32 @@
     // A texture switch without a texture image renders blank in the native app.
     // BRU currently embeds the shape only. Bake real source pixels when requested;
     // never substitute procedural noise or enable an empty independent layer.
+    /* 【第206轮 R204-02（作者：Claude）】源纹理与画世界内置纹理逐像素相同 → 写 f6=ptN 独立纹理，不烘进笔尖。
+       背景：网点类纹理烘进笔尖后每次落印网格跟着笔尖走，8% 间距连续落印把空隙填平（GIMP 长线中段 0% 亮格、
+       MuMu 画世界长线 59,150 像素全实心，见第204轮）。官方原版是「无笔尖图 + pt65」，网格固定在画布上。
+       bruTexMatch：'auto'（默认）= 只在笔尖是普通硬边圆且单支写出时启用，结构照抄官方（无 f7/f31、f42 开、f16 黑）；
+       'always' = 笔尖不是圆也引用（保留笔尖图 + f6，第204轮试制版就是这种结构，MuMu 实测未出墨，仅供测试）；
+       'off' = 旧行为（烘焙）。用户显式选了 bruTexAsset（pt24 等）时让位给用户选项。
+       只用预计算指纹表反查（hsj-textures-lib.matchKnown），不解码整库、不要求先下载纹理库。 */
+    let texMatchId = null, texMatchNoShape = false;
+    const texMatchMode = opts.bruTexMatch === undefined || opts.bruTexMatch === null || opts.bruTexMatch === '' ? 'auto' : String(opts.bruTexMatch);
+    const userTexAsset = opts.bruTexAsset !== undefined && opts.bruTexAsset !== null && opts.bruTexAsset !== '' && opts.bruTexAsset !== 'off';
+    if (brush.source !== 'bru' && brush.hasTexture && opts.noTextureBake !== true && texMatchMode !== 'off' && !userTexAsset) {
+      const texLib = isNode ? require('./hsj-textures-lib.js') : (root.BC && root.BC.hsjTextureLib);
+      const plainTex = texLib && typeof texLib.matchKnown === 'function'
+        ? textureGray(Object.assign({}, brush, { textureInverted: false })) : null;
+      const hitId = plainTex ? texLib.matchKnown(plainTex.w, plainTex.h, plainTex.gray) : null;
+      if (hitId) {
+        const disc = !bakingDual && isPlainHardDisc(rgba, w, h);
+        const single = !opts._packMember;
+        if (texMatchMode === 'always' || (disc && single)) {
+          texMatchId = hitId;
+          texMatchNoShape = disc && single;
+        }
+      }
+    }
     let textureBaked = false;
-    if (brush.source !== 'bru' && brush.hasTexture && opts.noTextureBake !== true) {
+    if (brush.source !== 'bru' && brush.hasTexture && opts.noTextureBake !== true && !texMatchId) {
       const texture = textureGray(brush);
       if (texture) {
         rgba = new Uint8Array(rgba);
@@ -1081,7 +1125,13 @@
     const outTextureDepth = texAssetId ? (1 - texUiDepth) : brush.textureDepth;
     // 没有纹理层（非原生 BRU、也没有内置材质 id）时不要写 f123：
     // 画世界会把它当成「有纹理深度」而套默认材质，笔迹会比原笔刷花。
-    const effectiveTextureDepth = (texAssetId || brush.source === 'bru' || brush.hasTexture) ? outTextureDepth : undefined;
+    let effectiveTextureDepth = (texAssetId || brush.source === 'bru') ? outTextureDepth : undefined;
+    /* 精确命中内置纹理：f123 = 1 - 界面深度（第198轮已确认的口径）。Procreate grainDepth / PS 纹理深度即界面深度；
+       界面 100% → f123 = 0 → 不写（与官方小方块一致，App 缺省即 100%）。 */
+    if (texMatchId) {
+      const uiDepth = Math.max(0, Math.min(1, brush.textureDepth === undefined ? 1 : Number(brush.textureDepth) || 0));
+      effectiveTextureDepth = Math.round((1 - uiDepth) * 10000) / 10000;
+    }
     const pngBytes = png.encode(w, h, brush.source === 'bru' ? rgba : png.toMaskRgba(rgba));
     const sizeScale = opts.sizeScale || 1;
     let sizePx = (brush.sizePx || 100) * sizeScale;
@@ -1163,7 +1213,7 @@
       flowPct: brush.flowPct,
       minFlowRatio: brush.minFlowRatio,
       roundness: brush.roundness,
-      hardness: brush.hardness === undefined ? hardnessFromAlpha(rgba, w, h) : brush.hardness,
+      hardness: texMatchNoShape ? 1 : (brush.hardness === undefined ? hardnessFromAlpha(rgba, w, h) : brush.hardness),
       smoothingStrength: brush.smoothingStrength,
       angle: brush.angle,
       // ABR jitter is percent of a full circle; BRU stores the +/- degree range.
@@ -1184,8 +1234,12 @@
       scatterCount: brush.scatterCount,
       // App 内置纹理库资源 id（f6）：只在目标不是原生 BRU 且调用方/源笔刷指定了 id 时才写。
       // 原生 BRU 进来的笔刷原样保留自己已有的 id（raw 元数据路径会保持）。
-      texAssetId: texAssetId || brush.texAssetId || (opts && opts.texAssetId),
-      hasTexture: brush.source === 'bru' ? brush.hasTexture : !!texAssetId,
+      texAssetId: texMatchId || texAssetId || brush.texAssetId || (opts && opts.texAssetId),
+      hasTexture: brush.source === 'bru' ? brush.hasTexture : !!(texAssetId || texMatchId),
+      // 第206轮：内置纹理精确命中时照抄原生结构（见上方 texMatch 注释）；未命中时这三项都是 undefined/false，输出不变
+      noShape: texMatchNoShape || undefined,
+      bruColor: texMatchId ? -16777216 : undefined,
+      bruShapeRgbOpacity: texMatchId ? true : undefined,
       textureInverted: brush.textureInverted,
       textureScale: brush.textureScale,
       textureBrightness: bruTexBrightness(brush),
@@ -1263,8 +1317,13 @@
       const only = makeBru(brushList[0], opts);
       if (only.passthrough) return { bytes: only.bytes, count: 1, meta: null, passthrough: true };
     }
+    /* AUDIT-20261111-06：单支 makeBru 对「未改动的原生 BRU」返回整文件透传（pngBytes/meta 都是 null）。
+       多支合包时不能把它当包内条目——以前直接报「缺少笔尖图像数据」。合包统一走重建路径：与来自多支
+       .bru 的笔刷同一条路（_rawMeta 字段级保留未改参数），只关掉整文件透传。单支合包上面已原样返回。 */
+    // _packMember：多支布局不支持「无笔尖图」条目（无原生样本），第206轮 texMatch 据此退回烘焙
+    const packOpts = Object.assign({}, opts, { _noFilePassthrough: true, _packMember: brushList.length > 1 });
     brushList.forEach(function (brush, i) {
-      const made = makeBru(brush, opts);
+      const made = makeBru(brush, packOpts);
       let base = sanitizeName(brush.name, i);
       let name = base, k = 2;
       while (used.has(name.toLowerCase())) { name = base + ' (' + k + ')'; k++; }
@@ -1283,7 +1342,7 @@
         return;
       }
       const ix = brushList.indexOf(sub);
-      item.bruDualSubBrush = ix >= 0 ? items[ix] : makeBru(sub, opts).meta;
+      item.bruDualSubBrush = ix >= 0 ? items[ix] : makeBru(sub, packOpts).meta;
       item.dualSubName = item.bruDualSubBrush.name;
     });
     const bytes = bru.writePack(items, { pkgId: opts.pkgId, fidelity: opts.fidelity, keepRawMeta: opts.keepRawMeta });
@@ -3286,6 +3345,13 @@ Write-Host 'restart MediBang Paint Pro'
       if (target === 'bru') {
         if (brush.source !== 'bru') {
           if (!(pixels && opts.noTextureBake !== true)) return '未写出（缺少原图或已关闭烘焙，禁用空纹理避免无墨）';
+          /* 第206轮 R204-02：纹理与画世界内置纹理逐像素相同时，makeBru 会改写独立纹理引用 */
+          if (opts.bruTexMatch !== 'off' && !(opts.bruTexAsset && opts.bruTexAsset !== 'off')) {
+            const texLib = isNode ? require('./hsj-textures-lib.js') : (root.BC && root.BC.hsjTextureLib);
+            const plain = texLib && typeof texLib.matchKnown === 'function' ? textureGray(Object.assign({}, brush, { textureInverted: false })) : null;
+            const hit = plain ? texLib.matchKnown(plain.w, plain.h, plain.gray) : null;
+            if (hit) return '参数映射（纹理与画世界内置 ' + hit + ' 逐像素相同：普通硬边圆笔尖单支导出可写独立纹理，其他情况仍按烘焙处理）';
+          }
           return opts.bruTexAsset && opts.bruTexAsset !== 'off'
             ? '近似（烘焙进笔尖 + 画世界内置材质纹理层，材质 id 依赖 App 版本）'
             : '近似（真实纹理烘焙进笔尖，未开启单独纹理层）';
@@ -3817,11 +3883,34 @@ Write-Host 'restart MediBang Paint Pro'
     'makePainter', 'makeMdp', 'makeMediBangBrush', 'makeMediBangIniPack', 'makeIpcfg', 'makePrbr',
     'makeGoPaintAbr', 'makeGoPaintBrush', 'makeGoPaintSet', 'makeGoPaintGroup',
     'makeSai2Files', 'makeSai2Pack', 'makeKritaBundle', 'makeTipPng', 'makeTipPngPack'];
+  /* 【第198轮】画世界 BRU 的 f123 存的是「1 - 界面纹理深度」（真机：f123=0.21 ↔ 界面 79%，见 makeBru 注释），
+     bru.js 读出的 textureDepth 是这个原始值，BRU→BRU 往返要靠它原样写回。
+     但其它格式把 textureDepth 当「深度」用：画世界官方「小方块/网点」这类笔刷 f123 缺省(=0，界面 100%)，
+     转出去成了深度 0，纹理整张丢掉，只剩一个实心圆糊成一坨。
+     所以只在**非 BRU 写出口**换算成界面深度，并标记纹理按画布坐标采样（Procreate 写成「纹理化」）。 */
+  const BRU_WRITERS = ['makeBru', 'makeBruPack', 'makeBruDualPair'];
+  function bruTextureForExport(brush) {
+    if (!brush || typeof brush !== 'object' || brush instanceof Uint8Array) return brush;
+    if (brush.source !== 'bru' || !brush.hasTexture || brush._bruDepthAsUi) return brush;
+    const raw = Number(brush.textureDepth);
+    const out = Object.assign({}, brush, {
+      textureDepth: 1 - (Number.isFinite(raw) ? Math.max(0, Math.min(1, raw)) : 0),
+      textureCanvasSpace: true
+    });
+    Object.defineProperty(out, '_bruDepthAsUi', { value: true, enumerable: false, configurable: true });
+    return out;
+  }
   for (const writerName of GUARDED_WRITERS) {
     const fn = api[writerName];
     if (typeof fn !== 'function') continue;
+    const crossFormat = BRU_WRITERS.indexOf(writerName) < 0;
     api[writerName] = function (first) {
       const args = Array.prototype.slice.call(arguments);
+      if (crossFormat) {
+        if (Array.isArray(first)) first = first.map(bruTextureForExport);
+        else first = bruTextureForExport(first);
+        args[0] = first;
+      }
       let sanitized = first;
       let touched = false;
       if (Array.isArray(first)) {

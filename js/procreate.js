@@ -826,6 +826,10 @@
       dynamicsSpeedOpacity: Math.max(0, Math.min(1, brush.speedOpacityDyn || 0)),
       minOpacity: brush.pressureOpacity ? (brush.opacity === undefined ? 1 : Math.max(0, Math.min(1, brush.opacity))) * (brush.minOpacityRatio === undefined ? 0 : Math.max(0, Math.min(1, brush.minOpacityRatio))) : 0,
       grainDepth: brush.hasTexture ? Math.max(0, Math.min(1, brush.textureDepth === undefined ? (brush.grainStrength === undefined ? 0.6 : brush.grainStrength) : brush.textureDepth)) : 0,
+      /* 【第198轮】画世界纹理层与 PS 纹理都按画布坐标采样，对应 Procreate 的「纹理化」颗粒
+         （textureApplication=1；鱼鱼鱼/吹石样本里背景质感、杂色纹理、质感叠加这类全是 1）。
+         默认的「移动」(0) 会让网点/方格纹理跟着每个笔尖挪，间距 8% 时相邻笔尖错位叠加，糊成一坨。 */
+      textureApplication: brush.hasTexture && (brush.textureCanvasSpace || brush.source === 'bru' || brush.source === 'abr') ? 1 : D.textureApplication,
       grainBlendMode: (typeof brush.grainBlendMode === 'number' && isFinite(brush.grainBlendMode) && brush.grainBlendMode >= 1 && brush.grainBlendMode <= 28) ? Math.round(brush.grainBlendMode) : 1,
       textureInverted: !!brush.textureInverted,
       taperSize: brush.taperOn ? Math.max(0, Math.min(1, brush.taperSize === undefined ? 0.5 : brush.taperSize)) : 0,

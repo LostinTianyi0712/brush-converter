@@ -90,7 +90,9 @@
     // f6 = TEXTUREASSET：引用 App 内置纹理库的资源 id（真机导出样本里是 pt24=沙纸）。
     // 只写 f28 开关不带 id，App 拿空纹理渲染 → 笔迹几乎不出墨；带上 id 才会按文档空间采样颗粒。
     if (b.texAssetId) parts.push(u8arr(fBytes(6, util.utf8Encode(String(b.texAssetId)))));
-    parts.push(u8arr(fBytes(7, util.utf8Encode(b.texId))));     // MASKTEXPATH (image id)
+    /* 【第206轮 R204-02（作者：Claude）】noShape = 不带笔尖图、用 App 程序化圆头（画世界官方「小方块」
+       450B 的结构：无 f7、无 f31、容器图长 = 0xFFFFFFFF）。只允许单支 writeBrush。 */
+    if (!b.noShape) parts.push(u8arr(fBytes(7, util.utf8Encode(b.texId))));     // MASKTEXPATH (image id)
     /* 第181轮：f119（双笔刷开关）改为**无条件显式写出**。
        以前只在「内嵌副笔」分支里写，单笔/烘焙后的笔刷根本没有这个字段，App 走缺省值；
        而 Procreate 双笔转出来的笔刷笔尖里已经烘了一层副笔，缺省值把双笔打开就变成
@@ -145,7 +147,9 @@
     if (minOp > 0 && minOp < 1) parts.push(u8arr(fF32(14, minOp)));         // SMALLALPHA（显式最小不透明度，面板绝对值）
     else if (minOp >= 1 && !sizePressOn && !transferOn) parts.push(u8arr(fF32(14, 0.13))); // 无压感默认落值
     else if (minOp >= 1) parts.push(u8arr(fF32(14, 1)));                    // 【第195轮】有压感 + 面板 100%（旧版省略 → App 显示 0%）
-    parts.push(u8arr(fVarint(16, -1)));                         // COLOR (white)
+    /* f16：原生样本（官方小方块、塑形扁刷 160+ 份标定件）一律 0xFF000000（黑）；旧写法固定 -1（白）。
+       只有内置纹理引用路径（convert 传 bruColor）按原生写黑，其余输出保持旧值，逐字节不变。 */
+    parts.push(u8arr(fVarint(16, b.bruColor === undefined ? -1 : b.bruColor)));  // COLOR
     const spacing = Math.max(0.001, Math.min(10, (b.spacingPct === undefined ? 10 : b.spacingPct) / 100));
     parts.push(u8arr(fF32(17, spacing)));                       // SPACING
     parts.push(u8arr(fVarint(19, b.bruRotationMode === undefined ? 1 : (b.bruRotationMode === 1 ? 1 : 0)))); // legacy direction flag
@@ -180,11 +184,17 @@
     const sizeInfluence = influenceVal(b.bruPressureSizeInfluence);
     const flowInfluence = influenceVal(b.bruPressureFlowInfluence);
     parts.push(u8arr(fF32(26, flow * minFlow)));                // SMALLBRUSHFLOW
-    parts.push(u8arr(fVarint(32, b.bruShapeInverted ? 1 : 0))); // REVERSESHAPE (native nib invert toggle)
-    parts.push(u8arr(fVarint(31, 1)));                          // USESHAPE
+    if (!b.noShape) {
+      parts.push(u8arr(fVarint(32, b.bruShapeInverted ? 1 : 0))); // REVERSESHAPE (native nib invert toggle)
+      parts.push(u8arr(fVarint(31, 1)));                          // USESHAPE
+    }
     if (b.hasTexture) parts.push(u8arr(fVarint(28, 1)));        // TEXTURE ON
     parts.push(u8arr(fVarint(29, b.textureInverted ? 1 : 0)));  // REVERSETEX (distinct from shape f32)
-    parts.push(u8arr(fF32(35, Math.max(0, Math.min(100, b.textureBrightness === undefined ? 51 : b.textureBrightness))))); // TEXBRIGHTNESS
+    /* 【第206轮 R204-02（作者：Claude）】f35 必须写 **varint**（wire type 0），不是 float。
+       依据：bru_标定 / 样本 / pressure193 / 官方小方块等 165 份原生 BRU 的 f35 全部是 varint（如 `98 02 64` = 100）；
+       全字段 wire type 对照里，我们写出的字段只有 f35 与原生不符。App 用 protobuf 读，类型不符的字段按未知字段
+       丢弃、取缺省值 —— 也就是以前所有转出的纹理亮度在 App 里都没有生效（第204轮 pt65 试制版也带着这个错）。 */
+    parts.push(u8arr(fVarint(35, Math.round(Math.max(0, Math.min(100, b.textureBrightness === undefined ? 51 : b.textureBrightness)))))); // TEXBRIGHTNESS
     parts.push(u8arr(fVarint(33, Math.max(0, Math.min(200, Math.round(b.textureContrast === undefined ? 100 : b.textureContrast)))))); // CONTRAST
     if (b.textureDepth) parts.push(u8arr(fF32(123, Math.max(0, Math.min(1, b.textureDepth))))); // TEXTUREDEPTH
     if (sizePressOn) parts.push(u8arr(fVarint(36, 1)));         // SUPPORTPRESSURE
@@ -202,7 +212,9 @@
       if ((b.scatterCount || 1) > 1) parts.push(u8arr(fVarint(59, Math.round(b.scatterCount)))); // COUNT
     }
     parts.push(u8arr(fVarint(37, 31)));                         // VER
-    parts.push(u8arr(fBytes(42, new Uint8Array(0))));           // RGBTOALPHA
+    /* f42 =「形状RGB值影响透明度」（子消息，开 = {f1:1}，见 bru_标定/字段映射.md §3.3）。官方小方块与全部
+       带 ptN 纹理的原生样本都是开；旧写法写空子消息。只有 convert 显式要求（bruShapeRgbOpacity）才写开。 */
+    parts.push(u8arr(fBytes(42, b.bruShapeRgbOpacity ? new Uint8Array([0x08, 0x01]) : new Uint8Array(0)))); // RGBTOALPHA
     parts.push(u8arr(fVarint(49, 1)));                          // PRESSUSEPERCENT
     /* 【第193轮真机标定】f51 = 面板「流量压力·最小值」/ 100，**不与 flow 相乘**。
        证据：MuMu + 画世界 3.4.5 上把该滑块 14%→60% 导出，diff 只有 `f51: 0.14→0.6`；
@@ -335,10 +347,11 @@
   /* Build a single-brush .bru file */
   function writeBrush(brush, opts) {
     opts = opts || {};
-    const img = brush.png;
-    if (!img || !img.length) throw new Error('缺少笔尖图像数据');
+    const noShape = !!brush.noShape;
+    const img = noShape ? new Uint8Array(0) : brush.png;
+    if (!noShape && (!img || !img.length)) throw new Error('缺少笔尖图像数据');
     const meta = metadataFor(brush, opts);
-    const embedded = brush.embeddedSubPng && brush.embeddedSubPng.length ? brush.embeddedSubPng : null;
+    const embedded = !noShape && brush.embeddedSubPng && brush.embeddedSubPng.length ? brush.embeddedSubPng : null;
     const total = BODY_START + meta.length + img.length + (embedded ? embedded.length : 0);
     if (total > 0xffffffff) throw new Error('单支 BRU 超过 4GB，无法写出');
     const out = new Uint8Array(total);
@@ -351,6 +364,13 @@
     const rec = CONTAINER_HEAD;
     dv.setUint32(rec + 0x56, meta.length, false);            // meta length
     dv.setUint32(rec + 0x5e, img.length, false);             // image length
+    if (noShape) {
+      /* 逐字节照抄官方 450B 小方块的记录头：rec+0x52 = 1，rec+0x5a / 0x5e / 0x62 三个长度位 = 0xFFFFFFFF。 */
+      dv.setUint32(rec + 0x52, 1, false);
+      dv.setUint32(rec + 0x5a, 0xffffffff, false);
+      dv.setUint32(rec + 0x5e, 0xffffffff, false);
+      dv.setUint32(rec + 0x62, 0xffffffff, false);
+    }
     // 原生单支 BRU：记录 end 覆盖主图之后追加的副笔尖 PNG；img length 仍只算主图
     dv.setUint32(rec + 0x66, total, false); // end
     out.set(meta, BODY_START);
@@ -377,6 +397,8 @@
     if (brushes.length === 1) return writeBrush(brushes[0], opts);
     const items = brushes.map(function (b) {
       const pngBytes = b.png;
+      // 多支布局里「无笔尖图」条目没有原生样本可对照，不猜：noShape 只允许单支 writeBrush。
+      if (b.noShape) throw new Error('多支 BRU 暂不支持无笔尖图条目: ' + (b.name || ''));
       if (!pngBytes || !pngBytes.length) throw new Error('缺少笔尖图像数据: ' + (b.name || ''));
       const meta = metadataFor(b, opts);
       return { meta, img: pngBytes, embedded: b.embeddedSubPng || new Uint8Array(0) };
