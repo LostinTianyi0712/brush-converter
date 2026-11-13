@@ -417,6 +417,7 @@
       _nativeDualFromBru: params.brushConvNativeDual === '1',
       _nativeTexFromBru: params.brushConvNativeTex === '1',
       _bruTexParams: (function () { try { return params.brushConvBruTex ? JSON.parse(params.brushConvBruTex) : null; } catch (e) { return null; } })(),
+      _bruExtra: (function () { try { return params.brushConvBruExtra ? JSON.parse(params.brushConvBruExtra) : null; } catch (e) { return null; } })(),
       scatterOn: scatterPct > 0.01 || scatterCount > 1,
       angleJitterDeg: Math.max(0, Math.min(360, shapeScatterRaw * 180)),
       procreateRotationScatterPct: rotationScatterPct,
@@ -430,6 +431,22 @@
     /* 【第224轮】brushset 不存 BRU 的纹理参数，导出时写在 archive 的 brushConvBruTex 里。
        读回后立刻落到公开字段上（而不是等 makeBru 再 patch）—— 否则调用方显式改过的
        textureInverted / textureDepth 会被存档里的旧值覆盖回去，f29/f123 全写错。 */
+    if (brush._bruExtra) {
+      const ex = brush._bruExtra;
+      if (Number.isFinite(ex.hardness)) brush.hardness = ex.hardness;
+      if (Number.isFinite(ex.maxSizePx)) brush.maxSizePx = ex.maxSizePx;
+      if (Number.isFinite(ex.scatterPct)) brush.scatterPct = ex.scatterPct;
+      if (Number.isFinite(ex.scatterCount)) brush.scatterCount = ex.scatterCount;
+      if (Number.isFinite(ex.antialiasLevel)) brush.antialiasLevel = ex.antialiasLevel;
+      if (ex.wetEdgesOn) brush.wetEdgesOn = true;
+      if (Number.isFinite(ex.wetEdgesDepth)) brush.wetEdgesDepth = ex.wetEdgesDepth;
+      if (ex.shapeInverted) brush.bruShapeInverted = true;
+      if (ex.flowSmooth) brush.bruFlowSmooth = true;
+      if (Number.isFinite(ex.blendMode)) brush.bruTextureBlendMode = ex.blendMode;
+      if (typeof ex.perTip === 'boolean') brush.bruTexturePerTip = ex.perTip;
+      if (Number.isFinite(ex.sizeInfluence)) brush.bruPressureSizeInfluence = ex.sizeInfluence;
+      if (Number.isFinite(ex.flowInfluence)) brush.bruPressureFlowInfluence = ex.flowInfluence;
+    }
     if (brush._bruTexParams) {
       const tp = brush._bruTexParams;
       if (Number.isFinite(tp.scale)) brush.textureScale = tp.scale;
@@ -976,6 +993,22 @@
     /* 纹理的 BRU 参数（缩放/亮度/对比度/反相/深度/混合）Procreate 侧没有对等存储位，
        不存下来转回 bru 时会被重置成默认值 —— 实测「还行」textureScale 1 → 0.0215
        （缩到 1/46、平铺密到看不见，肉眼看就是「不出墨」），brightness 51→100。 */
+    /* 【第225轮·真机】BRU 有一组数值 Procreate 没有对等存储位，不存下来转回时会被重算而失真：
+       「蜡笔」hardness 0.39 → 0.988（软笔变硬笔，墨量涨 4~5 倍）、maxSizePx 500 → 70、
+       「34亮片」scatterPct 207 → 100（散布收紧，墨芯深一倍）。真机像素量化已确认这些是主因。 */
+    if (brush.source === 'bru') {
+      params.brushConvBruExtra = JSON.stringify({
+        hardness: brush.hardness, maxSizePx: brush.maxSizePx,
+        scatterPct: brush.scatterPct, scatterCount: brush.scatterCount,
+        antialiasLevel: brush.antialiasLevel,
+        wetEdgesOn: !!(brush.wetEdgesOn || brush.wetEdgesAmount),
+        wetEdgesDepth: brush.wetEdgesDepth,
+        shapeInverted: !!brush.bruShapeInverted || !!brush.shapeInverted,
+        flowSmooth: !!brush.bruFlowSmooth,
+        blendMode: brush.bruTextureBlendMode, perTip: !!brush.bruTexturePerTip,
+        sizeInfluence: brush.bruPressureSizeInfluence, flowInfluence: brush.bruPressureFlowInfluence
+      });
+    }
     if (brush.source === 'bru' && brush.hasTexture) {
       params.brushConvBruTex = JSON.stringify({
         scale: brush.textureScale, bright: brush.textureBrightness, contrast: brush.textureContrast,

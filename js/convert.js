@@ -1200,7 +1200,7 @@
     const customTexture = bruTextureBytes(brush, match);
     const disc = match && !match.custom && !bakingDual && isPlainHardDisc(rgba, w, h);
     const texMatchId = match && (match.custom ? (customTexture && util.md5(customTexture).toUpperCase())
-      : (opts.bruTexMatch === 'always' || disc) && match.id);
+      : ((brush._nativeTexFromBru || opts.bruTexMatch === 'always' || disc) && match.id));
     const texMatchNoShape = !!(texMatchId && disc && !opts._packMember);
     let textureBaked = false;
     if (brush.source !== 'bru' && brush.hasTexture && opts.noTextureBake !== true && !texMatchId) {
