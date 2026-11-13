@@ -789,6 +789,7 @@
         scatterCount: scatterCount,
         hasTexture: textureOn,
         bruTexturePerTip: !o[99],
+        bruTextureBlendMode: num(o[84], 0),
         texAssetId: o[6] instanceof Uint8Array ? util.utf8Decode(o[6]).replace(/\u0000+$/, '') : undefined,
         textureInverted: !!o[29],
         textureScale: texScale,

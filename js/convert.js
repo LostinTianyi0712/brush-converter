@@ -2207,6 +2207,66 @@
     };
   }
 
+  function usesBruDabTexture(brush, opts) {
+    return brush.source === 'bru' && brush.bruProceduralTip && brush.bruTexturePerTip &&
+      !brush.tip && brush._rawBruTexture && brush.hasTexture && opts.noTextureBake !== true && opts.grainBake !== false;
+  }
+
+  // The BRU stamp's texture contributes to its coverage. The Procreate grain
+  // layer cannot reproduce this compositing with an untextured round tip.
+  function procreateExportTip(brush, opts) {
+    if (opts.fidelity !== false && brush._rawArchive && !opts.forceRebuild) return brush;
+    const tip = tipToRGBA(brush);
+    if (tip) return Object.assign({}, brush, { tip });
+    const shape = Object.assign({}, brush, { angle: 0, roundness: 100 });
+    if (!usesBruDabTexture(brush, opts)) {
+      return Object.assign({}, brush, { tip: synthTip(shape, 256, opts) });
+    }
+    const texture = textureGray(brush);
+    if (!texture) return Object.assign({}, brush, { tip: synthTip(shape, 256, opts) });
+    const brightnessBlend = brush.bruTextureBlendMode === 14;
+    const histogram = new Uint32Array(256);
+    for (const value of texture.gray) histogram[brightnessBlend ? 255 - value : value]++;
+    // Suppress the background of a photographic grain so each dab keeps its
+    // particles and has transparent gaps. The brightness mode uses dark grain
+    // details as ink on a light canvas, observed in the BRU reference strokes.
+    let background = 0;
+    let total = histogram[0];
+    const cutoff = texture.gray.length * (brightnessBlend ? 0.55 : 0.15);
+    while (total < cutoff && background < 254) total += histogram[++background];
+    if (background >= 254) return Object.assign({}, brush, { tip: synthTip(shape, 256, opts) });
+    const curve = new Uint8Array(256);
+    const brightness = Number.isFinite(brush.textureBrightness) && brush.textureBrightness !== 51 ? brush.textureBrightness / 200 : 0;
+    const contrast = Number.isFinite(brush.textureContrast) && brush.textureContrast !== 100 ? brush.textureContrast / 100 : 0;
+    for (let i = background + 1; i < curve.length; i++) {
+      const level = (i - background) / (255 - background);
+      const adjusted = Math.max(0, Math.min(1, level * (1 + contrast + brightness)));
+      curve[i] = Math.round(255 * adjusted * adjusted);
+    }
+    const side = Math.max(64, Math.min(512, opts.maxTipSize || 2048));
+    const stamp = synthTip(shape, side, opts);
+    const scale = Math.max(0.02, Math.min(20, brush.textureScale || 1));
+    const sampleSpan = Math.max(texture.w, texture.h) / scale;
+    const sampleAxis = function (pixel, length) {
+      const coord = 0.5 + ((pixel + 0.5) / side - 0.5) * sampleSpan / length;
+      return Math.min(length - 1, Math.floor((coord - Math.floor(coord)) * length));
+    };
+    const sampleX = new Uint32Array(side);
+    for (let x = 0; x < side; x++) sampleX[x] = sampleAxis(x, texture.w);
+    for (let y = 0; y < side; y++) {
+      const row = sampleAxis(y, texture.h) * texture.w;
+      for (let x = 0; x < side; x++) {
+        const value = texture.gray[row + sampleX[x]];
+        const offset = (y * side + x) * 4 + 3;
+        stamp.rgba[offset] = Math.round(stamp.rgba[offset] * curve[brightnessBlend ? 255 - value : value] / 255);
+      }
+    }
+    if (!stamp.rgba.some(function (value, i) { return i % 4 === 3 && value > 0; })) {
+      return Object.assign({}, brush, { tip: synthTip(shape, 256, opts) });
+    }
+    return Object.assign({}, brush, { tip: stamp, hasTexture: false, textureDepth: 0, _bruGrainInTip: true });
+  }
+
   /** Convert one brush to a Procreate .brush file (zip). */
   function makeProcreateBrush(brush, opts) {
     opts = opts || {};
@@ -2216,11 +2276,10 @@
       const bytes = procreate.writeBrush(brush, opts);
       return { bytes: bytes, name: brush.name || 'brush', passthrough: procreate.unchanged(brush,opts), nativePatched:!procreate.unchanged(brush,opts) };
     }
-    const tip = tipToRGBA(brush) || synthTip(Object.assign({},brush,{roundness:100,angle:0}), 256, opts);
-    const b2 = Object.assign({}, brush, { tip: { w: tip.w, h: tip.h, rgba: tip.rgba } });
+    const b2 = procreateExportTip(brush, opts);
     const bytes = procreate.writeBrush(b2, opts);
-    void b2;
-    return { bytes: bytes, name: brush.name || 'brush' };
+    const warnings = b2._bruGrainInTip ? ['画世界逐笔尖纹理已合成到形状中，目标软件的混合与深度动态为近似效果'] : [];
+    return { bytes: bytes, name: brush.name || 'brush', warnings };
   }
 
   /** Convert a whole set to one Procreate .brushset file (zip). */
@@ -2243,11 +2302,7 @@
         delete b._rawArchive; delete b._rawBrushState; delete b._rawGrainState;
       }
       if (b.name !== names[i]) b = Object.assign({}, b, { name: names[i] });
-      // Native Procreate resources may be builtin references with no Shape.png.
-      // Match the single-brush raw path instead of replacing them with a circle.
-      if (opts.fidelity !== false && b._rawArchive && !opts.forceRebuild) return b;
-      const tip = tipToRGBA(b) || synthTip(Object.assign({},b,{roundness:100,angle:0}), 256, opts);
-      return Object.assign({}, b, { tip: { w: tip.w, h: tip.h, rgba: tip.rgba } });
+      return procreateExportTip(b, opts);
     });
     const bytes = procreate.writeBrushset(list, opts);
     /* 【第194轮】纹理丢失必须报出来。画世界 BRU 的 texAssetId 有两种形态：
@@ -2256,6 +2311,8 @@
        以前这里连 warnings 字段都没有，用户拿到的 brushset 里几十支笔刷没纹理却毫无提示，
        在 Procreate 里表现就是笔尖发糊/发花（楠.bru 实测 38/46 支属后者）。 */
     const warnings = [];
+    const baked = list.filter(function (b) { return b._bruGrainInTip; }).length;
+    if (baked) warnings.push(baked + ' 支画世界笔刷的逐笔尖纹理已合成到形状中，混合与深度动态为近似效果');
     const noTex = list.filter(function (b) {
       try { return b && b.hasTexture && !textureGray(b); } catch (e) { return false; }
     });
@@ -3432,6 +3489,7 @@ Write-Host 'restart MediBang Paint Pro'
       if (target === 'brush' || target === 'brushset') {
         if (!pixels) return '未写出（缺少原纹理图，重建时关闭纹理，不生成替代噪声）';
         const raw = opts.fidelity !== false && brush._rawArchive && !opts.forceRebuild;
+        if (!raw && usesBruDabTexture(brush, opts)) return '近似（逐笔尖纹理合成到形状，混合和深度动态需实绘核对）';
         return !raw && (opts.noTextureBake === true || opts.grainBake === false)
           ? '未写出（已关闭纹理输出，重建时禁用纹理）' : '参数映射（原纹理图，笔触待验证）';
       }
