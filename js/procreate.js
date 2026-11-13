@@ -325,6 +325,7 @@
       _rawGrain: grainEntry ? grainEntry.data() : null,
       _grainRgba: grainRgba,
       sizePx,
+      maxSizePx: Math.max(sizePx, Math.round(sizeRange.high * 256)),
       spacingPct: Math.max(0, Math.min(1000, spacing * 100)),
       opacity,
       minSizeRatio,
