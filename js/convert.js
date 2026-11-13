@@ -2234,8 +2234,19 @@
     // 同一包里重名笔刷：Procreate 里会显示多支同名，用户无法区分，统一去重
     // （#48 WorkBuddy 第106轮：改用全局 uniqueNames，与 ABR/GoPaint 的大小写折叠与长度上限口径一致）
     const names = uniqueNames(brushList);
+    /* 【第208轮】前背景色动态（双色）：opts.fgBgDyn ∈ 0..1。不传/为 0 时行为不变。
+       画世界的双色是 App 全局颜色模式（前景/背景色），BRU 里没有笔刷级标记，
+       所以这里做成转换选项，而不是从源笔刷自动推断。 */
+    const fgBgDynOpt = (opts.fgBgDyn === undefined || opts.fgBgDyn === null || !isFinite(Number(opts.fgBgDyn)))
+      ? 0 : Math.max(0, Math.min(1, Number(opts.fgBgDyn)));
     const list = brushList.map(function (b, i) {
       b=withExportSettings(b,opts);
+      if (fgBgDynOpt > 0) {
+        b = Object.assign({}, b, { colorJitterFgBg: fgBgDynOpt, colorDynamicsOn: true });
+        /* 原生 Procreate 笔刷带着 _rawArchive 时会走 raw 透传（procreate.writeBrush 里的 unchanged()），
+           那样新写入的字段会被原样档案覆盖掉。既然用户明确要求开前背景色动态，就剥掉原始档案强制重建。 */
+        delete b._rawArchive; delete b._rawBrushState; delete b._rawGrainState;
+      }
       if (b.name !== names[i]) b = Object.assign({}, b, { name: names[i] });
       // Native Procreate resources may be builtin references with no Shape.png.
       // Match the single-brush raw path instead of replacing them with a circle.
