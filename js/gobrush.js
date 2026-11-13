@@ -20,6 +20,9 @@
   const zip = isNode ? require('./zip.js') : root.BC.zip;
   const png = isNode ? require('./png.js') : root.BC.png;
 
+  /* 第206轮 R204-01：天生会画 grainScale → 纹理平铺边长（画布像素）的实测系数，见 parseOne 注释。
+     与 gobrushWrite.js 同名常量保持一致（test/halftone_texture206_test.js 锁定）。 */
+  const GOPAINT_TILE_K = 0.576;
   function isGobrush(name) { return /\.gobrush(es)?$/i.test(name || ''); }
   function isGobrushSet(bytes) {
     if (!zip.isZip(bytes)) return false;
@@ -155,6 +158,8 @@
     if (props.strokeJitter !== undefined) out.jitter = Math.max(0, Math.min(200, props.strokeJitter));
     if (props.strokeFallOff !== undefined) out.falloff = Math.max(0, Math.min(100, props.strokeFallOff));
     if (props.grainDepth !== undefined) out.textureDepth = props.grainDepth / 100;
+    // 第206轮 R204-01：纹理「比例」当前值（原生 0x18）。楷书样本 15、模板 25；MatePad 实测 5/25/50 三档。
+    if (props.grainScale !== undefined && props.grainScale > 0 && props.grainScale <= 1000) out.grainScale = props.grainScale;
     if (props.renderingFlow !== undefined) out.flowPct = Math.max(0, Math.min(1, props.renderingFlow / 100));
     if (props.propertiesMaxSize > 0) out.maxSizePct = props.propertiesMaxSize;
     out.minSizePct = props.propertiesMinSize === undefined ? 0 : props.propertiesMinSize;
@@ -272,6 +277,13 @@
         gopaintPressureCurves: pressureCurves.parameters,
         hasTexture: (params.textureDepth || 0) > 0,
         textureDepth: params.textureDepth || 0,
+        gopaintGrainScale: params.grainScale,
+        /* 第206轮 R204-01（作者：Claude）：天生会画纹理整张平铺的画布尺寸与 grain 图分辨率无关（32/64/128 px 三张
+           同周期），只由 grainScale 决定：MatePad Pro 12.2 实测平铺边长 ≈ 0.576 × grainScale² 像素
+           （5/25/50 → 周期 7/180/720 px，图内 2 个周期）。通用模型的 textureScale = 平铺画布像素 / 纹理像素宽
+           （PS、画世界口径），据此反推；仅在有 grain 图与 grainScale 时给出。 */
+        textureScale: (grain && grain.w > 0 && params.grainScale > 0)
+          ? Math.round(GOPAINT_TILE_K * params.grainScale * params.grainScale / grain.w * 10000) / 10000 : undefined,
         source: 'gopaint'
       },
       snapshot: snapshot,

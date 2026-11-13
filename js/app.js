@@ -259,10 +259,12 @@
     // 没有笔尖（shape）图的笔刷在预检里也要说清楚：转出后是参数生成的圆形/椭圆笔尖。
     try {
       const audit = BC.convert.tipSourceAudit ? BC.convert.tipSourceAudit(brushes) : null;
-      if (audit && (audit.noTip.length || audit.grainOnly.length) && el.style.display !== 'none') {
+      if (audit && (audit.noTip.length || audit.grainOnly.length || (audit.bruTexMissing || []).length) && el.style.display !== 'none') {
         const parts = [];
         if (audit.noTip.length) parts.push(audit.noTip.length + ' 支没有笔尖(shape)图、会用参数生成笔尖');
         if (audit.grainOnly.length) parts.push(audit.grainOnly.length + ' 支只有纹理(grain)图当笔尖');
+        // 第198轮：画世界「小方块/网点」类靠内置纹理出图案，纹理库没载入时会变实心圆
+        if ((audit.bruTexMissing || []).length) parts.push(audit.bruTexMissing.length + ' 支画世界内置纹理未载入（需下载纹理库）');
         el.textContent += '；另 ' + parts.join('，');
       }
     } catch (e) { /* ignore */ }
@@ -756,18 +758,32 @@
     const inJsDir = scripts.some(function (sc) { return /\/js\/app\.js(\?|$)/.test(sc.src || ''); });
     return inJsDir ? 'js/parse-worker.js' : 'parse-worker.js';
   }
+  /* 第201轮（第189轮审查 P2-#18）：超时以前只 reject、不 terminate——卡住的 Worker 继续占内存，
+     后面排队的任务全挂在它上面，各自再干等 180s。现在超时/出错都终止这个 Worker，
+     把排在它上面的任务一起失败（让它们回退主线程解析），下一个任务新建 Worker。 */
+  const workerJobs = new Map();
+  function killWorker(reason) {
+    const w = worker;
+    worker = null;
+    if (w) { try { w.terminate(); } catch (e) { /* ignore */ } }
+    const jobs = Array.from(workerJobs.values());
+    workerJobs.clear();
+    jobs.forEach(function (job) { job.cleanup(); job.reject(new Error(reason)); });
+  }
   function parseViaWorker(name, bytes, opts) {
     return new Promise(function (resolve, reject) {
       if (!window.Worker || workerBroken) return reject(new Error('worker unavailable'));
       try {
         if (!worker) worker = new Worker(workerUrl());
       } catch (e) { workerBroken = true; return reject(e); }
+      const w = worker;
       const id = ++workerSeq;
-      const timer = setTimeout(function () { cleanup(); reject(new Error('worker timeout')); }, 180000);
+      const timer = setTimeout(function () { killWorker('worker timeout'); }, 180000);
       function cleanup() {
         clearTimeout(timer);
-        worker.removeEventListener('message', onMsg);
-        worker.removeEventListener('error', onErr);
+        workerJobs.delete(id);
+        w.removeEventListener('message', onMsg);
+        w.removeEventListener('error', onErr);
       }
       function onMsg(ev) {
         const m = ev.data || {};
@@ -776,16 +792,14 @@
         if (m.ok) resolve(m.result); else reject(new Error(m.error || '解析失败'));
       }
       function onErr(ev) {
-        cleanup();
         workerBroken = true;
-        try { worker.terminate(); } catch (e) { /* ignore */ }
-        worker = null;
-        reject(new Error('worker error: ' + (ev.message || 'unknown')));
+        killWorker('worker error: ' + ((ev && ev.message) || 'unknown'));
       }
-      worker.addEventListener('message', onMsg);
-      worker.addEventListener('error', onErr);
+      workerJobs.set(id, { reject: reject, cleanup: cleanup });
+      w.addEventListener('message', onMsg);
+      w.addEventListener('error', onErr);
       const copy = bytes.slice ? bytes.slice() : new Uint8Array(bytes);
-      worker.postMessage({ id: id, name: name, bytes: copy, opts: opts || {} }, [copy.buffer]);
+      w.postMessage({ id: id, name: name, bytes: copy, opts: opts || {} }, [copy.buffer]);
     });
   }
 
@@ -882,10 +896,17 @@
     hsjLibState = 'missing'; renderHsjLibState();
     return false;
   }
-  async function installHsjBytes(bytes) {
+  async function installHsjBytes(bytes, signal, runToken) {
     if (!bytes || !bytes.length) throw new Error('空文件');
-    await ShapeLibStore.put(bytes, HSJ_LIB_KEY);
+    // AUDIT-20261111-01：先载入、确认注册了 hsjShapes 再写缓存，坏文件不覆盖旧缓存
+    /* R202-03：脚本载入是异步的。取消/新一次下载可能发生在「拿到字节 → 载入 → 写缓存」之间，
+       以前载入完无条件提交，取消后仍写一次 IndexedDB 并把状态从 unknown 改回 ready。
+       每次提交前都确认仍是同一批次且未取消；手动导入图库里的 hsj-shapes.js 不带批次号，行为不变。 */
+    if (hsjInstallCancelled(signal, runToken)) return false;
     if (await loadHsjFromBlob(bytes)) {
+      if (hsjInstallCancelled(signal, runToken)) return false;
+      await ShapeLibStore.put(bytes, HSJ_LIB_KEY);
+      if (hsjInstallCancelled(signal, runToken)) return false;
       hsjLibState = 'ready'; renderHsjLibState();
       const fixed = typeof backfillHsjShapesInFiles === 'function' ? backfillHsjShapesInFiles() : 0;
       toast('画世界内置笔尖库已就绪（14MB，已缓存）' + (fixed ? '，已补回 ' + fixed + ' 支笔尖' : ''), 3500);
@@ -894,9 +915,25 @@
     throw new Error('脚本载入后没有注册 hsjShapes');
   }
   let hsjAbort = null;
+  /* R202-03：每次开始下载、每次取消都换一个批次号。安装阶段（载入脚本、写缓存、
+     提交界面状态）跨多个 await，旧任务在这些边界上必须被认出来，不能覆盖新任务或取消结果。 */
+  let hsjRunToken = 0;
+  let hsjTexRunToken = 0;
+  function hsjInstallCancelled(signal, runToken) {
+    if (runToken !== undefined && runToken !== hsjRunToken) return true;
+    return hsjCancelled(signal);
+  }
+  /* 本次下载是否已被用户取消。取消后清掉 cancel 标记再返回，避免影响下一次下载。
+     笔尖库与纹理库共用：传各自的 signal 和失败表。 */
+  function hsjCancelled(signal, failed) {
+    if (!signal || !signal.aborted) return false;
+    (failed || hsjFailedSources).cancel = false;
+    return true;
+  }
   function cancelHsjDownload() {
     if (hsjAbort) { try { hsjAbort.abort(); } catch (e) { /* 忽略 */ } }
     hsjAbort = null;
+    hsjRunToken++;
     hsjLibState = 'unknown';
     hsjFailedSources.cancel = true;
     renderHsjLibState();
@@ -904,6 +941,7 @@
   }
   async function downloadHsjLib(btn) {
     if (hsjLibState === 'loading') { cancelHsjDownload(); return false; }
+    const runToken = ++hsjRunToken;
     hsjLibState = 'loading';
     hsjAbort = (typeof AbortController === 'function') ? new AbortController() : null;
     const signal = hsjAbort ? hsjAbort.signal : undefined;
@@ -915,13 +953,19 @@
       const blob = await parallelRangeBlob(urls, function (got) {
         renderHsjLibState('下载中 ' + (got / 1048576).toFixed(1) + 'MB');
       }, { chunkBytes: 2 * 1048576, parallel: 4, signal: signal });
+      // AUDIT-20261111-04：拿到字节时用户可能已经点了取消——不安装、也不退回单连接重下
+      if (hsjCancelled(signal)) return false;
       if (blob && blob.size) {
-        try { return await installHsjBytes(new Uint8Array(await blob.arrayBuffer())); }
+        try { return await installHsjBytes(new Uint8Array(await blob.arrayBuffer()), signal, runToken); }
         catch (e) { lastErr = e; }
       }
-    } catch (e) { lastErr = e; }
+    } catch (e) {
+      if (hsjCancelled(signal) || (e && e.name === 'AbortError')) { hsjFailedSources.cancel = false; return false; }
+      lastErr = e;
+    }
     /* 2) 单连接兜底：源不支持 Range 时走流式读取 */
     for (const u of urls) {
+      if (hsjCancelled(signal)) return false;
       try {
         renderHsjLibState('下载中…');
         const res = await fetch(u, { cache: 'no-store', signal: signal });
@@ -945,7 +989,8 @@
         } else {
           bytes = new Uint8Array(await res.arrayBuffer());
         }
-        return await installHsjBytes(bytes);
+        if (hsjCancelled(signal)) return false;
+        return await installHsjBytes(bytes, signal, runToken);
       } catch (e) {
         if (e && e.name === 'AbortError') { hsjAbort = null; return false; }
         lastErr = e; hsjFailedSources[u] = true;
@@ -1031,11 +1076,19 @@
     hsjTexState = 'missing'; renderHsjTexState();
     return false;
   }
-  async function installHsjTexBytes(bytes) {
+  async function installHsjTexBytes(bytes, signal, runToken) {
     if (!bytes || !bytes.length) throw new Error('空文件');
-    await ShapeLibStore.put(bytes, HSJ_TEX_KEY);
+    // AUDIT-20261111-01：先载入、确认注册了 hsjTextures 再写缓存
+    /* R202-03：与笔尖库同一处竞态——载入脚本期间取消后，旧任务不得写缓存/把状态改回 ready。 */
+    function stale() {
+      return (runToken !== undefined && runToken !== hsjTexRunToken) || hsjCancelled(signal, hsjTexFailed);
+    }
+    if (stale()) return false;
     await loadScriptFromBytes(bytes);
     if (hsjTexReady()) {
+      if (stale()) return false;
+      await ShapeLibStore.put(bytes, HSJ_TEX_KEY);
+      if (stale()) return false;
       hsjTexState = 'ready'; renderHsjTexState();
       toast('画世界内置纹理库已就绪（' + HSJ_TEX_MB + 'MB，已缓存，156 张纹理可用）', 3500);
       return true;
@@ -1045,6 +1098,7 @@
   function cancelHsjTexDownload() {
     if (hsjTexAbort) { try { hsjTexAbort.abort(); } catch (e) { /* 忽略 */ } }
     hsjTexAbort = null;
+    hsjTexRunToken++;
     hsjTexState = 'unknown';
     hsjTexFailed.cancel = true;
     renderHsjTexState();
@@ -1052,6 +1106,7 @@
   }
   async function downloadHsjTexLib(btn) {
     if (hsjTexState === 'loading') { cancelHsjTexDownload(); return false; }
+    const runToken = ++hsjTexRunToken;
     hsjTexState = 'loading';
     hsjTexAbort = (typeof AbortController === 'function') ? new AbortController() : null;
     const signal = hsjTexAbort ? hsjTexAbort.signal : undefined;
@@ -1063,13 +1118,18 @@
       const blob = await parallelRangeBlob(urls, function (got) {
         renderHsjTexState('下载中 ' + (got / 1048576).toFixed(1) + 'MB / ' + HSJ_TEX_MB + 'MB');
       }, { chunkBytes: 2 * 1048576, parallel: 4, signal: signal });
+      if (hsjCancelled(signal, hsjTexFailed)) return false;
       if (blob && blob.size) {
-        try { return await installHsjTexBytes(new Uint8Array(await blob.arrayBuffer())); }
+        try { return await installHsjTexBytes(new Uint8Array(await blob.arrayBuffer()), signal, runToken); }
         catch (e) { lastErr = e; }
       }
-    } catch (e) { lastErr = e; }
+    } catch (e) {
+      if (hsjCancelled(signal, hsjTexFailed) || (e && e.name === 'AbortError')) { hsjTexFailed.cancel = false; return false; }
+      lastErr = e;
+    }
     /* 2) 单连接兜底：源不支持 Range 时流式读取 */
     for (const u of urls) {
+      if (hsjCancelled(signal, hsjTexFailed)) return false;
       try {
         renderHsjTexState('下载中…');
         const res = await fetch(u, { cache: 'no-store', signal: signal });
@@ -1093,7 +1153,8 @@
         } else {
           bytes = new Uint8Array(await res.arrayBuffer());
         }
-        return await installHsjTexBytes(bytes);
+        if (hsjCancelled(signal, hsjTexFailed)) return false;
+        return await installHsjTexBytes(bytes, signal, runToken);
       } catch (e) {
         if (e && e.name === 'AbortError') { hsjTexAbort = null; return false; }
         lastErr = e; hsjTexFailed[u] = true;
@@ -1304,12 +1365,19 @@
   }
 
   /* Expand a zip into one record per brush file found inside. */
-  async function addZip(name, bytes, depth) {
+  async function addZip(name, bytes, depth, batchToken) {
     depth = depth || 0;
+    /* 第201轮（第189轮审查 P2-#19）：记下进入时的导入批次。用户中途点「清空」/停止导入会让 importToken 变，
+       以前这里的循环不看它，后面的条目照样 makeRecord 进清空后的新列表。
+       R202-04：批次由 addFiles 在读盘前就取好并传进来——清空若发生在「读盘」这个 await 里，
+       这里再读 state.importToken 会拿到清空后的新 token，等于把旧文件认成新批次。
+       未传 batchToken 的调用方（旧入口/测试）仍按进入时的 token 处理。 */
+    const token = batchToken === undefined ? state.importToken : batchToken;
     let res;
     try {
       res = BC.convert.expandArchive(name, bytes, depth);
     } catch (e) {
+      if (token !== state.importToken) return 0; // 清空后不再给旧批次建错误卡片
       const rec = makeRecord(name, bytes);
       // #267：全站错误都走 friendlyError，唯独 ZIP 把裸英文丢给用户
       rec.error = friendlyError(e && e.message ? e.message : e) || '压缩包解析失败';
@@ -1319,6 +1387,7 @@
     }
     let added = 0;
     for (const inner of res.files) {
+      if (token !== state.importToken) break;
       const rec = makeRecord(name + ' / ' + inner.name, inner.bytes);
       const innerOpts = inner.decrypted ? { decrypted: inner.decrypted } : null;
       // 大文件会走 Worker/异步分块解析：必须 await 后重新 render，否则卡片停在「解析中」
@@ -1326,13 +1395,14 @@
       rec.parsing = true;
       render();
       await parseRecord(rec, inner.name, inner.bytes, innerOpts);
+      if (token !== state.importToken) break;
       rec.parsing = false;
       rec.fromZip = name;
       added++;
       render();
       await sleep(0);
     }
-    if (!added) {
+    if (!added && token === state.importToken) {
       const rec = makeRecord(name, bytes);
       rec.kindLabel = '压缩包';
       rec.error = (res.warnings && res.warnings[0]) || '压缩包里没有可识别的笔刷文件';
@@ -1363,6 +1433,9 @@
       let rec = null;
       try {
         const bytes = await readFileBytes(f).catch(function (e) { return null; });
+        /* R202-04：读盘是外层第一个异步边界。清空可能就发生在这次等待里，
+           那时 importToken 已经变了，后面再建卡/再展开 ZIP 都会把旧文件塞进新列表。 */
+        if (token !== state.importToken) break;
         if (!bytes) {
           rec = makeRecord(f.name, null, item.relDir);
           rec.error = '读取文件失败';
@@ -1393,7 +1466,8 @@
           try {
             setProgress(null, '解压中：' + f.name + (mb > 100 ? '（大压缩包请稍候…）' : ''));
             await sleep(0);
-            await addZip(f.name, bytes, 0);
+            if (token !== state.importToken) break;
+            await addZip(f.name, bytes, 0, token);
             setProgress(null);
           } catch (e) {
             rec = makeRecord(f.name, null, item.relDir);
@@ -1403,6 +1477,7 @@
           continue;
         }
         // 先建卡片再解析：大文件解析要一会儿，界面能立刻看到进度
+        if (token !== state.importToken) break; // SUT 解密等异步边界之后也要复核批次
         rec = makeRecord(f.name, null, item.relDir);
         rec.sizeBytes = bytes.length;
         rec.parsing = true;
@@ -1807,7 +1882,8 @@
               warnings.push(...made.warnings);
             } else if (fmt === 'udongman_sut') {
               const made = BC.convert.makeUdongmanSutPack(list, commonOpts(rec));
-              const dir = base + '_优动漫SUT/';
+              // 第201轮（第189轮审查 P2-#21）：目录名也走 uniqueFile，两个同名源各自一个目录，不再混在一起互相覆盖
+              const dir = uniqueFile(base + '_优动漫SUT', '/');
               for (const f of made.files) outFiles.push({ name: dir + f.name, data: f.data });
               outFiles.push({ name: uniqueFile(base + '_优动漫SUT导入说明', '.txt'), data: BC.util.utf8Encode(made.importGuide) });
               warnings.push(...made.warnings);
@@ -2463,7 +2539,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.86';
+const APP_VERSION = '2.8.87';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;
@@ -3283,6 +3359,9 @@ const UPDATE_ENABLED = false;
     }
     return 'jpeg';
   }
+  /* strictPack（R202-01）：由「下载入口」置 true，要求整包完整可读，任一条目读失败就整包作废，
+     绝不能把已读出的半张图库当成新图库提交，更不能让调用方拿原坏 ZIP 覆盖缓存。
+     手动选择文件夹/多张独立图片时保持原来的部分成功策略（坏一张只记日志，不牵连其余）。 */
   async function loadShapeLibrary(fileList, libLabel, forceReparse, strictPack) {
     const list = Array.prototype.slice.call(fileList || []);
     if (!list.length) {
@@ -3773,91 +3852,250 @@ const UPDATE_ENABLED = false;
   async function parallelRangeBlob(urls, onProgress, opts) {
     urls = (urls || []).filter(Boolean);
     if (!urls.length || typeof fetch !== 'function') return null;
-    const CHUNK = (opts && opts.chunkBytes) || 4 * 1048576;
-    const MAXP = Math.max(1, Math.min(8, (opts && opts.parallel) || 4));
-    const score = new Map();
-    let total = 0;
-    await Promise.all(urls.map(async function (u) {
-      const t0 = Date.now();
+    opts = opts || {};
+    const CHUNK = opts.chunkBytes || 4 * 1048576;
+    const MAXP = Math.max(1, Math.min(8, opts.parallel || 4));
+    /* 第200轮（AUDIT-20261111-02/04）：每个请求都有期限，并接受调用方的取消信号。
+       以前预检 Promise.all 等全部源、分片也没有期限——一个永不返回的源就能让整次下载挂住；
+       signal 也只是被传进来、从没用到，取消后照样发请求、照样把结果交给调用方安装。
+       probeTimeoutMs：预检单个源的连接+读取期限；stallMs：分片「多久没收到新字节」算卡死；
+       bodyTimeoutMs：环境不支持流式读取时，整段读取的总期限。 */
+    const PROBE_MS = opts.probeTimeoutMs > 0 ? opts.probeTimeoutMs : 8000;
+    const STALL_MS = opts.stallMs > 0 ? opts.stallMs : 20000;
+    const BODY_MS = opts.bodyTimeoutMs > 0 ? opts.bodyTimeoutMs : Math.max(STALL_MS, 180000);
+    const PROBE_GRACE_MS = opts.probeGraceMs >= 0 ? opts.probeGraceMs : 1500;
+    const signal = opts.signal || null;
+    const inflight = new Set();
+    let stopped = false;
+    function abortError() { const e = new Error('下载已取消'); e.name = 'AbortError'; return e; }
+    function aborted() { return !!(signal && signal.aborted); }
+    function checkAbort() { if (aborted()) throw abortError(); }
+    function stopAll() { stopped = true; inflight.forEach(function (c) { try { c.abort(); } catch (e) { /* ignore */ } }); }
+    function onOuterAbort() { stopAll(); }
+    if (signal && signal.addEventListener) signal.addEventListener('abort', onOuterAbort);
+    /* 单个 Range 请求：连接期限 connectMs；流式读取时每次 read 都重新计时（只判「卡住」，不误杀慢而健康的源），
+       不支持流式时按 bodyMs 限总时长。超时/取消都会 abort 底层请求，且不依赖 fetch 自己响应 abort。 */
+    async function timedRange(u, range, connectMs, bodyMs) {
+      checkAbort();
+      const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+      if (ctl) inflight.add(ctl);
+      let timer = null, kill = null;
+      const killed = new Promise(function (_, reject) { kill = reject; });
+      killed.catch(function () { /* 由 race 消费 */ });
+      function arm(ms, msg) {
+        clearTimeout(timer);
+        timer = setTimeout(function () { if (ctl) ctl.abort(); kill(new Error(msg)); }, ms);
+      }
+      function onAbort() { if (ctl) ctl.abort(); kill(abortError()); }
+      if (signal && signal.addEventListener) signal.addEventListener('abort', onAbort);
       try {
-        const res = await fetch(u, { headers: { Range: 'bytes=0-0' }, cache: 'no-store' });
-        const dt = Math.max(1, Date.now() - t0);
-        if (res.status !== 206) { try { res.body && res.body.cancel(); } catch (e) {} return; }
-        const cr = (res.headers && res.headers.get && res.headers.get('content-range')) || '';
-        const m = /\/(\d+)\s*$/.exec(cr);
-        try { await res.arrayBuffer(); } catch (e) {}
-        const t = m ? Number(m[1]) : 0;
-        score.set(u, { bytes: 1, ms: dt, total: t });
-      } catch (e) { /* 该源不支持/不可达 */ }
-    }));
-    /* 选权威长度：原来直接取所有源里最大的 Content-Range，等于默认「旧缓存更大就是新版」。
-       一旦新版比旧缓存小，就会静默把 CDN 旧文件当新版下载回来（没有任何报错）。
-       按 SITE_BASE 前缀认出发布源，优先采信它的长度（不依赖候选顺序）；
-       发布源不可达或调用方只给了自定义 URL 时，退回「票多者胜、平局取大」。 */
-    const authUrl = urls.find(function (u) { return typeof u === 'string' && u.indexOf(SITE_BASE) === 0; });
-    const authoritative = authUrl && score.get(authUrl);
-    if (authoritative && authoritative.total > 0) {
-      total = authoritative.total;
-    } else {
-      const votes = new Map();
-      for (const u of urls) {
-        const s = score.get(u);
-        if (s && s.bytes > 0 && s.total > 0) votes.set(s.total, (votes.get(s.total) || 0) + 1);
+        arm(connectMs, '下载源连接超时');
+        const res = await Promise.race([
+          fetch(u, { headers: { Range: range }, cache: 'no-store', signal: ctl ? ctl.signal : (signal || undefined) }),
+          killed
+        ]);
+        if (res.status !== 206) {
+          try { if (res.body && res.body.cancel) Promise.resolve(res.body.cancel()).catch(function () {}); } catch (e) { /* ignore */ }
+          if (ctl) ctl.abort();
+          return { res: res, bytes: null };
+        }
+        const reader = res.body && res.body.getReader ? res.body.getReader() : null;
+        let bytes;
+        if (reader) {
+          const parts = [];
+          let len = 0;
+          for (;;) {
+            arm(connectMs, '下载源读取卡住');
+            const r = await Promise.race([reader.read(), killed]);
+            if (r.done) break;
+            parts.push(r.value); len += r.value.length;
+          }
+          bytes = new Uint8Array(len);
+          let off = 0;
+          for (const p of parts) { bytes.set(p, off); off += p.length; }
+        } else {
+          arm(bodyMs, '下载源读取超时');
+          bytes = new Uint8Array(await Promise.race([res.arrayBuffer(), killed]));
+        }
+        return { res: res, bytes: bytes };
+      } catch (e) {
+        if (aborted()) throw abortError();
+        throw e;
+      } finally {
+        clearTimeout(timer);
+        if (signal && signal.removeEventListener) signal.removeEventListener('abort', onAbort);
+        if (ctl) inflight.delete(ctl);
       }
-      let best = 0, bestVotes = -1;
-      for (const [len, cnt] of votes) {
-        if (cnt > bestVotes || (cnt === bestVotes && len > best)) { best = len; bestVotes = cnt; }
-      }
-      total = best;
     }
-    /* 只认同长度的源：镜像/CDN 可能缓存着旧版本（实测 gh-proxy 对同一路径返回 10,638,011B、
-       Pages 与 ghfast 是 14,171,205B）。不同长度的源混进并发分块会拼出坏文件，直接剔除。 */
-    const live = urls.filter(function (u) {
-      const s = score.get(u);
-      return s && s.bytes > 0 && s.total === total;
-    });
-    if (!total || !live.length) {
-      const mixed = urls.filter(function (u) { return score.has(u) && score.get(u).total !== total; });
-      if (mixed.length) pushLog('下载源长度不一致，已忽略：' + mixed.map(function (u) { return u + ' (' + score.get(u).total + 'B)'; }).join('、'));
-      return null;
+    function contentRange(res) {
+      const cr = (res.headers && res.headers.get && res.headers.get('content-range')) || '';
+      const m = /^\s*bytes\s+(\d+)-(\d+)\/(\d+|\*)\s*$/i.exec(cr);
+      return m ? { start: Number(m[1]), end: Number(m[2]), total: m[3] === '*' ? 0 : Number(m[3]) } : null;
     }
-    const n = Math.ceil(total / CHUNK);
-    const parts = new Array(n);
-    let got = 0, next = 0;
-    function orderBy() {
-      return live.slice().sort(function (a, b) {
-        const sa = score.get(a), sb = score.get(b);
-        return (sb.bytes / sb.ms) - (sa.bytes / sa.ms);
-      });
+    /* R202-02：文件「版本身份」。等长 + Range 全对也不代表同一份文件——主站已发新版、
+       镜像还缓存着等长的旧版时，各取一半会拼出一个谁都没发布过的混合文件。
+       ETag（优先）/ Last-Modified 用来认版本；两者都没有的源记为 ''（未知）。 */
+    function versionId(res) {
+      const h = res && res.headers;
+      if (!h || typeof h.get !== 'function') return '';
+      const etag = h.get('etag');
+      if (etag) return 'etag:' + String(etag).trim();
+      const lm = h.get('last-modified');
+      return lm ? 'lm:' + String(lm).trim() : '';
     }
-    async function oneChunk(i) {
-      const start = i * CHUNK, end = Math.min(total, start + CHUNK) - 1, want = end - start + 1;
-      let lastErr = null;
-      for (const u of orderBy()) {
+    try {
+      checkAbort();
+      const score = new Map();
+      let total = 0;
+      const authUrl = urls.find(function (u) { return typeof u === 'string' && u.indexOf(SITE_BASE) === 0; });
+      let readyNow = null;
+      const ready = new Promise(function (r) { readyNow = r; });
+      const probes = urls.map(async function (u) {
         const t0 = Date.now();
         try {
-          const res = await fetch(u, { headers: { Range: 'bytes=' + start + '-' + end }, cache: 'no-store' });
-          if (res.status !== 206) throw new Error('range unsupported: ' + res.status);
-          const buf = new Uint8Array(await res.arrayBuffer());
-          if (buf.length !== want) throw new Error('short chunk ' + buf.length + '/' + want);
-          const s = score.get(u) || { bytes: 0, ms: 1 };
-          s.bytes += buf.length; s.ms += Math.max(1, Date.now() - t0);
-          score.set(u, s);
-          parts[i] = buf; got += buf.length;
-          onProgress && onProgress(got);
-          return;
-        } catch (e) { lastErr = e; }
+          const got = await timedRange(u, 'bytes=0-0', PROBE_MS, PROBE_MS);
+          if (!got.bytes) return;
+          const cr = contentRange(got.res);
+          // 探测必须真的是第 0 字节；起点不对的源（错误缓存/代理乱回 Range）直接不参选
+          if (!cr || cr.start !== 0 || cr.end !== 0 || got.bytes.length !== 1) return;
+          score.set(u, { bytes: 1, ms: Math.max(1, Date.now() - t0), total: cr.total, ver: versionId(got.res) });
+          // 发布源到了（或根本没有发布源时任一源到了），再给其余源一个短宽限就开始，不等慢源
+          if (cr.total > 0 && (!authUrl || u === authUrl)) readyNow();
+        } catch (e) { if (e && e.name === 'AbortError') throw e; /* 该源不支持/不可达/超时 */ }
+      });
+      const allProbes = Promise.all(probes);
+      await Promise.race([
+        allProbes,
+        ready.then(function () { return new Promise(function (r) { setTimeout(r, PROBE_GRACE_MS); }); })
+      ]);
+      allProbes.catch(function () { /* 迟到的预检结果不再采用 */ });
+      checkAbort();
+      // 预检阶段结束：还没回来的探测一律掐掉，别和分片抢连接
+      inflight.forEach(function (c) { try { c.abort(); } catch (e) { /* ignore */ } });
+      /* 选权威长度：原来直接取所有源里最大的 Content-Range，等于默认「旧缓存更大就是新版」。
+         一旦新版比旧缓存小，就会静默把 CDN 旧文件当新版下载回来（没有任何报错）。
+         按 SITE_BASE 前缀认出发布源，优先采信它的长度（不依赖候选顺序）；
+         发布源不可达或调用方只给了自定义 URL 时，退回「票多者胜、平局取大」。 */
+      const authoritative = authUrl && score.get(authUrl);
+      if (authoritative && authoritative.total > 0) {
+        total = authoritative.total;
+      } else {
+        const votes = new Map();
+        for (const u of urls) {
+          const s = score.get(u);
+          if (s && s.bytes > 0 && s.total > 0) votes.set(s.total, (votes.get(s.total) || 0) + 1);
+        }
+        let best = 0, bestVotes = -1;
+        for (const [len, cnt] of votes) {
+          if (cnt > bestVotes || (cnt === bestVotes && len > best)) { best = len; bestVotes = cnt; }
+        }
+        total = best;
       }
-      throw lastErr || new Error('chunk ' + i + ' failed');
+      /* 只认同长度的源：镜像/CDN 可能缓存着旧版本（实测 gh-proxy 对同一路径返回 10,638,011B、
+         Pages 与 ghfast 是 14,171,205B）。不同长度的源混进并发分块会拼出坏文件，直接剔除。 */
+      /* R202-02：再按版本身份筛一遍。发布源优先当基准；没有发布源时取第一个带身份的源。
+         基准存在时，身份不同或根本不报身份的源都不参与——「无法核实是同一版本」就不混拼，
+         宁可少几个连接或退回单连接兜底，也不能把两版拼成一个文件。
+         所有源都不报 ETag/Last-Modified 时保持原有行为（无法区分，仍按长度与 Range 校验）。 */
+      let baseVer = authoritative && authoritative.ver ? authoritative.ver : '';
+      if (!baseVer) {
+        for (const u of urls) {
+          const s = score.get(u);
+          if (s && s.bytes > 0 && s.total === total && s.ver) { baseVer = s.ver; break; }
+        }
+      }
+      const live = urls.filter(function (u) {
+          const s = score.get(u);
+          if (!s || !(s.bytes > 0) || s.total !== total) return false;
+          return !baseVer || s.ver === baseVer;
+      });
+      if (baseVer) {
+        const mixedVer = urls.filter(function (u) {
+          const s = score.get(u);
+          return s && s.bytes > 0 && s.total === total && s.ver !== baseVer;
+        });
+        if (mixedVer.length) pushLog('下载源版本不一致，已忽略：' + mixedVer.map(function (u) {
+          return u + ' (' + (score.get(u).ver || '无版本标识') + ')';
+        }).join('、'));
+      }
+      if (!total || !live.length) {
+        const mixed = urls.filter(function (u) { return score.has(u) && score.get(u).total !== total; });
+        if (mixed.length) pushLog('下载源长度不一致，已忽略：' + mixed.map(function (u) { return u + ' (' + score.get(u).total + 'B)'; }).join('、'));
+        return null;
+      }
+      const n = Math.ceil(total / CHUNK);
+      const parts = new Array(n);
+      let got = 0, next = 0;
+      function orderBy() {
+        return live.slice().sort(function (a, b) {
+            const sa = score.get(a), sb = score.get(b);
+            return (sb.bytes / sb.ms) - (sa.bytes / sa.ms);
+        });
+      }
+      async function oneChunk(i) {
+        const start = i * CHUNK, end = Math.min(total, start + CHUNK) - 1, want = end - start + 1;
+        let lastErr = null;
+        for (const u of orderBy()) {
+          if (stopped) break;
+          checkAbort();
+          const t0 = Date.now();
+          try {
+            const r = await timedRange(u, 'bytes=' + start + '-' + end, STALL_MS, BODY_MS);
+            if (!r.bytes) throw new Error('range unsupported: ' + r.res.status);
+            /* 第200轮（AUDIT-20261111-03）：长度对不等于内容对。CDN 错误缓存/代理乱处理 Range 时，
+               会对 bytes=4-7 回 206 + 「bytes 0-3/8」+ 4 字节，以前照收，拼出 abcdabcd。
+               起点/终点/总长三项必须与请求一致，否则拒收换源。 */
+            const cr = contentRange(r.res);
+            if (!cr || cr.start !== start || cr.end !== end || (cr.total && cr.total !== total)) {
+              throw new Error('Content-Range 不符：请求 ' + start + '-' + end + '/' + total + '，返回 ' +
+                ((r.res.headers && r.res.headers.get && r.res.headers.get('content-range')) || '无'));
+            }
+            /* R202-02：分片响应自己也要复核版本。文件可能在下载途中被更新，
+               预检一致不代表此刻这一段还是同一版。 */
+            const rver = versionId(r.res);
+            if (baseVer && rver && rver !== baseVer) {
+              throw new Error('下载源分片版本不一致：期望 ' + baseVer + '，返回 ' + rver);
+            }
+            const buf = r.bytes;
+            if (buf.length !== want) throw new Error('short chunk ' + buf.length + '/' + want);
+            const s = score.get(u) || { bytes: 0, ms: 1 };
+            s.bytes += buf.length; s.ms += Math.max(1, Date.now() - t0);
+            score.set(u, s);
+            parts[i] = buf; got += buf.length;
+            onProgress && onProgress(got);
+            return;
+          } catch (e) {
+            if (e && e.name === 'AbortError') throw e;
+            lastErr = e;
+            // 出错/卡死的源降权：后面的分片先找别的源，不再每段都在它身上等满期限
+            const s = score.get(u);
+            if (s) s.ms += STALL_MS;
+          }
+        }
+        throw lastErr || new Error('chunk ' + i + ' failed');
+      }
+      const workers = Math.min(MAXP, n);
+      try {
+        await Promise.all(Array.from({ length: workers }, async function () {
+          for (;;) {
+            if (stopped) return;
+            const i = next++;
+            if (i >= n) return;
+            await oneChunk(i);
+          }
+        }));
+      } catch (e) {
+        stopAll(); // 一段彻底失败：其余并行分片立即停，不在后台继续耗流量
+        if (aborted() || (e && e.name === 'AbortError')) throw abortError();
+        return null;
+      }
+      checkAbort();
+      if (got !== total) return null;
+      return new Blob(parts);
+    } finally {
+      if (signal && signal.removeEventListener) signal.removeEventListener('abort', onOuterAbort);
+      inflight.forEach(function (c) { try { c.abort(); } catch (e) { /* ignore */ } });
     }
-    const workers = Math.min(MAXP, n);
-    try {
-      await Promise.all(Array.from({ length: workers }, async function () {
-        for (;;) { const i = next++; if (i >= n) return; await oneChunk(i); }
-      }));
-    } catch (e) { return null; }
-    if (got !== total) return null;
-    return new Blob(parts);
   }
 
   async function raceDownloadBlob(urls, onProgress) {
@@ -3868,6 +4106,18 @@ const UPDATE_ENABLED = false;
     let chunksGot = 0;    // chunks 里的字节数（换源续传的起点）
     let expectTotal = 0;  // 按响应 Content-Length/Content-Range 算出的文件总长（0 = 未知）
     const EVAL_MS = 2500, EVAL_GRACE_MS = 3000, STALL_MS = 10000;
+    /* R202-02：单连接竞速同样会「领先源读一半 → 带 Range 换源续传」，等长异版本也能拼成混合文件。
+       并行分段被版本筛掉后会退回这里，所以兜底路径也要认版本：以**实际贡献了前一段字节的
+       领先源**为基准（而不是最先返回响应头的源），续传轮只接同一版本的源。 */
+    let raceVer = '';
+    function versionId(res) {
+      const h = res && res.headers;
+      if (!h || typeof h.get !== 'function') return '';
+      const etag = h.get('etag');
+      if (etag) return 'etag:' + String(etag).trim();
+      const lm = h.get('last-modified');
+      return lm ? 'lm:' + String(lm).trim() : '';
+    }
 
     function resLen(res) {
       const h = res.headers;
@@ -3937,9 +4187,11 @@ const UPDATE_ENABLED = false;
               .then(resolve, reject);
           });
           clearTimeout(timer);
+          const ver = versionId(res);
+          const versionMismatch = chunksGot > 0 && raceVer && ver !== raceVer;
           const contentType = res.headers && res.headers.get ? String(res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase() : '';
           const errorPage = /^(text\/html|application\/(xhtml\+xml|json|problem\+json))$/.test(contentType);
-          if (!accepting || !res.ok || errorPage || (chunksGot > 0 && res.status !== 206)) {
+          if (!accepting || !res.ok || errorPage || (chunksGot > 0 && res.status !== 206) || versionMismatch) {
             if (controller) controller.abort();
             if (res.body && res.body.cancel) Promise.resolve(res.body.cancel()).catch(function () {});
             return;
@@ -3994,6 +4246,13 @@ const UPDATE_ENABLED = false;
       }
       if (best < 0) throw new Error('所有下载源都不可用');
       const leader = st[best];
+      /* R205-04：expectTotal 以前是「最先返回响应头的源」报的长度。镜像/CDN 报的
+         Content-Length 可能和真正贡献字节的 leader 不是同一份文件：leader 中途结束时，
+         chunksGot >= 那个偏小的总长会提前判完成，把截断包当好包交给调用方。
+         以 leader 自己的响应长度为准（206 取 Content-Range 的总长）。 */
+      const leaderLen = resLen(leader.response);
+      if (leaderLen > 0) expectTotal = leaderLen;
+      if (!raceVer) raceVer = versionId(leader.response);
       const others = remaining.filter(function (u) { return u !== leader.url; });
       for (const req of requests) {
         if (req.url === leader.url) continue;
@@ -4095,6 +4354,10 @@ const UPDATE_ENABLED = false;
           await nativeShapeLibDownload(pack.parts.map(shapeLibUrl), btn, pack.totalMB);
           btn.textContent = '正在导入图库…';
           const got = await bundledShapeLibBytes();
+          // AUDIT-20261111-01：先读通再写 IndexedDB（原生侧落盘前已做 ZIP 结构校验）
+          const upgrade = !!(state.shapeLib && state.shapeLibPackKey !== pack.key);
+          await loadShapeLibraryBytes(got.bytes, pack.label, upgrade);
+          state.shapeLibPackKey = pack.key;
           // 安卓也存一份到 IndexedDB：它也是 App 数据（卸载会删），但能当私有目录的安全网——
           // 万一某次更新后 files/ 里的图库读不到，启动时能立即从缓存恢复，不用重下 32MB。
           try {
@@ -4103,9 +4366,6 @@ const UPDATE_ENABLED = false;
               pushLog(cachedNative ? '图库同时存进 App 数据（' + got.bytes.length + 'B），更新后可直接恢复' : '图库缓存失败（不影响使用）');
             }
           } catch (e) { /* 缓存失败不影响本次使用 */ }
-          const upgrade = !!(state.shapeLib && state.shapeLibPackKey !== pack.key);
-          await loadShapeLibraryBytes(got.bytes, pack.label, upgrade);
-          state.shapeLibPackKey = pack.key;
           btn.textContent = pack.doneText;
           toast('图库包已下载到 App 内（下次启动自动加载，卸载会一起删）', 5000);
           pushLog('图库包已通过原生下载保存：' + got.bytes.length + 'B');
@@ -4152,6 +4412,13 @@ const UPDATE_ENABLED = false;
       shapeDlProgressStop();
       btn.textContent = '正在导入图库…';
       const packBytes = new Uint8Array(await blob.arrayBuffer());
+      /* AUDIT-20261111-01：先在内存里把图库完整读一遍（ZIP + 资源），通过了才写任何持久化存储。
+         以前是先写 App 私有目录 / IndexedDB / 桌面程序目录，再解析——坏包一来三处旧图库全被覆盖，
+         页面报失败也回不去，下次启动还会读到坏缓存。loadShapeLibraryBytes 失败会抛错，落到下面 catch。
+         精简→原图升级时已有笔刷不缺 tip，需要强制重建才能换上高清笔尖。 */
+      const isUpgrade = !!(state.shapeLib && state.shapeLibPackKey !== pack.key);
+      await loadShapeLibraryBytes(packBytes, pack.label, isUpgrade);
+      state.shapeLibPackKey = pack.key;
       // 原神式落盘：写进 App 私有目录（外部优先），下次启动直接加载，升级安装不丢，卸载才删
       const savedNative = await nativePersistLibBytes(packBytes, true);
       if (packBytes.length <= 120 * 1048576) {
@@ -4173,10 +4440,6 @@ const UPDATE_ENABLED = false;
           }
         } catch (e) { pushLog('图库包保存异常：' + ((e && e.message) || e)); }
       }
-      // 精简→原图升级时已有笔刷不缺 tip，需要强制重建才能换上高清笔尖
-      const isUpgrade = !!(state.shapeLib && state.shapeLibPackKey !== pack.key);
-      await loadShapeLibraryBytes(packBytes, pack.label, isUpgrade);
-      state.shapeLibPackKey = pack.key;
       btn.textContent = pack.doneText;
       syncShapeLibDownloadButtons();
       refreshShapeLibStoreUI(); // 下完让「图库已装载」与删除按钮立即可见

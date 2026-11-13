@@ -735,13 +735,24 @@
         if (opts.noTextureBake === true) xml = setParam(xml, 'Texture/Pattern/Enabled', 'false');
         // Apply only explicit export overrides; retain other native XML fields.
         const scaleOverride=Number.isFinite(opts.sizeScale) && opts.sizeScale>0 && opts.sizeScale!==1;
+        /* 第201轮（第189轮审查 P2-#12）：原生 XML 透传乘倍数后也守 5000px 上限（与 convert.js GUARD_RULES 一致）。
+           以前 sizeScale=1000 直接把 575px 写成 575000px，绕过崩溃防护也不提示。超了按比例钳到 5000 并给警告。 */
+        // convert.js 的 withSizeAndSpacing 已把 sizePx 乘过倍数并钳到 5000，并记下实际生效的倍数 _sizeScaleApplied；
+        // 直接调用 writeBundle（没经过 convert）时 sizePx 还是原值，按它自己算一遍上限。
+        const applied = Number(brush._sizeScaleApplied);
+        let sizeFactor = !scaleOverride ? 1 : (Number.isFinite(applied) && applied > 0 ? applied : opts.sizeScale);
+        const baseSize = Number(brush.sizePx);
+        if (scaleOverride && !(applied > 0) && Number.isFinite(baseSize) && baseSize > 0 && baseSize * sizeFactor > 5000) sizeFactor = 5000 / baseSize;
+        if (scaleOverride && sizeFactor < opts.sizeScale - 1e-9) {
+          warnings.push((brush.name || '未命名') + '：尺寸倍数 ×' + opts.sizeScale + ' 会超过 5000px 上限，已钳制到 5000px');
+        }
         const spacingOverride=Number.isFinite(opts.spacingOverride) && opts.spacingOverride>0;
         const definition=collectParams(xml).brush_definition;
         if(definition) {
           const patched=definition.raw.replace(/<(?:Brush|MaskGenerator)\b[^>]*>/g,function(tag){
             if(scaleOverride){
-              tag=tag.replace(/(\bdiameter=")([0-9.eE+-]+)(")/g,function(_,a,n,c){return a+(Number(n)*opts.sizeScale).toFixed(3)+c;});
-              tag=tag.replace(/(\bscale=")([0-9.eE+-]+)(")/g,function(_,a,n,c){return a+(Number(n)*opts.sizeScale).toFixed(6)+c;});
+              tag=tag.replace(/(\bdiameter=")([0-9.eE+-]+)(")/g,function(_,a,n,c){return a+Math.min(5000,Number(n)*sizeFactor).toFixed(3)+c;});
+              tag=tag.replace(/(\bscale=")([0-9.eE+-]+)(")/g,function(_,a,n,c){return a+(Number(n)*sizeFactor).toFixed(6)+c;});
             }
             if(spacingOverride){
               tag=tag.replace(/(\bspacing=")[^"]*(")/g,function(_,a,c){return a+(opts.spacingOverride/100).toFixed(4)+c;});

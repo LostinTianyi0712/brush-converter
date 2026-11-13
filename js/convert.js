@@ -182,11 +182,13 @@
     const raw = holder[key];
     if (raw === undefined || raw === null) return null;
     const n = typeof raw === 'number' ? raw : Number(raw);
-    let v = n;
-    if (!Number.isFinite(n)) v = def;
-    else if (n < min) v = min;
-    else if (n > max) v = max;
-    else return null;
+    /* AUDIT-20261111-05：NaN/Infinity 走兜底值后也必须再过一次上下限。sizePx 的兜底值取笔尖实际边长，
+       本身没有上限——6000×1 的笔尖配 sizePx=NaN，以前直接把 6000 写进 ABR Dmtr，越过 5000px 防线。 */
+    let v = Number.isFinite(n) ? n : Number(def);
+    if (!Number.isFinite(v)) v = min;
+    if (v < min) v = min;
+    else if (v > max) v = max;
+    if (v === n) return null;
     notes.push((label || key) + ' ' + (Number.isFinite(n) ? n : String(raw)) + '→' + v);
     return v;
   }
@@ -253,6 +255,10 @@
     const b = Object.assign({}, brush);
     if (Number.isFinite(opts.sizeScale) && opts.sizeScale > 0) {
       b.sizePx = clampScaledSize((brush.sizePx || 40) * opts.sizeScale, clampScaledSize(brush.sizePx, 40));
+      /* 第201轮：记下钳制后实际生效的倍数。原生 XML 透传的写端（Krita .kpp）不用 sizePx、而是直接给 XML 里的
+         diameter/scale 乘倍数，必须用这个值才不会绕过 5000px 上限（第189轮审查 P2-#12）。 */
+      const unscaled = Number(brush.sizePx);
+      if (Number.isFinite(unscaled) && unscaled > 0) b._sizeScaleApplied = b.sizePx / unscaled;
       if (brush.dualBrush && brush.dualBrush.diameter > 0) {
         b.dualBrush = Object.assign({}, brush.dualBrush, {diameter:clampScaledSize(brush.dualBrush.diameter * opts.sizeScale, clampScaledSize(brush.dualBrush.diameter, 30))});
       }
@@ -304,8 +310,10 @@
         if (sai2read.isSai2Pack(bytes,zentries)) return 'sai2pack';
         if (zentries.some(e => /^paintoppresets\/[^/]+\.kpp$/i.test(e.name))) return 'kbundle';
         if (lower.endsWith('.mtd')) return 'mtd'; // 优动漫绘画助手素材包（zip 壳），须先于 Painter 库判定
-        if (painterlib && safe(function () { return painterlib.isLibraryZip(bytes); })) return 'painter';
+        /* 第201轮（第189轮审查 P2-#15）：Procreate 判定提到 Painter 之前。Painter 库的判定条件是「有任意 .xml」，
+           带 readme.xml 之类附件的 .brushset 以前会被当成 Painter 库解析失败；Painter 库里不会有 Brush.archive。 */
         if (zentries.some(e => /Brush\.archive$/i.test(e.name))) return 'procreate';
+        if (painterlib && safe(function () { return painterlib.isLibraryZip(bytes); })) return 'painter';
         if (lower.endsWith('.mtd')) return 'mtd';
         /* 第164轮：Infinite Painter .prbr 与 ZIP 壳的 .mdp 各自已有 reader，
            但过去 detect() 没接线，导致「转出到 .prbr/.mdp 后无法再转入」。
@@ -3528,13 +3536,21 @@ Write-Host 'restart MediBang Paint Pro'
      这类笔刷转出时只能按参数生成圆形/椭圆笔尖（computed），或只有纹理图（grain）。
      用户要求「转出时明确提示」，所以判断集中在这里，UI 只负责显示。 */
   function tipSourceAudit(brushList) {
-    const out = { noTip: [], procedural: [], grainOnly: [] };
+    const out = { noTip: [], procedural: [], grainOnly: [], bruTexOnly: [], bruTexMissing: [], procreateNoTip: 0 };
     for (const b of (brushList || [])) {
       if (!b || b.enabled === false) continue;
       const hasTip = !!b.tip; // A secondary image cannot replace the missing primary.
       if (!hasTip) {
+        /* 【第198轮】画世界官方「小方块/网点」类：文件里没有笔尖图，图案全靠内置纹理 ptN。
+           这不是「缺笔尖」——单独归类，下载纹理库后应提示已补上，而不是继续报缺图。 */
+        if (b.source === 'bru' && b.texAssetId && b.hasTexture !== false) {
+          if (textureGray(b)) out.bruTexOnly.push(b.name);
+          else out.bruTexMissing.push(b.name);
+          continue;
+        }
         out.noTip.push(b.name);
         if (b.computed) out.procedural.push(b.name);
+        if (b.source === 'procreate') out.procreateNoTip++;
       } else if (b.tipSource === 'grain') {
         out.grainOnly.push(b.name);
       }
@@ -3544,17 +3560,26 @@ Write-Host 'restart MediBang Paint Pro'
 
   function tipSourceHint(audit) {
     const msgs = [];
-    const list = audit || { noTip: [], procedural: [], grainOnly: [] };
+    const list = Object.assign({ noTip: [], procedural: [], grainOnly: [], bruTexOnly: [], bruTexMissing: [], procreateNoTip: 0 }, audit || {});
     function names(arr, n) {
       const head = arr.slice(0, n).join('、');
       return arr.length > n ? head + ' 等' : head;
     }
     if (list.noTip.length) {
       let m = list.noTip.length + ' 支笔刷源文件没有笔尖（shape）图片：' + names(list.noTip, 3) +
-        '；跨软件或强制重建只能生成近似圆形/椭圆笔尖，笔触可能不同；Procreate原生保留路径可保留内置引用';
+        '；跨软件或强制重建只能生成近似圆形/椭圆笔尖，笔触可能不同' +
+        (list.procreateNoTip ? '；Procreate原生保留路径可保留内置引用' : '');
       if (list.procedural.length === list.noTip.length) m += '（这些笔刷本身就是参数化笔刷，没有采样图像）';
       else if (list.procedural.length) m += '（其中 ' + list.procedural.length + ' 支为参数化生成）';
       msgs.push(m);
+    }
+    if (list.bruTexOnly.length) {
+      msgs.push(list.bruTexOnly.length + ' 支画世界内置笔刷的图案来自内置纹理（已从纹理库补上）：' + names(list.bruTexOnly, 3) +
+        '；文件里没有笔尖图，转出时用圆形笔尖 + 该纹理还原，网点/方格的疏密和画世界里可能略有不同');
+    }
+    if (list.bruTexMissing.length) {
+      msgs.push(list.bruTexMissing.length + ' 支画世界内置笔刷的图案来自内置纹理，但纹理库里没找到：' + names(list.bruTexMissing, 3) +
+        '；请在「高级设置 → 素材库」下载画世界纹理库后重新导入，否则只能转出实心圆笔尖');
     }
     if (list.grainOnly.length) {
       msgs.push(list.grainOnly.length + ' 支笔刷只有纹理（grain）图、没有形状（shape）图：' + names(list.grainOnly, 3) +

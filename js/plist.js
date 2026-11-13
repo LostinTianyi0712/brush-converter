@@ -52,6 +52,11 @@
         p += n;
         return v;
       }
+      /* 第201轮（第189轮审查 P2-#14）：长度字段来自文件，先核对剩余字节够不够，再按长度循环/分配。
+         以前 UTF-16 字符串或数组声明 2^32 个元素会直接跑满循环直到 OOM。 */
+      function needBytes(n) {
+        if (!(n >= 0) || p + n > bytes.length) throw new Error('plist 长度越界：对象 ' + idx + ' 声明 ' + n + ' 字节，文件只剩 ' + Math.max(0, bytes.length - p));
+      }
       switch (type) {
         case 0x0: obj = info === 0x08 ? false : info === 0x09 ? true : null; break;
         case 0x1: obj = readSint(bytes, p, 1 << info); break;
@@ -72,10 +77,11 @@
           obj = new Date((dv.getFloat64(0, false) + 978307200) * 1000);
           break;
         }
-        case 0x4: { const len = readLength(); obj = bytes.subarray(p, p + len); break; }
-        case 0x5: { const len = readLength(); obj = util().ascii(bytes, p, len).replace(/\u0000/g, ''); break; }
+        case 0x4: { const len = readLength(); needBytes(len); obj = bytes.subarray(p, p + len); break; }
+        case 0x5: { const len = readLength(); needBytes(len); obj = util().ascii(bytes, p, len).replace(/\u0000/g, ''); break; }
         case 0x6: {
           const len = readLength();
+          needBytes(len * 2);
           let s = '';
           for (let i = 0; i < len; i++) s += String.fromCharCode((bytes[p + i * 2] << 8) | bytes[p + i * 2 + 1]);
           obj = s;
@@ -86,12 +92,14 @@
         case 0xb:
         case 0xc: {
           const len = readLength();
+          needBytes(len * refSize);
           obj = { $array: [] };
           for (let i = 0; i < len; i++) obj.$array.push(readUint(bytes, p + i * refSize, refSize));
           break;
         }
         case 0xd: {
           const len = readLength();
+          needBytes(len * 2 * refSize);
           obj = { $dict: [] };
           for (let i = 0; i < len; i++) {
             obj.$dict.push([readUint(bytes, p + i * refSize, refSize), readUint(bytes, p + (len + i) * refSize, refSize)]);

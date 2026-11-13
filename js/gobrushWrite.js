@@ -165,6 +165,15 @@
     return bytes;
   }
 
+  /* 第206轮 R204-01：纹理平铺边长 ≈ GOPAINT_TILE_K × grainScale²（画布像素），与 gobrush.js 同名常量一致 */
+  const GOPAINT_TILE_K = 0.576;
+  function grainScaleFor(texW, textureScale) {
+    const sc = Number(textureScale);
+    const tile = texW * (Number.isFinite(sc) && sc > 0 ? sc : 1);
+    if (!(tile > 0)) return undefined;
+    return Math.max(1, Math.min(100, Math.round(Math.sqrt(tile / GOPAINT_TILE_K))));
+  }
+
   function setPropField(bytes, propName, value, fieldTag) {
     // Native editor exports store the current value in 0x18. 0x15 is
     // attribute metadata; changing it leaves the imported slider unchanged.
@@ -300,6 +309,8 @@
     const depth = EXTRA && EXTRA.hasTexture
       ? Math.round((EXTRA.textureDepth === undefined ? 0.5 : EXTRA.textureDepth) * 100) : 0;
     setPropField(propBytes, 'grainDepth', Math.max(0, Math.min(100, depth)));
+    // 第206轮 R204-01：grainScale 不再固定继承模板 25（undefined = 没有可换算的纹理，保持模板值）
+    if (EXTRA && EXTRA.grainScale !== undefined) setPropField(propBytes, 'grainScale', EXTRA.grainScale);
     const scatter = (EXTRA && EXTRA.scatter !== undefined && EXTRA.scatter !== null)
       ? Math.max(0, Math.min(100, Math.round(EXTRA.scatter)))
       : 0;
@@ -375,7 +386,21 @@
         grain.rgba.set([coverage, coverage, coverage, 255], i);
       }
     }
+    const realGrain = !!grain && EXTRA.grainMode !== 'tip';   // 第206轮：模板白图 / 笔尖当纹理不参与 grainScale 换算
     if (!grain) grain = {w:800,h:800,rgba:new Uint8Array(800 * 800 * 4).fill(255)};
+    /* 【第206轮 R204-01（作者：Claude）】纹理「比例」grainScale 跟随源纹理缩放。
+       MatePad Pro 12.2 + 天生会画实测（第204轮 Codex）：同一张网点图 32/64/128 px 三种分辨率周期相同，
+       grainScale 5/25/50 时周期 7/180/720 px，即整张纹理平铺边长 ≈ 0.576 × grainScale²（画布像素，
+       与本文件尺寸换算同属 300dpi 近似标定）。源侧平铺边长 = 纹理像素宽 × textureScale（PS / 画世界口径，
+       画世界官方小方块 64 px × 50% = 32 px，MuMu 实测周期 16 px 吻合）。反解 grainScale = √(边长 / 0.576)。
+       优先级：调用方显式 opts.grainScale > 原生 .gobrush 自己的值 > 由源纹理换算；没有真实纹理
+       （模板白图 / grainMode='tip' 用笔尖当纹理）时不写，保持模板 25，旧输出逐字节不变。
+       ⚠ 只在一台平板、一种画布上标定；跨画布 / DPI / 「自适应纸张纹理」开关的影响未测。 */
+    if (EXTRA.grainScale === undefined) {
+      if (brush.source === 'gopaint' && brush.gopaintGrainScale > 0) EXTRA.grainScale = Math.round(brush.gopaintGrainScale);
+      else if (realGrain && brush.hasTexture && grain.w > 0) EXTRA.grainScale = grainScaleFor(grain.w, brush.textureScale);
+    }
+    if (EXTRA.grainScale !== undefined) EXTRA.grainScale = Math.max(1, Math.min(100, Math.round(Number(EXTRA.grainScale) || 25)));
     grain = limitImage(grain, Math.max(1, Math.min(2048, opts.maxTextureSize || 2048)));
     const shapeBytes = png.encode(tip.w, tip.h, tip.rgba), grainBytes = grainPng(grain);
     const snapshot = renderSnapshot(tip, false, brush);

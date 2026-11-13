@@ -84,6 +84,9 @@
   function parseRecord(bytes, start, payloadLen) {
     const hs = readVarint(bytes, start);
     const headerEnd = start + hs.value;
+    /* 第201轮（第189轮审查 P2-#13）：记录头长度必须落在本条负载内。以前几字节的畸形记录声明 3e8 字节记录头，
+       下面的循环会逐字节读 varint、push 上亿个类型码（约 3.8s / 550MB），detect 和 parse 各来一遍。 */
+    if (hs.value < 1 || headerEnd > start + payloadLen || headerEnd > bytes.length) throw new Error('SQLite 记录头长度异常，数据库已损坏');
     const types = [];
     let p = hs.next;
     while (p < headerEnd) {
@@ -102,6 +105,8 @@
 
   /* ---------- page / b-tree reading ---------- */
   function readPayload(bytes, pageSize, usable, reserved, pageNo, cellPos, totalPayload) {
+    // 负载字节全在文件页里，声明长度超过整个文件必是损坏：先拒收，别按声明长度分配缓冲区
+    if (!(totalPayload >= 0) || totalPayload > bytes.length) throw new Error('SQLite 记录长度超出文件，数据库已损坏');
     const maxLocal = usable - 35;
     const minLocal = Math.floor((usable - 12) * 32 / 255) - 23;
     let local = totalPayload;
