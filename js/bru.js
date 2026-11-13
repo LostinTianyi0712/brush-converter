@@ -196,6 +196,8 @@
       parts.push(u8arr(fVarint(31, 1)));                          // USESHAPE
     }
     if (b.hasTexture) parts.push(u8arr(fVarint(28, 1)));        // TEXTURE ON
+    // Native texture panel stores “apply texture to each tip” inverted.
+    if (b.bruTexturePerTip === false) parts.push(u8arr(fVarint(99, 1)));
     parts.push(u8arr(fVarint(29, b.textureInverted ? 1 : 0)));  // REVERSETEX (distinct from shape f32)
     /* 【第206轮 R204-02（作者：Claude）】f35 必须写 **varint**（wire type 0），不是 float。
        依据：bru_标定 / 样本 / pressure193 / 官方小方块等 165 份原生 BRU 的 f35 全部是 varint（如 `98 02 64` = 100）；
@@ -771,6 +773,7 @@
         scatterBothAxes: scatterBothAxes,
         scatterCount: scatterCount,
         hasTexture: textureOn,
+        bruTexturePerTip: !o[99],
         texAssetId: o[6] instanceof Uint8Array ? util.utf8Decode(o[6]).replace(/\u0000+$/, '') : undefined,
         textureInverted: !!o[29],
         textureScale: texScale,

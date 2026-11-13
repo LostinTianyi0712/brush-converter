@@ -1320,6 +1320,9 @@
       texAssetId: texMatchId || texAssetId || brush.texAssetId || (opts && opts.texAssetId),
       bruTextureBytes: customTexture,
       hasTexture: brush.source === 'bru' ? brush.hasTexture : !!(texAssetId || texMatchId),
+      // Fixed texture keeps the same dot grid through successive dabs. Native
+      // A/B strokes of the original Huangtu bitmap reproduce the difference.
+      bruTexturePerTip: match && match.custom ? false : brush.bruTexturePerTip,
       // 第206轮：内置纹理精确命中时照抄原生结构（见上方 texMatch 注释）；未命中时这三项都是 undefined/false，输出不变
       noShape: texMatchNoShape || undefined,
       bruColor: texMatchId ? -16777216 : undefined,
@@ -1373,7 +1376,7 @@
       const mapping={name:[3],pkgId:[2],sizePx:[8,9,12,50,135,136],spacingPct:[17],opacity:[13,14],minSizeRatio:[9,50],minOpacityRatio:[14],
         pressure:[36,47,9,50,14],pressureSize:[36],pressureOpacity:[47],bruShapeInverted:[32],flowPct:[25,26,51],minFlowRatio:[26,51],angle:[20],angleJitterDeg:[21],bruRotationMode:[19,115],
         roundness:[22],hardness:[23],sizeJitterPct:[10],spacingJitterPct:[18],flowJitterPct:[27],countJitterPct:[60],
-        hasTexture:[28,123],texAssetId:[6],textureInverted:[29],textureDepth:[123],textureScale:[24],textureBrightness:[35],textureContrast:[33],scatterOn:[56,57,58,59],
+        hasTexture:[28,123],texAssetId:[6],bruTexturePerTip:[99],textureInverted:[29],textureDepth:[123],textureScale:[24],textureBrightness:[35],textureContrast:[33],scatterOn:[56,57,58,59],
         scatterPct:[58],scatterCount:[59],scatterBothAxes:[57],taperOn:[74,77,78],taperSize:[77],taperOpacity:[78],wetEdgesOn:[100,101,129],
         wetEdgesAmount:[101],wetEdgesDepth:[129],borderOn:[92],borderBlend:[95],borderBrightness:[93],borderStrength:[94],renderCount:[97],
         bruUuid:[120],bruDualRefUuid:[119,120,121,122],dualSubName:[121],bruDualEnabled:[119],dualBlendMode:[122],
