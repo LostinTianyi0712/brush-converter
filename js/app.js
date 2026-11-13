@@ -94,8 +94,7 @@
 
   /* ---------------- brush preview canvas ---------------- */
   function tipToCanvas(brush, cv, opts) {
-    const tip = brush.tip;
-    if (!tip) { cv.width = 1; cv.height = 1; return; }
+    const tip = brush.tip || BC.convert.synthTip(Object.assign({}, brush, { angle: 0 }), 96);
     let rgba, w = tip.w, h = tip.h;
     if (tip.rgba) rgba = tip.rgba;
     else {
@@ -121,10 +120,9 @@
       const sy = y * scale;
       for (let x = 0; x < dw; x++) {
         const si = ((sy * w) + (x * scale)) * 4 + 3;
-        const a = rgba[si] / 255;
-        const v = Math.round(255 * (1 - a) * 0.85 + 30);
         const di = (y * dw + x) * 4;
-        img.data[di] = v; img.data[di + 1] = v; img.data[di + 2] = v; img.data[di + 3] = 255;
+        img.data[di] = 30; img.data[di + 1] = 30; img.data[di + 2] = 30;
+        img.data[di + 3] = rgba[si];
       }
     }
     ctx.putImageData(img, 0, 0);
@@ -135,8 +133,7 @@
     const ctx = cv.getContext('2d');
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, W, H);
-    const tip = brush.tip;
-    let tipCv = document.createElement('canvas');
+    const tipCv = document.createElement('canvas');
     tipToCanvas(brush, tipCv, {});
     const tipW = tipCv.width || 1, tipH = tipCv.height || 1;
     const sizePx = Math.max(4, Math.min(70, (brush.sizePx || 60) * 0.55));
@@ -161,7 +158,8 @@
       const y0 = H / 2 + Math.sin(t * Math.PI * 1.6) * 14;
       // 压感模拟：两端细中间粗
       const press = pressure ? (0.35 + 0.65 * Math.sin(t * Math.PI)) : 1;
-      const baseScale = (sizePx / Math.max(tipW, tipH)) * (2.2 + 1.6 * (1 - minSize) * press);
+      const diameter = Math.min(62, sizePx * (2.2 + 1.6 * (1 - minSize) * press));
+      const baseScale = diameter / Math.max(tipW, tipH);
       for (let c = 0; c < count; c++) {
         const jitter = (Math.sin(x * 12.9898 + c * 78.233) * 43758.5453) % 1;
         const jitter2 = (Math.sin(x * 39.425 + c * 11.135) * 24634.6345) % 1;
@@ -192,9 +190,15 @@
   /* 纹理遮罩画布（无纹理返回 null） */
   const textureCache = new WeakMap();
   function textureCanvas(brush) {
+    if (brush.hasTexture === false) return null;
     if (textureCache.has(brush)) return textureCache.get(brush);
     let w = 0, h = 0, get = null;
-    if (brush._grainRgba && brush._grainRgba.w) {
+    if (brush.source === 'bru') {
+      const tex = BC.convert.textureGray(brush);
+      if (!tex) return null;
+      w = tex.w; h = tex.h;
+      get = function (x, y) { return tex.gray[y * w + x]; };
+    } else if (brush._grainRgba && brush._grainRgba.w) {
       w = brush._grainRgba.w; h = brush._grainRgba.h;
       get = function (x, y) { return brush._grainRgba.rgba[(y * w + x) * 4 + 3]; };
     } else if (brush._patternPixels && brush._patternPixels.w) {
@@ -393,9 +397,10 @@
     info.className = 'binfo';
     const tags = [];
     if (b.pressure) tags.push('<span class="tag">压感</span>');
-    if (b.tipSource === 'synth') tags.push('<span class="tag gray">合成圆头</span>');
+    if (b.tipSource === 'synth') tags.push(b.bruProceduralTip ? '<span class="tag gray">参数化笔尖</span>'
+      : b.source === 'bru' ? '<span class="tag gray">笔尖原图缺失</span>' : '<span class="tag gray">合成圆头</span>');
     if (b.shapeFromLibrary) tags.push('<span class="tag">图库补回</span>');
-    if (b.hasTexture && (b._grainRgba || b._patternPixels)) tags.push('<span class="tag teal">纹理</span>');
+    if (b.hasTexture && (b._grainRgba || b._patternPixels || (hsjTexReady() && needsHsjTexture(b)))) tags.push('<span class="tag teal">纹理</span>');
     else if (b.hasGrain) tags.push('<span class="tag gray">纹理略</span>');
     if (b.scatterOn && (b.scatterPct || 0) > 0) tags.push('<span class="tag">散布</span>');
     if (b.dualOn) {
@@ -880,24 +885,31 @@
     try { await loadHsjScript(url); } finally { URL.revokeObjectURL(url); }
     return !!BC.hsjShapes;
   }
-  async function ensureHsjShapes() {
-    if (BC.hsjShapes) { hsjLibState = 'ready'; renderHsjLibState(); return true; }
+  function hasHsjStockPen() {
+    return !!(BC.hsjShapes && BC.hsjShapes.get('textures/gb.png'));
+  }
+  async function ensureHsjShapes(stockPen) {
+    const ready = function () { return stockPen ? hasHsjStockPen() : !!BC.hsjShapes; };
+    if (ready()) { hsjLibState = 'ready'; renderHsjLibState(); return true; }
     hsjLibState = 'loading'; renderHsjLibState('正在加载画世界笔尖库…');
     try {
-      const cached = await ShapeLibStore.get(HSJ_LIB_KEY);
+      const cached = BC.hsjShapes ? null : await ShapeLibStore.get(HSJ_LIB_KEY);
       if (cached) {
         try {
-          if (await loadHsjFromBlob(cached)) { hsjLibState = 'ready'; renderHsjLibState(); if (typeof backfillHsjShapesInFiles === 'function') backfillHsjShapesInFiles(); return true; }
+          await loadHsjFromBlob(cached);
+          if (ready()) { hsjLibState = 'ready'; renderHsjLibState(); if (typeof backfillHsjShapesInFiles === 'function') backfillHsjShapesInFiles(); return true; }
         } catch (e) { hsjFailedSources.cache = true; }
       }
     } catch (e) { /* 缓存不可用：继续在线 */ }
-    const urls = hsjShapesCandidates().filter(function (u) { return !hsjFailedSources[u]; });
+    const urls = hsjShapesCandidates().map(function (u) {
+      return stockPen && /^https?:/.test(u) ? u + '?v=2.8.95' : u;
+    }).filter(function (u) { return !hsjFailedSources[u]; });
     for (const u of urls) {
       try { await loadHsjScript(u); } catch (e) { hsjFailedSources[u] = true; continue; }
-      if (BC.hsjShapes) { hsjLibState = 'ready'; renderHsjLibState(); if (typeof backfillHsjShapesInFiles === 'function') backfillHsjShapesInFiles(); return true; }
+      if (ready()) { hsjLibState = 'ready'; renderHsjLibState(); if (typeof backfillHsjShapesInFiles === 'function') backfillHsjShapesInFiles(); return true; }
       hsjFailedSources[u] = true;
     }
-    hsjLibState = 'missing'; renderHsjLibState();
+    hsjLibState = BC.hsjShapes ? 'ready' : 'missing'; renderHsjLibState();
     return false;
   }
   async function installHsjBytes(bytes, signal, runToken) {
@@ -1278,8 +1290,7 @@
   function needsHsjBuiltinTip(b) {
     if (!b || b.source !== 'bru' || b.tip) return false;
     if (BC.convert && typeof BC.convert.builtinTipKey === 'function') return !!BC.convert.builtinTipKey(b);
-    return /^ps(?:[1-9]|[1-9][0-9]|1[0-7][0-9]|18[0-4])$/.test(b.oldTexId || '') ||
-      (!b.oldTexId && /^pt(?:[1-9]|[1-9][0-9]|1[0-7][0-9]|18[0-4])$/.test(b.texAssetId || ''));
+    return /^ps(?:[1-9]|[1-9][0-9]|1[0-7][0-9]|18[0-4])$/.test(b.oldTexId || '');
   }
   function backfillHsjShapesInFiles() {
     const hasLib = !!BC.hsjShapes;
@@ -1307,11 +1318,16 @@
     return fixed;
   }
   async function restoreHsjShapes(parsed) {
+    const shapeRes = typeof state !== 'undefined' && state && state.shapeLib;
+    if (shapeRes) BC.convert.restoreHsjTips(parsed, { shapeResources: shapeRes });
     const needed = parsed && parsed.brushes && parsed.brushes.some(needsHsjBuiltinTip);
     if (!needed) return;
+    const stockPen = parsed.brushes.some(function (b) {
+      return needsHsjBuiltinTip(b) && BC.convert.builtinTipKey && BC.convert.builtinTipKey(b) === 'textures/gb.png';
+    });
     try {
-      if (!BC.hsjShapes) {
-        if (!hsjShapesLoading) hsjShapesLoading = ensureHsjShapes();
+      if (!BC.hsjShapes || (stockPen && !hasHsjStockPen())) {
+        if (!hsjShapesLoading) hsjShapesLoading = ensureHsjShapes(stockPen);
         const ok = await hsjShapesLoading;
         hsjShapesLoading = null;
         if (!ok && !hsjTipNotified) {
@@ -1319,10 +1335,21 @@
           toast('有笔刷缺画世界内置笔尖：可在「设置」里点「下载笔尖库（14MB）」补回', 6500);
         }
       }
-      if (BC.hsjShapes) BC.convert.restoreHsjTips(parsed);
-      else if (typeof state !== 'undefined' && state && state.shapeLib) BC.convert.restoreHsjTips(parsed, { shapeResources: state.shapeLib });
-      else pushLog('画世界内置笔尖：本安装包未内置该库，ps* 笔尖暂留空');
+      if (BC.hsjShapes) BC.convert.restoreHsjTips(parsed, shapeRes ? { shapeResources: shapeRes } : undefined);
+      else pushLog('画世界内置笔尖库未载入');
     } catch (e) { pushLog(String(e.message || e)); }
+  }
+
+  let hsjTexturesLoading = null;
+  function needsHsjTexture(brush) {
+    return brush && brush.source === 'bru' && brush.hasTexture && !brush._grainRgba && !brush._patternPixels &&
+      /^pt[1-9][0-9]*$/.test(brush.texAssetId || '');
+  }
+  async function restoreHsjResources(parsed) {
+    await restoreHsjShapes(parsed);
+    if (hsjTexReady() || !parsed.brushes.some(needsHsjTexture)) return;
+    if (!hsjTexturesLoading) hsjTexturesLoading = ensureHsjTextures().finally(function () { hsjTexturesLoading = null; });
+    await hsjTexturesLoading;
   }
 
   async function parseRecord(rec, displayName, bytes, opts) {
@@ -1345,7 +1372,7 @@
           });
           if (shouldCancel()) return;
           setProgress(null);
-          await restoreHsjShapes(parsed);
+          await restoreHsjResources(parsed);
           if (shouldCancel()) return;
           adoptParsed(rec, bytes, parsed, displayName);
           return;
@@ -1365,12 +1392,12 @@
         }));
         if (shouldCancel()) return;
         setProgress(null);
-        await restoreHsjShapes(parsed);
+        await restoreHsjResources(parsed);
         if (shouldCancel()) return;
         adoptParsed(rec, bytes, parsed, displayName);
       } else {
         const parsed = BC.convert.parseFile(displayName, bytes, opts);
-        await restoreHsjShapes(parsed);
+        await restoreHsjResources(parsed);
         if (shouldCancel()) return;
         adoptParsed(rec, bytes, parsed, displayName);
       }
@@ -1682,7 +1709,7 @@
           const base = rec.baseName || String(rec.name || '').replace(/\.[^.]+$/, '') || '笔刷组';
           const gname = BC.convert.sanitizeName((opts.prefix || '') + base, 0, true);
           for (const b of (rec.brushes || [])) {
-            if (!b || b.enabled === false || !b.hasTexture) continue;
+          if (!b || b.enabled === false || !b.hasTexture) continue;
             const t = BC.convert.textureGray(b);
             if (!t) { missingTextures++; continue; }
             // 同一张纹理只出一个 PAT：按内容去重，归属它第一次出现的组
@@ -1787,7 +1814,7 @@
       await new Promise(function (r) { setTimeout(r, 0); });
       const list = rec.brushes.filter(b => b.enabled !== false);
       if (!list.length) continue;
-      if (list.some(function (b) { return b.dualOn && !b.dualTip; })) {
+      if (list.some(function (b) { return b.dualOn && !b.dualTip && !(b.dualSubBrush && b.dualSubBrush.bruProceduralTip); })) {
         warnings.push('部分双笔刷缺少副笔图像，无法完整写出；请提供含主副笔资源的原始整包');
       }
       const targets = opts.target === 'all' ? ALL_FORMATS : [opts.target || 'bru'];
@@ -2558,7 +2585,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.94';
+const APP_VERSION = '2.8.95';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;

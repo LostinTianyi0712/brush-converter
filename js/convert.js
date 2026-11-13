@@ -488,21 +488,16 @@
       .replace(/&amp;/g, '&');
   }
 
-  /* 内置笔尖引用只有一种写法：oldTexId 里直接放内置图库的键 psN（早期样本如此）。
-     texAssetId 的 ptN 是【纹理】编号，不是笔尖形状编号 —— 第178轮曾按编号相同
-     猜成 psN 去补笔尖，结果用户导入后笔刷图案完全变了（第179轮实测反馈）。
-     拿不到真实笔尖时宁可留空交给上层合成，也不能猜一个形状塞进去。 */
+  /* BRU f7 引用内置 psN 或预设自带的 textures/ 文件。纹理 f6 与笔尖独立。 */
   function builtinTipKey(b) {
     if (!b) return null;
-    const old = String(b.oldTexId || '');
-    return /^ps[1-9][0-9]*$/.test(old) ? old : null;
+    const old = String(b.oldTexId || '').replace(/\u0000+$/, '').replace(/\\/g, '/').toLowerCase();
+    return /^(?:ps[1-9][0-9]*|textures\/[a-z0-9_-]+\.png)$/.test(old) ? old : null;
   }
 
   function restoreHsjTips(result, opts) {
     if (!result || !result.brushes) return 0;
-    const missing = result.brushes.filter(function (b) {
-      return b.source === 'bru' && !b.tip && !!builtinTipKey(b);
-    });
+    const missing = result.brushes.filter(function (b) { return b.source === 'bru' && !b.tip && builtinTipKey(b); });
     if (!missing.length) return 0;
     let lib = null;
     if (isNode) {
@@ -517,18 +512,14 @@
     let count = 0;
     missing.forEach(function (b) {
       const key = builtinTipKey(b);
-      if (!key) return;
       const raw = lib ? lib.get(key) : null;
-      let pngBytes = raw ? b64ToBytes(raw) : null;
-      if (!pngBytes && resMap) {
-        const cand = resMap.get(key.toLowerCase() + '.png') ||
-          (b.texAssetId ? resMap.get(String(b.texAssetId).toLowerCase() + '.png') : null);
-        if (cand instanceof Uint8Array) pngBytes = cand;
-      }
-      if (!pngBytes) return;          // 内置库没有这一号：保持无笔尖，交给上层合成
-      const image = png.decode(pngBytes);
+      const file = key.startsWith('textures/') ? key.slice('textures/'.length) : key + '.png';
+      const pngBytes = raw ? b64ToBytes(raw) : resMap && resMap.get(file);
+      if (!(pngBytes instanceof Uint8Array)) return;
+      let image;
+      try { image = png.decode(pngBytes); } catch (e) { return; }
       b.tip = { w: image.width, h: image.height, rgba: png.toMaskRgba(image.rgba) };
-      b._tipFromBuiltin = key;
+      b._tipFromBuiltin = b.oldTexId;
       if (b.tipSource === 'synth') delete b.tipSource;
       count++;
     });
@@ -3627,13 +3618,13 @@ Write-Host 'restart MediBang Paint Pro'
       if (!hasTip) {
         /* 【第198轮】画世界官方「小方块/网点」类：文件里没有笔尖图，图案全靠内置纹理 ptN。
            这不是「缺笔尖」——单独归类，下载纹理库后应提示已补上，而不是继续报缺图。 */
-        if (b.source === 'bru' && b.texAssetId && b.hasTexture !== false) {
+        if (b.source === 'bru' && !b.oldTexId && b.texAssetId && b.hasTexture !== false) {
           if (textureGray(b)) out.bruTexOnly.push(b.name);
           else out.bruTexMissing.push(b.name);
           continue;
         }
         out.noTip.push(b.name);
-        if (b.computed) out.procedural.push(b.name);
+        if (b.computed || b.bruProceduralTip) out.procedural.push(b.name);
         if (b.source === 'procreate') out.procreateNoTip++;
       } else if (b.tipSource === 'grain') {
         out.grainOnly.push(b.name);
@@ -3658,8 +3649,8 @@ Write-Host 'restart MediBang Paint Pro'
       msgs.push(m);
     }
     if (list.bruTexOnly.length) {
-      msgs.push(list.bruTexOnly.length + ' 支画世界内置笔刷的图案来自内置纹理（已从纹理库补上）：' + names(list.bruTexOnly, 3) +
-        '；文件里没有笔尖图，转出时用圆形笔尖 + 该纹理还原，网点/方格的疏密和画世界里可能略有不同');
+      msgs.push(list.bruTexOnly.length + ' 支画世界笔刷使用圆形笔尖与独立纹理：' + names(list.bruTexOnly, 3) +
+        '；已读取源文件内的纹理或从纹理库补上，转换后的纹理疏密可能有差异');
     }
     if (list.bruTexMissing.length) {
       msgs.push(list.bruTexMissing.length + ' 支画世界内置笔刷的图案来自内置纹理，但纹理库里没找到：' + names(list.bruTexMissing, 3) +
@@ -4005,15 +3996,23 @@ Write-Host 'restart MediBang Paint Pro'
      转出去成了深度 0，纹理整张丢掉，只剩一个实心圆糊成一坨。
      所以只在**非 BRU 写出口**换算成界面深度，并标记纹理按画布坐标采样（Procreate 写成「纹理化」）。 */
   const BRU_WRITERS = ['makeBru', 'makeBruPack', 'makeBruDualPair'];
-  function bruTextureForExport(brush) {
+  function prepareBruForCrossFormat(brush) {
     if (!brush || typeof brush !== 'object' || brush instanceof Uint8Array) return brush;
-    if (brush.source !== 'bru' || !brush.hasTexture || brush._bruDepthAsUi) return brush;
-    const raw = Number(brush.textureDepth);
-    const out = Object.assign({}, brush, {
-      textureDepth: 1 - (Number.isFinite(raw) ? Math.max(0, Math.min(1, raw)) : 0),
-      textureCanvasSpace: true
-    });
-    Object.defineProperty(out, '_bruDepthAsUi', { value: true, enumerable: false, configurable: true });
+    if (brush.source !== 'bru') return brush;
+    let out = brush;
+    if (brush.hasTexture && !brush._bruDepthAsUi) {
+      const raw = Number(brush.textureDepth);
+      out = Object.assign({}, brush, {
+        textureDepth: 1 - (Number.isFinite(raw) ? Math.max(0, Math.min(1, raw)) : 0),
+        textureCanvasSpace: true
+      });
+      Object.defineProperty(out, '_bruDepthAsUi', { value: true, enumerable: false, configurable: true });
+    }
+    const sub = brush.dualSubBrush;
+    if (brush.dualOn && !brush.dualTip && sub && sub.bruProceduralTip) {
+      if (out === brush) out = Object.assign({}, brush);
+      out.dualTip = synthTip(Object.assign({}, sub, { angle: 0, roundness: 100 }));
+    }
     return out;
   }
   for (const writerName of GUARDED_WRITERS) {
@@ -4023,8 +4022,8 @@ Write-Host 'restart MediBang Paint Pro'
     api[writerName] = function (first) {
       const args = Array.prototype.slice.call(arguments);
       if (crossFormat) {
-        if (Array.isArray(first)) first = first.map(bruTextureForExport);
-        else first = bruTextureForExport(first);
+        if (Array.isArray(first)) first = first.map(prepareBruForCrossFormat);
+        else first = prepareBruForCrossFormat(first);
         args[0] = first;
       }
       let sanitized = first;

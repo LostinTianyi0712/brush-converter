@@ -501,15 +501,17 @@
       if (f === 0 || f > 100000) break;
       p = q;
       if (w === 0) {
-        let v = 0; shift = 0;
+        let v = 0, lowBits = 0; shift = 0;
         while (p < end) {
           const c = bytes[p++];
           v += (c & 0x7f) * Math.pow(2, shift);
+          if (shift < 32) lowBits |= (c & 0x7f) << shift;
           if (!(c & 0x80)) break;
           shift += 7;
           if (shift > 63) return fields;
         }
-        fields.push({ f, w, v });
+        // Texture adjustment fields are protobuf int32. Negative values use a ten-byte varint.
+        fields.push({ f, w, v: f === 33 || f === 35 ? lowBits : v });
       } else if (w === 5) {
         if (p + 4 > end) break;
         fields.push({ f, w, v: new DataView(bytes.buffer, bytes.byteOffset + p, 4).getFloat32(0, true) });
@@ -822,6 +824,7 @@
           if (typeof v === 'string') return v;
           try { return util.utf8Decode(v); } catch (e) { return ''; }
         })(o[7]),
+        bruProceduralTip: !tip && !o[31] && !(o[7] && o[7].length),
         bruShapeInverted: !!o[32],
         source: 'bru',
         bruVersion: version
@@ -949,7 +952,7 @@
         blend: primary.dualBlendMode,
         name: sub.name, useScatter: sub.scatterOn, count: sub.scatterCount, bothAxes: sub.scatterBothAxes
       });
-      if (primary.dualOn && !sub.tip) warnings.push(primary.name + ': 双笔刷副笔参数已读取，但包内缺少对应笔尖图像');
+      if (primary.dualOn && !sub.tip && !sub.bruProceduralTip) warnings.push(primary.name + ': 双笔刷副笔参数已读取，但包内缺少对应笔尖图像');
     });
     return { version, totalSize, count: count || brushes.length, brushes, warnings };
   }

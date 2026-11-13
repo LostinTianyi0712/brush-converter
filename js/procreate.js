@@ -870,8 +870,10 @@
       grainDepthJitter: Math.max(0, Math.min(1, brush.grainDepthJitter || 0)),
       // Procreate 自身纹理缩放范围是 0.01..4（IPA 内置 18 支 + 真实导出 1 支，最大值正好 4.000）
       textureScale: Math.max(0.01, Math.min(PROCREATE_TEXTURE_SCALE_MAX, brush.textureScale === undefined ? 1 : brush.textureScale)),
-      textureBrightness: Math.max(0, Math.min(1, (brush.textureBrightness === undefined ? 51 : brush.textureBrightness) / 100)),
-      textureContrast: Math.max(0, Math.min(1, (brush.textureContrast === undefined ? 100 : brush.textureContrast) / 100)),
+      textureBrightness: Math.max(0, Math.min(1, (brush.textureBrightness === undefined ? 51
+        : brush.source === 'bru' && brush.textureBrightness < 0 ? 51 + brush.textureBrightness : brush.textureBrightness) / 100)),
+      textureContrast: Math.max(0, Math.min(1, (brush.textureContrast === undefined ? 100
+        : brush.source === 'bru' && brush.textureContrast < 0 ? 100 + brush.textureContrast : brush.textureContrast) / 100)),
       textureRotation: brush.textureRotation || 0,
       // 新建 archive 的 Shape.png 写的是已烘焙像素（含源「反转」），不能再让 Procreate 反相一次
       shapeInverted: false,
