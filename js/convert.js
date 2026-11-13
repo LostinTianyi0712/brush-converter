@@ -2267,7 +2267,7 @@
       const adjusted = Math.max(0, Math.min(1, level * (1 + contrast + brightness)));
       curve[i] = Math.round(255 * (brightnessBlend ? adjusted * adjusted : adjusted));
     }
-    const side = Math.max(64, Math.min(2048, opts.maxTipSize || 2048));  /* 第221轮：原为 512，把 241 支大笔尖（ABR 源常见 2000~2340px）压成 512；Procreate Shape.png 本身支持 2048 */
+    /* 【第223轮】按需取采样边长，不再一律 2048。       第199轮固定 512 把 241 支大笔尖压糊，第221轮改成固定 2048 又走向另一个极端：       楠.bru 59 支全部 maxW=500、sizePx 最大 499，源纹理最大 840，却每支都生成 2048² 的       Shape.png（59 个共 36.5MB，整个 brushset 45MB）。Shape 的分辨率只需要覆盖       「源纹理细节」和「笔刷最大显示尺寸」两者的较大值，超过就是纯浪费。       上限仍是 Procreate 的 2048。 */    const capTip = Math.max(64, Math.min(2048, opts.maxTipSize || 2048));    const needTip = Math.max(texture.w, texture.h, brush.maxSizePx || 0, brush.sizePx || 0);    const side = Math.max(64, Math.min(capTip, needTip));
     const scale = Math.max(0.02, Math.min(20, brush.textureScale || 1));
     const sampleSpan = Math.max(texture.w, texture.h) / scale;
     const sampleAxis = function (pixel, length) {
