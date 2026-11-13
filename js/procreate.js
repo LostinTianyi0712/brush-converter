@@ -833,6 +833,14 @@
     const D = defaultsApi.defaults();
     const sizeParams = sizeArchiveParams(brush);
     const directionParams = directionArchiveParams(brush);
+    /* 【第216轮】副色动态（双色）。opts.fgBgDyn 是「用户明确要求开副色动态」的意图，
+       必须压过 nativeFields 对源档案旧值的保留：Procreate 原生笔刷在 procreate.js:412
+       解析时就带着 jitterSecondary/jitterStrokeSecondary（通常 0），保留循环会把刚算出的
+       0.8 覆盖回 0。BRU/ABR 源没有这两个字段，所以以前只在 Procreate 源上复现。
+       不传 fgBgDyn 时 fgBgDynOverride 为 0，下面两处表达式与改动前完全一致。 */
+    const fgBgDynOverride = (opts && opts.fgBgDyn !== undefined && opts.fgBgDyn !== null && isFinite(Number(opts.fgBgDyn)))
+      ? Math.max(0, Math.min(1, Number(opts.fgBgDyn))) : 0;
+    const fgBgDynValue = fgBgDynOverride > 0 ? fgBgDynOverride : Math.max(0, Math.min(1, brush.colorJitterFgBg || 0));
     const params = Object.assign(D, {
       version: 2,
       plotSpacingVersion: 1,
@@ -904,8 +912,8 @@
       dynamicsJitterStrokeHue: brush.colorPerTip === false ? Math.max(0, Math.min(1, brush.colorJitterHue || 0)) : D.dynamicsJitterStrokeHue,
       dynamicsJitterStrokeSaturation: brush.colorPerTip === false ? Math.max(0, Math.min(1, brush.colorJitterSat || 0)) : D.dynamicsJitterStrokeSaturation,
       dynamicsJitterStrokeLightness: brush.colorPerTip === false ? Math.max(0, Math.min(1, brush.colorJitterVal || 0)) : D.dynamicsJitterStrokeLightness,
-      jitterSecondary: brush.colorPerTip === false ? D.jitterSecondary : Math.max(0, Math.min(1, brush.colorJitterFgBg || 0)),
-      jitterStrokeSecondary: brush.colorPerTip === false ? Math.max(0, Math.min(1, brush.colorJitterFgBg || 0)) : D.jitterStrokeSecondary,
+      jitterSecondary: brush.colorPerTip === false ? D.jitterSecondary : fgBgDynValue,
+      jitterStrokeSecondary: brush.colorPerTip === false ? fgBgDynValue : D.jitterStrokeSecondary,
       blendMode: (typeof brush.blendMode === 'number' && isFinite(brush.blendMode) && brush.blendMode >= 0 && brush.blendMode <= 30) ? Math.round(brush.blendMode) : 0,
       dualBlendMode: (function () {
         if (typeof brush.dualBlendMode === 'number' && isFinite(brush.dualBlendMode) && brush.dualBlendMode >= 0 && brush.dualBlendMode <= 30) return Math.round(brush.dualBlendMode);
@@ -922,7 +930,10 @@
     // Preserve already parsed native fields without inventing cross-engine
     // mappings. Leave template defaults intact when the source lacks a field.
     Object.keys(nativeFields).forEach(function(key){
-      if(brush[key] !== undefined) params[nativeFields[key]]=brush[key];
+      if(brush[key] === undefined) return;
+      // 显式要求开副色动态时，这两个字段以上面的计算结果为准（见 fgBgDynOverride 注释）
+      if(fgBgDynOverride > 0 && (key === 'jitterSecondary' || key === 'jitterStrokeSecondary')) return;
+      params[nativeFields[key]]=brush[key];
     });
     // 真实画笔的 creationDate 是 NSDate 秒；没有它就少一个 Procreate 自己会写的字段
     params.creationDate = { 'NS.time': Math.round((Date.now() / 1000 - PROCREATE_EPOCH) * 1000) / 1000 };

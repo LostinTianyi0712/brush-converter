@@ -1354,6 +1354,10 @@
       colorJitterHue: brush.colorJitterHue,
       colorJitterSat: brush.colorJitterSat,
       colorJitterVal: brush.colorJitterVal,
+      /* 【第216轮】副色动态（Procreate jitterSecondary / 画世界「辅助颜色」f109）。
+        来源是 Procreate 原生笔刷时 colorJitterFgBg 已在 procreate.js 解析出来，
+        这里必须透传，否则转画世界时双色会丢。 */
+      colorJitterFgBg: brush.colorJitterFgBg,
       bruUuid: brush.bruUuid,
       bruDualRefUuid: brush.bruDualRefUuid,
       dualSubName: brush.dualSubName,

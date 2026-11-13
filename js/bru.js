@@ -254,11 +254,20 @@
       parts.push(u8arr(fVarint(103, 1)));
       parts.push(u8arr(fF32(104, Math.max(0, Math.min(1, 1 - smudgeAmt)))));
     }
-    if (b.colorDynamicsOn) {
+    /* 【第216轮】辅助颜色（= 双色 / 副色，Procreate 的 Secondary Color）。
+       真机单变量标定（_probe/dualcolor216，同一支笔刷三次导出）：
+         · 颜色动态 关 + 辅助颜色 0%  → 无 f61、无 f109
+         · 颜色动态 开 + 辅助颜色 50% → f61=1、f109=float32 0.5
+         · 颜色动态 开 + 辅助颜色 80% → f61=1、f109=float32 0.8（B/D 两份仅此一字段不同）
+       所以 f109 是 0..1 的辅助颜色强度，f61 是它的总开关；App 里 f109 必须配 f61 才生效。
+       colorJitterFgBg 为 0 / 未设置时不写任何字段，输出与旧版逐字节一致。 */
+    const fgBgJitter = Math.max(0, Math.min(1, Number(b.colorJitterFgBg) || 0));
+    if (b.colorDynamicsOn || fgBgJitter > 0) {
       parts.push(u8arr(fVarint(61, 1)));
       if (b.colorJitterHue) parts.push(u8arr(fF32(62, b.colorJitterHue)));
       if (b.colorJitterSat) parts.push(u8arr(fF32(63, b.colorJitterSat)));
       if (b.colorJitterVal) parts.push(u8arr(fF32(64, b.colorJitterVal)));
+      if (fgBgJitter > 0) parts.push(u8arr(fF32(109, fgBgJitter)));  // COLORRANDC（辅助颜色）
     }
     parts.push(u8arr(fVarint(79, 1)));                          // TAPEREFFECT
     parts.push(u8arr(fF32(80, b.smoothingStrength === undefined ? 0.2 : Math.max(0, Math.min(1, b.smoothingStrength))))); // SMOOTHSTRENGTH
@@ -636,6 +645,10 @@
       const taperOpacity = num(o[78], 1);                             // 锥度不透明度（f78）
       const colorDynOn = !!o[61];                                     // 颜色动态（f61）
       const colorHue = num(o[62], 0), colorSat = num(o[63], 0), colorVal = num(o[64], 0);
+      /* 【第216轮】f109 = 辅助颜色强度（0..1）= 画世界的「双色」/ Procreate 的 Secondary Color。
+         真机标定见 buildMetadata 里 f109 的注释。只在颜色动态打开时才算数：f109 单独存在
+         时 App 不生效，所以关掉 f61 就当 0，避免把惰性字段当成真的副色动态。 */
+      const colorFgBg = colorDynOn ? Math.max(0, Math.min(1, num(o[109], 0))) : 0;
       const smoothingStrength = num(o[80], 0.2);                      // 平滑强度（f80）
       // 画世界Pro 3.0：f120=本笔刷uuid；f121 field2=包ID，field3及后续字段为副笔参数。
       let bruUuid = null, bruDualRef = null, bruLinkInfo = null, bruLinkTemplate = null;
@@ -796,6 +809,9 @@
         colorJitterHue: colorHue,
         colorJitterSat: colorSat,
         colorJitterVal: colorVal,
+        /* 【第216轮】辅助颜色 → Procreate 的 Secondary Color（procreate.js 的 jitterSecondary）。
+           只有 >0 时才回填，值为 0 的笔刷字段保持 undefined，避免影响既有逐字节输出。 */
+        colorJitterFgBg: colorFgBg > 0 ? colorFgBg : undefined,
         _rawMeta: rawMeta,
         _rawMaxWidth:num(o[12],500),
         /* 【第195轮】f12 同时回填公开字段，否则绕过 convert.makeBru（它用 _rawMaxWidth 兜底）
