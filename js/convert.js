@@ -1082,29 +1082,38 @@
     let mixed = 0;
     for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) mixed += (tile[j*n+i] - mean) * cx[i] * cy[j];
     if (Math.abs(mixed) * 4 / (n*n) < Math.sqrt(variance) * 0.09) return null;
-    return { repeats:px.k, darkDots:mixed < 0 };
+    return { repeats:px.k };
   }
 
   function bruIndependentTexture(brush, opts) {
     if (brush.source === 'bru' || !brush.hasTexture || opts.noTextureBake === true || opts.bruTexMatch === 'off' ||
         (opts.bruTexAsset && opts.bruTexAsset !== 'off')) return null;
-    const lib = isNode ? require('./hsj-textures-lib.js') : (root.BC && root.BC.hsjTextureLib);
     const plain = textureGray(brush.textureInverted ? Object.assign({}, brush, { textureInverted:false }) : brush);
     if (!plain) return null;
+    const lib = isNode ? require('./hsj-textures-lib.js') : (root.BC && root.BC.hsjTextureLib);
     const hit = lib && lib.matchKnown(plain.w, plain.h, plain.gray);
     if (hit) return { id:hit };
     if (brush.source !== 'procreate' || Math.abs(Number(brush.textureRotation) || 0) > 1e-4 ||
         !(brush.textureDepth >= 0.8)) return null;
-    const dot = regularDotGrain(plain);
-    if (!dot) return null;
-    // pt110 is an orthogonal lattice of 3×3 soft dots in a 1024px tile.
-    // Preserve estimated dot spacing from the existing Procreate scale model,
-    // rather than copying its scale verbatim to a different-sized texture.
-    const spacing = Math.max(1, Math.min(3000, (brush.sizePx || 100) * (opts.sizeScale || 1))) *
-      (brush.textureScale || 1) / dot.repeats;
-    const scale = spacing * 3 / 1024;
+    if (!regularDotGrain(plain)) return null;
+    // BRU's scale is relative to the bitmap width. Procreate's moving grain
+    // uses the dab width as reference. Preserve the nominal tile size at export.
+    const scale = Math.max(1, Math.min(3000, (brush.sizePx || 100) * (opts.sizeScale || 1))) *
+      (brush.textureScale || 1) / plain.w;
     if (!(scale >= 0.01 && scale <= 20)) return null;
-    return { id:'pt110', approx:true, scale, inverted: dot.darkDots !== !!brush.textureInverted };
+    return { custom:true, scale, plain };
+  }
+
+  function bruTextureBytes(brush, match) {
+    if (brush.source === 'bru') return brush._rawBruTexture;
+    if (!match || !match.custom) return null;
+    if (brush._rawGrain && brush._rawGrain.length && !brush._patternPixels) return brush._rawGrain;
+    const t = match.plain, rgba = new Uint8Array(t.gray.length * 4);
+    for (let i = 0; i < t.gray.length; i++) {
+      const o = i * 4;
+      rgba[o] = rgba[o + 1] = rgba[o + 2] = t.gray[i]; rgba[o + 3] = 255;
+    }
+    return png.encode(t.w, t.h, rgba);
   }
 
   function makeBru(brush, opts) {
@@ -1142,9 +1151,8 @@
       rgba = png.resize(rgba, w, h, nw, nh);
       w = nw; h = nh;
     }
-    // A texture switch without a texture image renders blank in the native app.
-    // BRU currently embeds the shape only. Bake real source pixels when requested;
-    // never substitute procedural noise or enable an empty independent layer.
+    // Use a separate native texture block for regular dots; unmatched textures
+    // still fall back to baking. Never enable an empty independent layer.
     /* 【第206轮 R204-02（作者：Claude）】源纹理与画世界内置纹理逐像素相同 → 写 f6=ptN 独立纹理，不烘进笔尖。
        背景：网点类纹理烘进笔尖后每次落印网格跟着笔尖走，8% 间距连续落印把空隙填平（GIMP 长线中段 0% 亮格、
        MuMu 画世界长线 59,150 像素全实心，见第204轮）。官方原版是「无笔尖图 + pt65」，网格固定在画布上。
@@ -1154,8 +1162,10 @@
        'off' = 旧行为（烘焙）。用户显式选了 bruTexAsset（pt24 等）时让位给用户选项。
        只用预计算指纹表反查（hsj-textures-lib.matchKnown），不解码整库、不要求先下载纹理库。 */
     const match = bruIndependentTexture(brush, opts);
-    const disc = match && !bakingDual && isPlainHardDisc(rgba, w, h);
-    const texMatchId = match && (match.approx || opts.bruTexMatch === 'always' || disc) ? match.id : null;
+    const customTexture = bruTextureBytes(brush, match);
+    const disc = match && !match.custom && !bakingDual && isPlainHardDisc(rgba, w, h);
+    const texMatchId = match && (match.custom ? (customTexture && util.md5(customTexture).toUpperCase())
+      : (opts.bruTexMatch === 'always' || disc) && match.id);
     const texMatchNoShape = !!(texMatchId && disc && !opts._packMember);
     let textureBaked = false;
     if (brush.source !== 'bru' && brush.hasTexture && opts.noTextureBake !== true && !texMatchId) {
@@ -1308,15 +1318,16 @@
       // App 内置纹理库资源 id（f6）：只在目标不是原生 BRU 且调用方/源笔刷指定了 id 时才写。
       // 原生 BRU 进来的笔刷原样保留自己已有的 id（raw 元数据路径会保持）。
       texAssetId: texMatchId || texAssetId || brush.texAssetId || (opts && opts.texAssetId),
+      bruTextureBytes: customTexture,
       hasTexture: brush.source === 'bru' ? brush.hasTexture : !!(texAssetId || texMatchId),
       // 第206轮：内置纹理精确命中时照抄原生结构（见上方 texMatch 注释）；未命中时这三项都是 undefined/false，输出不变
       noShape: texMatchNoShape || undefined,
       bruColor: texMatchId ? -16777216 : undefined,
       bruShapeRgbOpacity: texMatchId ? true : undefined,
-      textureInverted: match && match.approx ? match.inverted : brush.textureInverted,
-      textureScale: match && match.approx ? match.scale : brush.textureScale,
-      textureBrightness: match && match.approx ? 100 : bruTexBrightness(brush),
-      textureContrast: match && match.approx ? 100 : bruTexContrast(brush),
+      textureInverted: brush.textureInverted,
+      textureScale: match && match.custom ? match.scale : brush.textureScale,
+      textureBrightness: match && match.custom ? Math.max(0, Math.min(100, 51 + (brush.textureBrightness || 0))) : bruTexBrightness(brush),
+      textureContrast: match && match.custom ? Math.max(0, Math.min(200, 100 + (brush.textureContrast || 0))) : bruTexContrast(brush),
       textureDepth: effectiveTextureDepth,
       taperOn: brush.taperOn,
       taperSize: brush.taperSize,
@@ -3419,12 +3430,13 @@ Write-Host 'restart MediBang Paint Pro'
         if (brush.source !== 'bru') {
           if (!(pixels && opts.noTextureBake !== true)) return '未写出（缺少原图或已关闭烘焙，禁用空纹理避免无墨）';
           const match = bruIndependentTexture(brush, opts);
-          if (match && match.approx) return '近似（识别到规则网点，改用画世界内置软网点 ' + match.id + ' 的独立纹理；大小和笔迹待实绘核对）';
+          if (match && match.custom) return '近似（规则网点的原纹理图写入独立纹理；移动方式和缩放仍需实绘核对）';
           if (match) return '参数映射（与画世界内置 ' + match.id + ' 逐像素相同；普通硬边圆可写独立纹理，非圆默认烘焙）';
           return opts.bruTexAsset && opts.bruTexAsset !== 'off'
             ? '近似（烘焙进笔尖 + 画世界内置材质纹理层，材质 id 依赖 App 版本）'
             : '近似（真实纹理烘焙进笔尖，未开启单独纹理层）';
         }
+        if (brush._rawBruTexture) return '原生写入（保留内嵌纹理原图）';
         return '未完整写入（当前仅纹理参数）';
       }
     }
@@ -3691,7 +3703,7 @@ Write-Host 'restart MediBang Paint Pro'
     };
     const reason = {
       abr: 'ABR 支持这些；纹理需配合 .pat 图案（目标 PS 里要有同名图案）',
-      bru: '匹配到内置纹理的圆笔尖和规则软网点可使用独立纹理；其它自定义纹理按选项烘焙。动态和实际笔触需验证',
+      bru: '规则软网点可写入独立原纹理；匹配到的内置纹理可直接引用。其它自定义纹理按选项烘焙，实际笔触需验证',
       brushset: 'Procreate 原生双笔刷、倾斜/速度分开写出；不同引擎效果需验证',
       brush: 'Procreate 原生双笔刷、倾斜/速度分开写出；不同引擎效果需验证',
       kbundle: 'Krita 6 元组曲线/颜色率未映射',

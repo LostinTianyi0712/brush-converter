@@ -4,6 +4,10 @@
   const isNode = typeof module !== 'undefined' && module.exports && typeof process !== 'undefined';
   const util = isNode ? require('./util.js') : root.BC.util;
   const png = isNode ? require('./png.js') : root.BC.png;
+  function decodeBrushImage(bytes) {
+    const jpeg = isNode ? require('./jpeg.js') : root.BC.jpeg;
+    return jpeg && jpeg.isJpeg(bytes) ? jpeg.decode(bytes) : png.decode(bytes);
+  }
 
   const MAGIC = 'hsjbru';
 
@@ -355,7 +359,9 @@
     if (!noShape && (!img || !img.length)) throw new Error('缺少笔尖图像数据');
     const meta = metadataFor(brush, opts);
     const embedded = !noShape && brush.embeddedSubPng && brush.embeddedSubPng.length ? brush.embeddedSubPng : null;
-    const total = BODY_START + meta.length + img.length + (embedded ? embedded.length : 0);
+    const texture = !noShape && brush.bruTextureBytes;
+    const texLength = texture ? texture.length : 0;
+    const total = BODY_START + meta.length + img.length + texLength + (embedded ? embedded.length : 0);
     if (total > 0xffffffff) throw new Error('单支 BRU 超过 4GB，无法写出');
     const out = new Uint8Array(total);
     const dv = new DataView(out.buffer);
@@ -367,6 +373,7 @@
     const rec = CONTAINER_HEAD;
     dv.setUint32(rec + 0x56, meta.length, false);            // meta length
     dv.setUint32(rec + 0x5e, img.length, false);             // image length
+    dv.setUint32(rec + 0x62, texLength, false);              // separate texture length
     if (noShape) {
       /* 逐字节照抄官方 450B 小方块的记录头：rec+0x52 = 1，rec+0x5a / 0x5e / 0x62 三个长度位 = 0xFFFFFFFF。 */
       dv.setUint32(rec + 0x52, 1, false);
@@ -378,11 +385,12 @@
     dv.setUint32(rec + 0x66, total, false); // end
     out.set(meta, BODY_START);
     out.set(img, BODY_START + meta.length);
+    if (texLength) out.set(texture, BODY_START + meta.length + img.length);
     if (embedded) {
       // Native single-export fixture: trailing 22-byte descriptor starts at 128.
       out[rec + 0x6a] = 1;
       dv.setUint32(rec + 0x73, embedded.length, false);
-      out.set(embedded, BODY_START + meta.length + img.length);
+      out.set(embedded, BODY_START + meta.length + img.length + texLength);
     }
     return out;
   }
@@ -404,28 +412,31 @@
       if (b.noShape) throw new Error('多支 BRU 暂不支持无笔尖图条目: ' + (b.name || ''));
       if (!pngBytes || !pngBytes.length) throw new Error('缺少笔尖图像数据: ' + (b.name || ''));
       const meta = metadataFor(b, opts);
-      return { meta, img: pngBytes, embedded: b.embeddedSubPng || new Uint8Array(0) };
+      return { meta, img: pngBytes, texture: b.bruTextureBytes || new Uint8Array(0), embedded: b.embeddedSubPng || new Uint8Array(0) };
     });
     let total = BODY_START;
     for (let i = 0; i < items.length; i++) {
-      total += items[i].meta.length + items[i].img.length + items[i].embedded.length;
+      total += items[i].meta.length + items[i].img.length + items[i].texture.length + items[i].embedded.length;
       if (i > 0) total += 50;
     }
     if (total > 0xffffffff) throw new Error('打包后文件超过 4GB');
     const out = new Uint8Array(total);
     const dv = new DataView(out.buffer);
     out.set(util.utf8Encode(MAGIC), 0);
-    dv.setUint32(6, 7, false);          // container version 7 (multi-brush layout)
+    const hasTextureBlocks = items.some(it => it.texture.length);
+    dv.setUint32(6, hasTextureBlocks ? 8 : 7, false);
     dv.setUint32(10, total, false);     // total size
     dv.setUint32(14, items.length, false);
-    dv.setUint32(18, 0, false);
+    dv.setUint32(18, hasTextureBlocks ? 1 : 0, false);
     let pos = BODY_START;
     // brush 1: describe it in the 128-byte record
     dv.setUint32(CONTAINER_HEAD + 0x56, items[0].meta.length, false);
     dv.setUint32(CONTAINER_HEAD + 0x5e, items[0].img.length, false);
-    dv.setUint32(CONTAINER_HEAD + 0x66, pos + items[0].meta.length + items[0].img.length + items[0].embedded.length, false);
+    dv.setUint32(CONTAINER_HEAD + 0x62, items[0].texture.length, false);
+    dv.setUint32(CONTAINER_HEAD + 0x66, pos + items[0].meta.length + items[0].img.length + items[0].texture.length + items[0].embedded.length, false);
     out.set(items[0].meta, pos); pos += items[0].meta.length;
     out.set(items[0].img, pos); pos += items[0].img.length;
+    out.set(items[0].texture, pos); pos += items[0].texture.length;
     if (items[0].embedded.length) {
       out[CONTAINER_HEAD + 0x6a] = 1;
       dv.setUint32(CONTAINER_HEAD + 0x73, items[0].embedded.length, false);
@@ -434,10 +445,10 @@
     for (let i = 1; i < items.length; i++) {
       const blockPos = pos;
       const metaLen = items[i].meta.length, imgLen = items[i].img.length;
-      const endOff = blockPos + 50 + metaLen + imgLen + items[i].embedded.length;
+      const endOff = blockPos + 50 + metaLen + imgLen + items[i].texture.length + items[i].embedded.length;
       dv.setUint32(blockPos + 0x08, metaLen, false);
       dv.setUint32(blockPos + 0x10, imgLen, false);
-      dv.setUint32(blockPos + 0x14, 0, false);
+      dv.setUint32(blockPos + 0x14, items[i].texture.length, false);
       dv.setUint32(blockPos + 0x18, endOff, false);
       if (items[i].embedded.length) {
         out[blockPos + 0x1c] = 1;
@@ -446,6 +457,7 @@
       pos = blockPos + 50;
       out.set(items[i].meta, pos); pos += metaLen;
       out.set(items[i].img, pos); pos += imgLen;
+      out.set(items[i].texture, pos); pos += items[i].texture.length;
       out.set(items[i].embedded, pos); pos += items[i].embedded.length;
     }
     if (pos !== total) throw new Error('内部长度不一致 (' + pos + '/' + total + ')');
@@ -562,6 +574,7 @@
     const rec = CONTAINER_HEAD;
     const firstMetaLen = util.u32(bytes, rec + 0x56);
     const firstImgLen = util.u32(bytes, rec + 0x5e);
+    const firstTextureLen = util.u32(bytes, rec + 0x62);
     const firstEnd = util.u32(bytes, rec + 0x66);
     const brushes = [];
     const warnings = [];
@@ -580,7 +593,7 @@
       return -1;
     }
 
-    function pushBrush(metaStart, metaEnd, pngStart, pngEnd, embeddedMeta, extraEnd) {
+    function pushBrush(metaStart, metaEnd, pngStart, pngEnd, embeddedMeta, extraEnd, textureLen) {
       const rawMeta = embeddedMeta || bytes.subarray(metaStart, metaEnd);
       const fields = readFields(rawMeta, 0, rawMeta.length);
       const o = fieldsToObj(fields);
@@ -662,7 +675,7 @@
       let tip = null;
       if (pngStart >= 0 && pngEnd > pngStart) {
         try {
-          const im = png.decode(bytes.subarray(pngStart, pngEnd));
+          const im = decodeBrushImage(bytes.subarray(pngStart, pngEnd));
           tip = { w: im.width, h: im.height, rgba: im.rgba };
         } catch (e) {
           warnings.push('第 ' + (brushes.length + 1) + ' 支笔刷图像解码失败（可能为 JPEG 纹理）');
@@ -671,8 +684,22 @@
       // 画世界 3.x 单支 BRU 会把“关联副笔尖”的 PNG 紧随主图之后内嵌；
       // 容器 count 仍是 1，需要在记录 end 之前的剩余区里继续找 PNG。
       const embeddedTips = [];
-      if (pngStart >= 0 && extraEnd && extraEnd > pngEnd) {
-        let ep = pngEnd;
+      let textureBytes, grainRgba;
+      let extraStart = pngEnd;
+      if (textureLen > 0 && pngEnd >= 0 && pngEnd + textureLen <= extraEnd && o[6] instanceof Uint8Array) {
+        const id = util.utf8Decode(o[6]).replace(/\u0000+$/, '');
+        const chunk = bytes.subarray(pngEnd, pngEnd + textureLen);
+        if (/^[0-9a-f]{32}$/i.test(id) && util.md5(chunk) === id.toLowerCase()) {
+          extraStart += textureLen;
+          textureBytes = chunk;
+          try {
+            const im = decodeBrushImage(chunk);
+            grainRgba = { w: im.width, h: im.height, rgba: im.rgba };
+          } catch (e) { warnings.push(name + ': 自定义纹理原图已保留，预览解码失败'); }
+        }
+      }
+      if (pngStart >= 0 && extraEnd && extraEnd > extraStart) {
+        let ep = extraStart;
         while (ep < extraEnd) {
           const pj = findPng(bytes, ep, extraEnd - ep);
           if (pj < 0) break;
@@ -780,6 +807,8 @@
         source: 'bru',
         bruVersion: version
       };
+      if (textureBytes) brush._rawBruTexture = textureBytes;
+      if (grainRgba) brush._grainRgba = grainRgba;
       if (embeddedTips.length) {
         brush.embeddedTips = embeddedTips;
         const hasLink = !!(brush.bruLinkTemplate || brush.bruDualRefUuid || brush.bruDualEnabled);
@@ -823,12 +852,14 @@
       return -1;
     }
 
-    // brush 1 described by the 128-byte record
-    let pos = BODY_START + firstMetaLen + firstImgLen;
+    // Native files use 0xffffffff as a missing-image sentinel.
+    const firstTipSize = firstImgLen === 0xffffffff ? 0 : firstImgLen;
+    const firstTexSize = firstTextureLen === 0xffffffff ? 0 : firstTextureLen;
+    let pos = BODY_START + firstMetaLen + firstTipSize + firstTexSize;
     if (firstMetaLen > 0 && BODY_START + firstMetaLen <= bytes.length) {
       pushBrush(BODY_START, BODY_START + firstMetaLen, BODY_START + firstMetaLen,
-        Math.min(bytes.length, BODY_START + firstMetaLen + firstImgLen),
-        undefined, Math.min(bytes.length, firstEnd || bytes.length));
+        Math.min(bytes.length, BODY_START + firstMetaLen + firstTipSize),
+        undefined, Math.min(bytes.length, firstEnd || bytes.length), firstTexSize);
       if (firstEnd && firstEnd > pos && firstEnd <= bytes.length) pos = firstEnd;
     }
 
@@ -867,7 +898,7 @@
       // A valid end may also cover an embedded sub-tip PNG after the main.
       if (endOff < expectEnd || endOff > bytes.length) endOff = expectEnd;
       const pngStart = metaStart + metaLen;
-      pushBrush(metaStart, pngStart, pngStart, Math.min(bytes.length, pngStart + img1Len), undefined, endOff);
+      pushBrush(metaStart, pngStart, pngStart, Math.min(bytes.length, pngStart + img1Len), undefined, endOff, img2Len);
       pos = endOff > pos ? endOff : Math.min(bytes.length, pngStart + img1Len + img2Len);
     }
     if (!brushes.length) throw new Error('.bru 中没有找到可用笔刷');
