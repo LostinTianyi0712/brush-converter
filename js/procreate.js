@@ -416,6 +416,7 @@
       _bruPressure: readBruPressure(params),
       _nativeDualFromBru: params.brushConvNativeDual === '1',
       _nativeTexFromBru: params.brushConvNativeTex === '1',
+      _bruTexParams: (function () { try { return params.brushConvBruTex ? JSON.parse(params.brushConvBruTex) : null; } catch (e) { return null; } })(),
       scatterOn: scatterPct > 0.01 || scatterCount > 1,
       angleJitterDeg: Math.max(0, Math.min(360, shapeScatterRaw * 180)),
       procreateRotationScatterPct: rotationScatterPct,
@@ -426,6 +427,18 @@
       countJitterPct: countJitterRaw * 100,
       source: 'procreate'
     };
+    /* 【第224轮】brushset 不存 BRU 的纹理参数，导出时写在 archive 的 brushConvBruTex 里。
+       读回后立刻落到公开字段上（而不是等 makeBru 再 patch）—— 否则调用方显式改过的
+       textureInverted / textureDepth 会被存档里的旧值覆盖回去，f29/f123 全写错。 */
+    if (brush._bruTexParams) {
+      const tp = brush._bruTexParams;
+      if (Number.isFinite(tp.scale)) brush.textureScale = tp.scale;
+      if (Number.isFinite(tp.bright)) brush.textureBrightness = tp.bright;
+      if (Number.isFinite(tp.contrast)) brush.textureContrast = tp.contrast;
+      if (typeof tp.inverted === 'boolean') brush.textureInverted = tp.inverted;
+      if (Number.isFinite(tp.depth)) brush.textureDepth = tp.depth;
+      if (Number.isFinite(tp.blend)) brush.bruTextureBlendMode = tp.blend;
+    }
     brush._rawNormalized = {};
     Object.keys(brush).forEach(function(key){const v=brush[key];if(key[0]!=='_' && (v===null || ['number','boolean','string'].indexOf(typeof v)>=0))brush._rawNormalized[key]=v;});
     brush._rawTipState=util.brushFingerprint({tip:brush.tip}, initialPixelHashes);
@@ -960,6 +973,16 @@
     if (brush.source === 'bru' && brush.bruDualRefUuid) params.brushConvNativeDual = '1';
     /* 同理标记「这支笔刷的纹理来自 BRU 的独立纹理层」，转回时据此还原纹理层。 */
     if (brush.source === 'bru' && brush.hasTexture && (brush._rawBruTexture || brush.texAssetId)) params.brushConvNativeTex = '1';
+    /* 纹理的 BRU 参数（缩放/亮度/对比度/反相/深度/混合）Procreate 侧没有对等存储位，
+       不存下来转回 bru 时会被重置成默认值 —— 实测「还行」textureScale 1 → 0.0215
+       （缩到 1/46、平铺密到看不见，肉眼看就是「不出墨」），brightness 51→100。 */
+    if (brush.source === 'bru' && brush.hasTexture) {
+      params.brushConvBruTex = JSON.stringify({
+        scale: brush.textureScale, bright: brush.textureBrightness, contrast: brush.textureContrast,
+        inverted: !!brush.textureInverted, depth: brush.textureDepth, blend: brush.bruTextureBlendMode,
+        perTip: !!brush.bruTexturePerTip
+      });
+    }
     return bplist.writeKeyedArchive(params, 'SilicaBrush', ['SilicaBrush', 'ValkyrieBrush', 'NSObject']);
   }
 

@@ -978,7 +978,12 @@
       bruDualSubBrush: sub.meta,
       bruDualEnabled: enabled,
       dualSubName: sub.meta.name,
-      pkgId: pair.pkgUuid
+      pkgId: pair.pkgUuid,
+      /* 【第224轮】拆分主/副笔时会丢掉「从 brushset 转回来」的标记，主笔的纹理参数
+         就退回默认值（还行：bright 51→100、contrast 100→200、blend 14→0）。这里显式带回。 */
+      _bruTexParams: brush._bruTexParams,
+      _nativeTexFromBru: brush._nativeTexFromBru,
+      _nativeDualFromBru: brush._nativeDualFromBru
     });
     return makeBru(primary, Object.assign({}, opts, { embedSubTip: false }));
   }
@@ -1093,10 +1098,11 @@
       const libN = isNode ? require('./hsj-textures-lib.js') : (root.BC && root.BC.hsjTextureLib);
       const hitN = libN && libN.matchKnown(plainForNative.w, plainForNative.h, plainForNative.gray);
       if (hitN) return { id: hitN };
-      if (plainForNative.w < 64 || plainForNative.h < 64) return null;
-      const s0 = Math.max(1, Math.min(3000, (brush.sizePx || 100) * (opts.sizeScale || 1))) *
-        (brush.textureScale || 1) / plainForNative.w;
-      return (s0 >= 0.01 && s0 <= 20) ? { custom: true, scale: s0, plain: plainForNative } : null;
+      /* 【第224轮·真机结论】自定义纹理（f6 写 md5、像素随文件走）画世界 Pro 3.4.5 **不出墨**：
+         实测「还行」（双笔 + 自定义纹理）导入后缩略图空白、画布上画不出笔迹；scale/bright/contrast
+         逐项核对都正确，纯粹是这个 f6 形态不被接受。所以只有**命中内置纹理库**（写 ptN）才保留
+         独立纹理层，其余一律回退烘焙——烘进笔尖虽然让纹理跟着笔尖走，但至少画得出来。 */
+      return null;
     }
     const plain = textureGray(brush.textureInverted ? Object.assign({}, brush, { textureInverted:false }) : brush);
     if (!plain) return null;
@@ -1128,6 +1134,8 @@
 
   function makeBru(brush, opts) {
     brush = angleControlAliases(brush);
+    /* 【第224轮】从我们导出的 brushset 转回来时，把存下来的 BRU 纹理参数还原，
+       否则 textureScale 会被重置成「笔刷尺寸/纹理宽」（还行：1 → 0.0215，纹理缩到看不见）。 */
     /* 【第224轮】带 _nativeDualFromBru 标记的 brushset（本工具从画世界原生双笔导出的）       转回 bru 时还原内嵌副笔，而不是把副笔烘进主笔。第181轮那条「非 BRU 源禁止内嵌」       是为了避开原生 Procreate 副笔的重影（真机实测），原生档案没有这个标记，行为不变。 */    if (brush && brush.dualTip && (opts.embedSubTip || brush._nativeDualFromBru)) {      return makeBruEmbedded(brush, Object.assign({}, opts, { forceEmbedSubTip: brush._nativeDualFromBru ? true : opts.forceEmbedSubTip }));    }
     opts = opts || {};
     /* 同格式直抄：源就是 .bru、目标也是 .bru，且尺寸/间距/压感/烘焙等选项都没动过
@@ -1139,7 +1147,7 @@
       return { bytes: new Uint8Array(brush._rawBru), pngBytes: null, meta: null,
         tipW: 0, tipH: 0, passthrough: true };
     }
-    let tipImg = tipToRGBA(brush);
+    let tipImg = tipToRGBA(brush);
     const synthesizedTip = !tipImg;
     if (!tipImg) tipImg = synthTip(brush, 256, opts);
     const bakingDual = !brush.bruDualRefUuid && opts.dualBake !== false && brush.dualOn && brush.dualTip && (brush.dualTip.rgba || brush.dualTip.data) && opts.noDualBake !== true;
@@ -1355,9 +1363,9 @@
       bruColor: texMatchId ? -16777216 : undefined,
       bruShapeRgbOpacity: texMatchId ? true : undefined,
       textureInverted: brush.textureInverted,
-      textureScale: match && match.custom ? match.scale : brush.textureScale,
-      textureBrightness: match && match.custom ? Math.max(0, Math.min(100, 51 + (brush.textureBrightness || 0))) : bruTexBrightness(brush),
-      textureContrast: match && match.custom ? Math.max(0, Math.min(200, 100 + (brush.textureContrast || 0))) : bruTexContrast(brush),
+      /* 【第224轮】往返场景用源里存下的 textureScale，不再按「笔刷尺寸/纹理宽」重算，         否则 11px 的小笔刷把 512 纹理缩到 0.0215，平铺密到肉眼看就是不出墨。 */      textureScale: match && match.custom && !brush._nativeTexFromBru ? match.scale : brush.textureScale,
+      /* 【第224轮】往返场景的 textureBrightness/Contrast 是**绝对值**（源里读出来就是 51/100），         不能再按「中性值 + 偏移」算一遍 —— 51+51 clamp 成 100、100+100 成 200，纹理会过曝变白，         实测「还行」就是这样变得看不出墨。 */      textureBrightness: match && match.custom && !brush._nativeTexFromBru ? Math.max(0, Math.min(100, 51 + (brush.textureBrightness || 0))) : bruTexBrightness(brush),
+      textureContrast: match && match.custom && !brush._nativeTexFromBru ? Math.max(0, Math.min(200, 100 + (brush.textureContrast || 0))) : bruTexContrast(brush),
       textureDepth: effectiveTextureDepth,
       taperOn: brush.taperOn,
       taperSize: brush.taperSize,
