@@ -1079,6 +1079,25 @@
   function bruIndependentTexture(brush, opts) {
     if (brush.source === 'bru' || !brush.hasTexture || opts.noTextureBake === true || opts.bruTexMatch === 'off' ||
         (opts.bruTexAsset && opts.bruTexAsset !== 'off')) return null;
+    /* 【第224轮】带 _nativeTexFromBru 的 brushset（本工具从带纹理的 BRU 导出的）
+       转回 bru 时无条件还原独立纹理层。第206轮「非规则纹理必须烘焙」是为原生 ABR/
+       Procreate 纹理定的（不规则纹理在 BRU 里平铺会显重复），而往返场景的源本来就是
+       BRU 的独立纹理，还原它才是对的。原生档案没有这个标记，口径不变。 */
+    const plainForNative = brush._nativeTexFromBru
+      ? textureGray(brush.textureInverted ? Object.assign({}, brush, { textureInverted:false }) : brush)
+      : null;
+    if (brush._nativeTexFromBru) {
+      if (!plainForNative) return null;
+      /* 先试内置纹理库：命中 ptN 就写 f6 引用——比自定义纹理省体积，也让官方 450B
+         那种「无笔尖图 + f6=pt65」的原生布局能照抄（第206轮依赖这一点）。 */
+      const libN = isNode ? require('./hsj-textures-lib.js') : (root.BC && root.BC.hsjTextureLib);
+      const hitN = libN && libN.matchKnown(plainForNative.w, plainForNative.h, plainForNative.gray);
+      if (hitN) return { id: hitN };
+      if (plainForNative.w < 64 || plainForNative.h < 64) return null;
+      const s0 = Math.max(1, Math.min(3000, (brush.sizePx || 100) * (opts.sizeScale || 1))) *
+        (brush.textureScale || 1) / plainForNative.w;
+      return (s0 >= 0.01 && s0 <= 20) ? { custom: true, scale: s0, plain: plainForNative } : null;
+    }
     const plain = textureGray(brush.textureInverted ? Object.assign({}, brush, { textureInverted:false }) : brush);
     if (!plain) return null;
     const lib = isNode ? require('./hsj-textures-lib.js') : (root.BC && root.BC.hsjTextureLib);
@@ -1109,7 +1128,7 @@
 
   function makeBru(brush, opts) {
     brush = angleControlAliases(brush);
-    if (opts && opts.embedSubTip && brush && brush.dualTip) return makeBruEmbedded(brush, opts);
+    /* 【第224轮】带 _nativeDualFromBru 标记的 brushset（本工具从画世界原生双笔导出的）       转回 bru 时还原内嵌副笔，而不是把副笔烘进主笔。第181轮那条「非 BRU 源禁止内嵌」       是为了避开原生 Procreate 副笔的重影（真机实测），原生档案没有这个标记，行为不变。 */    if (brush && brush.dualTip && (opts.embedSubTip || brush._nativeDualFromBru)) {      return makeBruEmbedded(brush, Object.assign({}, opts, { forceEmbedSubTip: brush._nativeDualFromBru ? true : opts.forceEmbedSubTip }));    }
     opts = opts || {};
     /* 同格式直抄：源就是 .bru、目标也是 .bru，且尺寸/间距/压感/烘焙等选项都没动过
        —— 原样返回源字节。画世界内置笔刷常常没有内嵌位图（450B 那类），任何重新

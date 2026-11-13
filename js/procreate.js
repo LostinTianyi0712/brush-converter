@@ -414,6 +414,8 @@
       blendMode: params.blendMode,
       _params: params,
       _bruPressure: readBruPressure(params),
+      _nativeDualFromBru: params.brushConvNativeDual === '1',
+      _nativeTexFromBru: params.brushConvNativeTex === '1',
       scatterOn: scatterPct > 0.01 || scatterCount > 1,
       angleJitterDeg: Math.max(0, Math.min(360, shapeScatterRaw * 180)),
       procreateRotationScatterPct: rotationScatterPct,
@@ -950,6 +952,14 @@
     } else if (brush._bruPressure) {
       params.brushConvBruPressure = JSON.stringify(brush._bruPressure);
     }
+    /* 【第224轮】标记「这副笔来自画世界原生双笔」，让 brushset 转回 bru 时能还原内嵌副笔。
+       第181轮确认「Procreate 副笔是混合、画世界双笔是各画一笔」，直接把原生 Procreate 副笔
+       内嵌会重影（黄土笔刷真机实测），所以那条路径必须保持烘焙。但我们自己从 BRU 导出的
+       brushset，Sub01 本来就是画世界双笔的等价映射，转回来应该还原而不是烘掉。
+       用一个只在本工具内部认的字段区分两者，原生 Procreate 档案没有它 → 行为不变。 */
+    if (brush.source === 'bru' && brush.bruDualRefUuid) params.brushConvNativeDual = '1';
+    /* 同理标记「这支笔刷的纹理来自 BRU 的独立纹理层」，转回时据此还原纹理层。 */
+    if (brush.source === 'bru' && brush.hasTexture && (brush._rawBruTexture || brush.texAssetId)) params.brushConvNativeTex = '1';
     return bplist.writeKeyedArchive(params, 'SilicaBrush', ['SilicaBrush', 'ValkyrieBrush', 'NSObject']);
   }
 
