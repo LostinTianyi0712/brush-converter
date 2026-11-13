@@ -1122,7 +1122,7 @@
           const decoded=brush._rawShape && decodeShape({data:function(){return brush._rawShape;}},brush.shapeInverted);
           if(decoded)rebuilt=fixedTipFlip(decoded,brush);
         }
-        entries.push({name:'Shape.png',data:shapePng(rebuilt,opts.maxTipSize||512).png});
+        entries.push({name:'Shape.png',data:shapePng(rebuilt,opts.maxTipSize||2048).png});
       }
       const sameGrain=brush._rawGrainState===util.brushFingerprint({tip:brush._grainRgba});
       if(sameGrain && !recoveredGrain && brush._rawGrain && brush._rawGrain.length)entries.push({name:'Grain.png',data:normalizeRawGrain(brush._rawGrain)});
@@ -1143,7 +1143,7 @@
     }
     const tip = tipRGBA(brush, opts);
     if (!tip) throw new Error('该笔刷没有笔尖图像，无法写入 Procreate 格式');
-    const shape = shapePng(tip, opts.maxTipSize || 512);
+    const shape = shapePng(tip, opts.maxTipSize || 2048);
     const thumb = thumbPng(tip, { spacingPct: brush.spacingPct, opacity: brush.opacity });
     const archive = buildArchive(brush, opts);
     const entries = [
