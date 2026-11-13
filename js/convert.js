@@ -1045,6 +1045,68 @@
     return true;
   }
 
+  // Detect a repeating, axis-aligned soft-dot lattice from the pixels, not the
+  // brush name. Both axes need the same dominant period; require the positive
+  // cross term that distinguishes isolated dots from stripes or a checkerboard.
+  function regularDotGrain(tex) {
+    const n = 64;
+    if (!tex || tex.w < 32 || tex.h < 32 || Math.abs(tex.w / tex.h - 1) > 0.02) return null;
+    const x = new Float64Array(n), y = new Float64Array(n), tile = new Float64Array(n * n);
+    let sum = 0, square = 0;
+    for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+      const v = tex.gray[Math.floor((j + 0.5) * tex.h / n) * tex.w + Math.floor((i + 0.5) * tex.w / n)];
+      tile[j*n+i] = v; x[i] += v / n; y[j] += v / n; sum += v; square += v * v;
+    }
+    const mean = sum / (n*n), variance = square / (n*n) - mean*mean;
+    if (variance < 36) return null;
+    function peak(axis) {
+      let best = { k:0, power:0 };
+      for (let k = 1; k <= Math.min(12, Math.floor(Math.min(tex.w,tex.h)/8)); k++) {
+        let c = 0, s = 0;
+        for (let i = 0; i < n; i++) {
+          const a = 2 * Math.PI * k * (i + 0.5) / n;
+          c += (axis[i] - mean) * Math.cos(a); s += (axis[i] - mean) * Math.sin(a);
+        }
+        const power = 2 * (c*c + s*s) / (n*n*variance);
+        if (power > best.power) best = { k, power, phase: Math.atan2(s,c) };
+      }
+      return best;
+    }
+    const px = peak(x), py = peak(y);
+    if (px.k !== py.k || px.power < 0.25 || py.power < 0.25 || px.power + py.power < 0.72) return null;
+    const cx = new Float64Array(n), cy = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      const a = 2 * Math.PI * px.k * (i + 0.5) / n;
+      cx[i] = Math.cos(a - px.phase); cy[i] = Math.cos(a - py.phase);
+    }
+    let mixed = 0;
+    for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) mixed += (tile[j*n+i] - mean) * cx[i] * cy[j];
+    if (Math.abs(mixed) * 4 / (n*n) < Math.sqrt(variance) * 0.09) return null;
+    return { repeats:px.k, darkDots:mixed < 0 };
+  }
+
+  function bruIndependentTexture(brush, opts) {
+    if (brush.source === 'bru' || !brush.hasTexture || opts.noTextureBake === true || opts.bruTexMatch === 'off' ||
+        (opts.bruTexAsset && opts.bruTexAsset !== 'off')) return null;
+    const lib = isNode ? require('./hsj-textures-lib.js') : (root.BC && root.BC.hsjTextureLib);
+    const plain = textureGray(brush.textureInverted ? Object.assign({}, brush, { textureInverted:false }) : brush);
+    if (!plain) return null;
+    const hit = lib && lib.matchKnown(plain.w, plain.h, plain.gray);
+    if (hit) return { id:hit };
+    if (brush.source !== 'procreate' || Math.abs(Number(brush.textureRotation) || 0) > 1e-4 ||
+        !(brush.textureDepth >= 0.8)) return null;
+    const dot = regularDotGrain(plain);
+    if (!dot) return null;
+    // pt110 is an orthogonal lattice of 3×3 soft dots in a 1024px tile.
+    // Preserve estimated dot spacing from the existing Procreate scale model,
+    // rather than copying its scale verbatim to a different-sized texture.
+    const spacing = Math.max(1, Math.min(3000, (brush.sizePx || 100) * (opts.sizeScale || 1))) *
+      (brush.textureScale || 1) / dot.repeats;
+    const scale = spacing * 3 / 1024;
+    if (!(scale >= 0.01 && scale <= 20)) return null;
+    return { id:'pt110', approx:true, scale, inverted: dot.darkDots !== !!brush.textureInverted };
+  }
+
   function makeBru(brush, opts) {
     brush = angleControlAliases(brush);
     if (opts && opts.embedSubTip && brush && brush.dualTip) return makeBruEmbedded(brush, opts);
@@ -1086,27 +1148,15 @@
     /* 【第206轮 R204-02（作者：Claude）】源纹理与画世界内置纹理逐像素相同 → 写 f6=ptN 独立纹理，不烘进笔尖。
        背景：网点类纹理烘进笔尖后每次落印网格跟着笔尖走，8% 间距连续落印把空隙填平（GIMP 长线中段 0% 亮格、
        MuMu 画世界长线 59,150 像素全实心，见第204轮）。官方原版是「无笔尖图 + pt65」，网格固定在画布上。
-       bruTexMatch：'auto'（默认）= 只在笔尖是普通硬边圆且单支写出时启用，结构照抄官方（无 f7/f31、f42 开、f16 黑）；
-       'always' = 笔尖不是圆也引用（保留笔尖图 + f6，第204轮试制版就是这种结构，MuMu 实测未出墨，仅供测试）；
+       bruTexMatch：'auto'（默认）= 精确匹配且是普通硬边圆，或高置信度的规则软网点。
+       普通硬边圆单支用原生无图布局；多支保留笔尖 PNG 并独立引用纹理。第207轮实绘确认，
+       带笔尖 PNG 的 B5 修正 f35 编码后可以出墨。'always' 允许非圆笔尖使用精确命中的纹理；
        'off' = 旧行为（烘焙）。用户显式选了 bruTexAsset（pt24 等）时让位给用户选项。
        只用预计算指纹表反查（hsj-textures-lib.matchKnown），不解码整库、不要求先下载纹理库。 */
-    let texMatchId = null, texMatchNoShape = false;
-    const texMatchMode = opts.bruTexMatch === undefined || opts.bruTexMatch === null || opts.bruTexMatch === '' ? 'auto' : String(opts.bruTexMatch);
-    const userTexAsset = opts.bruTexAsset !== undefined && opts.bruTexAsset !== null && opts.bruTexAsset !== '' && opts.bruTexAsset !== 'off';
-    if (brush.source !== 'bru' && brush.hasTexture && opts.noTextureBake !== true && texMatchMode !== 'off' && !userTexAsset) {
-      const texLib = isNode ? require('./hsj-textures-lib.js') : (root.BC && root.BC.hsjTextureLib);
-      const plainTex = texLib && typeof texLib.matchKnown === 'function'
-        ? textureGray(Object.assign({}, brush, { textureInverted: false })) : null;
-      const hitId = plainTex ? texLib.matchKnown(plainTex.w, plainTex.h, plainTex.gray) : null;
-      if (hitId) {
-        const disc = !bakingDual && isPlainHardDisc(rgba, w, h);
-        const single = !opts._packMember;
-        if (texMatchMode === 'always' || (disc && single)) {
-          texMatchId = hitId;
-          texMatchNoShape = disc && single;
-        }
-      }
-    }
+    const match = bruIndependentTexture(brush, opts);
+    const disc = match && !bakingDual && isPlainHardDisc(rgba, w, h);
+    const texMatchId = match && (match.approx || opts.bruTexMatch === 'always' || disc) ? match.id : null;
+    const texMatchNoShape = !!(texMatchId && disc && !opts._packMember);
     let textureBaked = false;
     if (brush.source !== 'bru' && brush.hasTexture && opts.noTextureBake !== true && !texMatchId) {
       const texture = textureGray(brush);
@@ -1261,10 +1311,10 @@
       noShape: texMatchNoShape || undefined,
       bruColor: texMatchId ? -16777216 : undefined,
       bruShapeRgbOpacity: texMatchId ? true : undefined,
-      textureInverted: brush.textureInverted,
-      textureScale: brush.textureScale,
-      textureBrightness: bruTexBrightness(brush),
-      textureContrast: bruTexContrast(brush),
+      textureInverted: match && match.approx ? match.inverted : brush.textureInverted,
+      textureScale: match && match.approx ? match.scale : brush.textureScale,
+      textureBrightness: match && match.approx ? 100 : bruTexBrightness(brush),
+      textureContrast: match && match.approx ? 100 : bruTexContrast(brush),
       textureDepth: effectiveTextureDepth,
       taperOn: brush.taperOn,
       taperSize: brush.taperSize,
@@ -1341,7 +1391,7 @@
     /* AUDIT-20261111-06：单支 makeBru 对「未改动的原生 BRU」返回整文件透传（pngBytes/meta 都是 null）。
        多支合包时不能把它当包内条目——以前直接报「缺少笔尖图像数据」。合包统一走重建路径：与来自多支
        .bru 的笔刷同一条路（_rawMeta 字段级保留未改参数），只关掉整文件透传。单支合包上面已原样返回。 */
-    // _packMember：多支布局不支持「无笔尖图」条目（无原生样本），第206轮 texMatch 据此退回烘焙
+    // 多支布局保留笔尖 PNG；独立纹理仍可通过 f6 引用，不能用单支的无图记录头。
     const packOpts = Object.assign({}, opts, { _noFilePassthrough: true, _packMember: brushList.length > 1 });
     brushList.forEach(function (brush, i) {
       const made = makeBru(brush, packOpts);
@@ -3366,13 +3416,9 @@ Write-Host 'restart MediBang Paint Pro'
       if (target === 'bru') {
         if (brush.source !== 'bru') {
           if (!(pixels && opts.noTextureBake !== true)) return '未写出（缺少原图或已关闭烘焙，禁用空纹理避免无墨）';
-          /* 第206轮 R204-02：纹理与画世界内置纹理逐像素相同时，makeBru 会改写独立纹理引用 */
-          if (opts.bruTexMatch !== 'off' && !(opts.bruTexAsset && opts.bruTexAsset !== 'off')) {
-            const texLib = isNode ? require('./hsj-textures-lib.js') : (root.BC && root.BC.hsjTextureLib);
-            const plain = texLib && typeof texLib.matchKnown === 'function' ? textureGray(Object.assign({}, brush, { textureInverted: false })) : null;
-            const hit = plain ? texLib.matchKnown(plain.w, plain.h, plain.gray) : null;
-            if (hit) return '参数映射（纹理与画世界内置 ' + hit + ' 逐像素相同：普通硬边圆笔尖单支导出可写独立纹理，其他情况仍按烘焙处理）';
-          }
+          const match = bruIndependentTexture(brush, opts);
+          if (match && match.approx) return '近似（识别到规则网点，改用画世界内置软网点 ' + match.id + ' 的独立纹理；大小和笔迹待实绘核对）';
+          if (match) return '参数映射（与画世界内置 ' + match.id + ' 逐像素相同；普通硬边圆可写独立纹理，非圆默认烘焙）';
           return opts.bruTexAsset && opts.bruTexAsset !== 'off'
             ? '近似（烘焙进笔尖 + 画世界内置材质纹理层，材质 id 依赖 App 版本）'
             : '近似（真实纹理烘焙进笔尖，未开启单独纹理层）';
@@ -3643,7 +3689,7 @@ Write-Host 'restart MediBang Paint Pro'
     };
     const reason = {
       abr: 'ABR 支持这些；纹理需配合 .pat 图案（目标 PS 里要有同名图案）',
-      bru: '外来真实纹理按选项近似烘焙进笔尖；开「画世界真纹理」时会再叠一层内置材质（受 App 版本影响）；动态和实际笔触需验证',
+      bru: '匹配到内置纹理的圆笔尖和规则软网点可使用独立纹理；其它自定义纹理按选项烘焙。动态和实际笔触需验证',
       brushset: 'Procreate 原生双笔刷、倾斜/速度分开写出；不同引擎效果需验证',
       brush: 'Procreate 原生双笔刷、倾斜/速度分开写出；不同引擎效果需验证',
       kbundle: 'Krita 6 元组曲线/颜色率未映射',
