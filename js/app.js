@@ -770,7 +770,7 @@
     workerJobs.clear();
     jobs.forEach(function (job) { job.cleanup(); job.reject(new Error(reason)); });
   }
-  function parseViaWorker(name, bytes, opts) {
+  function parseViaWorker(name, bytes, opts, onProgress) {
     return new Promise(function (resolve, reject) {
       if (!window.Worker || workerBroken) return reject(new Error('worker unavailable'));
       try {
@@ -788,6 +788,10 @@
       function onMsg(ev) {
         const m = ev.data || {};
         if (m.id !== id) return;
+        if (typeof m.progress === 'number') {
+          if (onProgress) onProgress(m.progress);
+          return;
+        }
         cleanup();
         if (m.ok) resolve(m.result); else reject(new Error(m.error || '解析失败'));
       }
@@ -1322,8 +1326,10 @@
   }
 
   async function parseRecord(rec, displayName, bytes, opts) {
+    const importToken = state.importToken;
+    const shouldCancel = function () { return importToken !== state.importToken; };
     try {
-      // 内置笔尖图库只存在于主线程内存里，Worker 拿不到；加载了图库就不走后台解析
+      // 已加载的图库可能很大：留在主线程，走分块解析，避免复制整套图库到 Worker。
       // 注意：导入 .brushset 单文件时 opts 是 null，这里必须自己造对象，否则图库永远传不进去
       if (state.shapeLib && (!opts || opts.shapeResources !== state.shapeLib)) {
         opts = Object.assign({}, opts || {}, { shapeResources: state.shapeLib });
@@ -1334,31 +1340,42 @@
       if (useWorker) {
         try {
           setProgress(0, '后台解析：' + displayName);
-          const parsed = await parseViaWorker(displayName, bytes, opts);
+          const parsed = await parseViaWorker(displayName, bytes, opts, function (p) {
+            if (!shouldCancel()) setProgress(p, '后台解析：' + displayName);
+          });
+          if (shouldCancel()) return;
           setProgress(null);
           await restoreHsjShapes(parsed);
+          if (shouldCancel()) return;
           adoptParsed(rec, bytes, parsed, displayName);
           return;
         } catch (e) {
+          if (shouldCancel()) return;
           // #266：以前这里静默回退，用户盯着「后台解析」几分钟后界面又冻结却不知道发生了什么。
           pushLog('WORKER 回退：' + (e && e.message ? e.message : e));
           toast('后台解析未能完成，已改为主线程重新解析（大文件会短暂卡顿）：' + friendlyError(e && e.message ? e.message : e), 9000);
         }
         setProgress(null);
       }
-      if (big && BC.convert.parseFileAsync) {
+      // 压缩后的 brushset 即使不到 8MB，也可能有许多高分辨率笔尖。
+      if ((big || /\.brush(?:set)?$/i.test(displayName)) && BC.convert.parseFileAsync) {
         const parsed = await BC.convert.parseFileAsync(displayName, bytes, Object.assign({}, opts, {
-          onProgress: function (p, text) { setProgress(p, text + '：' + displayName); }
+          onProgress: function (p, text) { if (!shouldCancel()) setProgress(p, text + '：' + displayName); },
+          shouldCancel: shouldCancel
         }));
+        if (shouldCancel()) return;
         setProgress(null);
         await restoreHsjShapes(parsed);
+        if (shouldCancel()) return;
         adoptParsed(rec, bytes, parsed, displayName);
       } else {
         const parsed = BC.convert.parseFile(displayName, bytes, opts);
         await restoreHsjShapes(parsed);
+        if (shouldCancel()) return;
         adoptParsed(rec, bytes, parsed, displayName);
       }
     } catch (e) {
+      if (shouldCancel()) return;
       setProgress(null);
       rec.error = friendlyError(e.message);
     }
@@ -1492,7 +1509,9 @@
         const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
         setProgress(null, '解析中：' + f.name + (mb > 100 ? '（大文件，请稍候…）' : ''));
         await sleep(0);
+        if (token !== state.importToken) break;
         await parseRecord(rec, f.name, bytes, opts);
+        if (token !== state.importToken) break;
         rec.parsing = false;
         rec.parseMs = Math.max(1, Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0));
         setProgress(null);
@@ -2539,7 +2558,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.87';
+const APP_VERSION = '2.8.88';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;

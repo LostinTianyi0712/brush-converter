@@ -719,7 +719,7 @@
     return out;
   }
 
-  /** 异步解析：ABR 大文件会分片让出主线程并回报进度 */
+  /** ABR 和 Procreate 解析会分片让出主线程并回报进度。 */
   async function parseFileAsync(name, bytes, opts) {
     opts = opts || {};
     const kind = detect(name, bytes);
@@ -727,6 +727,12 @@
       const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null;
       const r = await abr.parseAsync(bytes, { onProgress: onProgress || undefined });
       return { kind: 'abr', kindLabel: extLabel('abr'), brushes: r.brushes, warnings: r.warnings || [] };
+    }
+    if (kind === 'procreate') {
+      const r = await procreate.parseAsync(bytes, name, opts);
+      const out = { kind, kindLabel: extLabel(kind), brushes: r.brushes, warnings: r.warnings };
+      if (r.name !== undefined) out.name = r.name;
+      return out;
     }
     return parseFile(name, bytes, opts);
   }

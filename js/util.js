@@ -198,12 +198,16 @@
   // Compare editable brush content, including nested curves and in-place pixel
   // edits. Raw containers/bookkeeping are excluded to avoid hashing whole packs.
   // The resulting string also survives Worker structured-clone boundaries.
-  u.brushFingerprint = function (brush) {
+  u.brushFingerprint = function (brush, initialPixelHashes) {
     function value(v) {
       if (!v || typeof v !== 'object') return v;
       if (ArrayBuffer.isView(v)) {
-        return ['bytes', v.constructor.name, v.byteLength,
-          u.md5(new Uint8Array(v.buffer, v.byteOffset, v.byteLength))];
+        let hash = initialPixelHashes && initialPixelHashes.get(v);
+        if (!hash) {
+          hash = u.md5(new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
+          if (initialPixelHashes) initialPixelHashes.set(v, hash);
+        }
+        return ['bytes', v.constructor.name, v.byteLength, hash];
       }
       if (v instanceof ArrayBuffer) return ['buffer', v.byteLength, u.md5(new Uint8Array(v))];
       if (Array.isArray(v)) return v.map(value);

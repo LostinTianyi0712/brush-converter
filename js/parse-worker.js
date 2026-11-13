@@ -35,7 +35,10 @@ self.onmessage = function (ev) {
   try {
     loadCore();
     var bytes = msg.bytes instanceof Uint8Array ? msg.bytes : new Uint8Array(msg.bytes);
-    var parsed = BC.convert.parseFile(msg.name, bytes, msg.opts || {});
+    var opts = Object.assign({}, msg.opts, {
+      onProgress: function (p) { self.postMessage({ id: id, progress: p }); }
+    });
+    var parsed = BC.convert.parseFile(msg.name, bytes, opts);
     /* 【第182轮】回传零拷贝：解析结果里带着每支笔刷的笔尖像素（Uint8Array），
        原来不带 transfer 列表 = 结构化克隆整份复制。53 支 2048² 的 brushset
        就是 848MB 的搬运，主线程解析完还要卡好几秒，界面上点两下就没响应。

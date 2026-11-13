@@ -153,7 +153,10 @@
     return null;
   }
 
-  function readBrushFolder(entries, prefix, shapeResources, entryByName, folderEntries) {
+  function readBrushFolder(entries, prefix, shapeResources, entryByName, folderEntries, initialPixelHashes) {
+    // Only share fingerprints while initializing this brush and its sub-brush.
+    // Export must hash again to detect in-place pixel edits.
+    initialPixelHashes = initialPixelHashes || new WeakMap();
     // prefix like 'UUID/' ('' for single-file .brush)
     // brushset 解析时传入一次性索引，避免每支笔刷都扫描整个 ZIP。
     const pool = folderEntries || entries;
@@ -293,7 +296,7 @@
     if (subArcEntry) {
       try {
         const subParams = plist.unarchive(subArcEntry.data()) || {};
-        subBrush = readBrushFolder(entries, subArcEntry.name.slice(0, -'Brush.archive'.length), shapeResources);
+        subBrush = readBrushFolder(entries, subArcEntry.name.slice(0, -'Brush.archive'.length), shapeResources, null, null, initialPixelHashes);
         dualOn = true;
         dualSubName = typeof subParams.name === 'string' ? subParams.name : '';
         dualBlendNum = Number(params.dualBlendMode) || 0;
@@ -422,10 +425,10 @@
     };
     brush._rawNormalized = {};
     Object.keys(brush).forEach(function(key){const v=brush[key];if(key[0]!=='_' && (v===null || ['number','boolean','string'].indexOf(typeof v)>=0))brush._rawNormalized[key]=v;});
-    brush._rawTipState=util.brushFingerprint({tip:brush.tip});
-    brush._rawDualTipState=util.brushFingerprint({tip:brush.dualTip});
-    brush._rawGrainState=util.brushFingerprint({tip:brush._grainRgba});
-    brush._rawBrushState=util.brushFingerprint(brush);
+    brush._rawTipState=util.brushFingerprint({tip:brush.tip}, initialPixelHashes);
+    brush._rawDualTipState=util.brushFingerprint({tip:brush.dualTip}, initialPixelHashes);
+    brush._rawGrainState=util.brushFingerprint({tip:brush._grainRgba}, initialPixelHashes);
+    brush._rawBrushState=util.brushFingerprint(brush, initialPixelHashes);
     brush._rawEntries=pool.filter(e=>!e.dir && e.name.startsWith(prefix)).map(e=>({name:e.name.slice(prefix.length),data:e.data()}));
     return brush;
   }
@@ -484,8 +487,9 @@
     return util.utf8Encode(xml);
   }
 
-  function parse(bytes, fileName, opts) {
+  function* parseSteps(bytes, fileName, opts) {
     opts = opts || {};
+    yield 0;
     if (!zip.isZip(bytes)) throw new Error('不是 Procreate 笔刷文件（ZIP 容器）');
     const entries = zip.read(bytes);
     const brushes = [];
@@ -544,20 +548,52 @@
       const prefix = folder + '/';
       try {
         const b = readBrushFolder(entries, prefix, opts.shapeResources, entryByName, entriesByFolder.get(folder));
-        if (!b) continue;
-        if (!b.name) b.name = /^[0-9A-Fa-f-]{20,}$/.test(folder) ? (setName + ' ' + autoIndex) : folder;
-        // 整包组名：导出 .brushset 时写回 brushset.plist（否则会退回第一支笔刷名）
-        b._brushsetName = setName;
-        if (!b.tip) warnings.push(b.name + ': ' + (b.bundledShapePath ? '缺少内置笔尖原图 '+b.bundledShapePath+'；Procreate原生导出保留引用，跨软件圆头仅为近似' : '没有可解码Shape图；跨软件圆头仅为近似'));
-        brushes.push(b);
+        if (b) {
+          if (!b.name) b.name = /^[0-9A-Fa-f-]{20,}$/.test(folder) ? (setName + ' ' + autoIndex) : folder;
+          // 整包组名：导出 .brushset 时写回 brushset.plist（否则会退回第一支笔刷名）
+          b._brushsetName = setName;
+          if (!b.tip) warnings.push(b.name + ': ' + (b.bundledShapePath ? '缺少内置笔尖原图 '+b.bundledShapePath+'；Procreate原生导出保留引用，跨软件圆头仅为近似' : '没有可解码Shape图；跨软件圆头仅为近似'));
+          brushes.push(b);
+        }
       } catch (e) {
         warnings.push('解析失败 ' + folder + ': ' + e.message);
       }
+      if (autoIndex < orderedFolders.length) yield autoIndex / orderedFolders.length;
     }
     if (!brushes.length) {
       warnings.push('brushset 中没有可转换的笔刷（可能全部使用默认圆头，或只含参数设置）');
     }
     return { brushes, warnings, kind: 'brushset', name: setName };
+  }
+
+  function parse(bytes, fileName, opts) {
+    const steps = parseSteps(bytes, fileName, opts);
+    const report = opts && opts.onProgress;
+    let step = steps.next();
+    for (; !step.done; step = steps.next()) {
+      if (report) report(step.value, '解析 Procreate 笔刷');
+    }
+    if (report) report(1, '解析 Procreate 笔刷');
+    return step.value;
+  }
+
+  async function parseAsync(bytes, fileName, opts) {
+    opts = opts || {};
+    const report = opts.onProgress;
+    const steps = parseSteps(bytes, fileName, opts);
+    let deadline = Date.now();
+    let step = steps.next();
+    for (; !step.done; step = steps.next()) {
+      if (report) report(step.value, '解析 Procreate 笔刷');
+      if (Date.now() >= deadline) {
+        await new Promise(resolve => setTimeout(resolve, 0));
+        deadline = Date.now() + 12;
+      }
+      if (opts.shouldCancel && opts.shouldCancel()) throw new Error('已停止本次导入');
+    }
+    // Keep the terminal notification after parsing, including for single brushes.
+    if (report) report(1, '解析 Procreate 笔刷');
+    return step.value;
   }
 
   /* ================= Procreate writer ================= */
@@ -1149,7 +1185,7 @@
     return s;
   }
 
-  const api = { isProcreate, parse, writeBrush, writeBrushset, buildArchive, shapePng, thumbPng, unchanged, secondaryBrush: secondaryBrush };
+  const api = { isProcreate, parse, parseAsync, writeBrush, writeBrushset, buildArchive, shapePng, thumbPng, unchanged, secondaryBrush: secondaryBrush };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { procreate: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);
