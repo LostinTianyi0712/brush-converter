@@ -1124,7 +1124,24 @@
     const synthesizedTip = !tipImg;
     if (!tipImg) tipImg = synthTip(brush, 256, opts);
     const bakingDual = !brush.bruDualRefUuid && opts.dualBake !== false && brush.dualOn && brush.dualTip && (brush.dualTip.rgba || brush.dualTip.data) && opts.noDualBake !== true;
-    if (bakingDual) tipImg = bakeDualTip(tipImg, brush);
+    if (bakingDual) {
+      /* 【第219轮】副笔烘焙的保护阀。
+         画世界的副笔是「另一笔画一遍」（位置/尺寸独立），Procreate 的副笔是「与主笔混合」，
+         烘焙只能按 alpha 相乘去近似。对「主笔本身很稀」的笔尖（亮片/闪光粉粒），相乘等于把
+         主笔再乘一次不到 0.3 的副笔覆盖 —— 实测楠.bru：
+           · #35「13亮片」主笔 cov33.49 → 烘后 1.47（掉 96%）
+           · #57「35亮片」主笔 cov7.60 → 烘后 5.67、alpha 均值 3.15 → 0.89（掉 72%）
+         这类结果已不是「近似」，而是把笔尖吃掉。既然非 BRU 源无论如何都不会把副笔写成
+         画世界原生双笔（第181轮：会「重影」），烘焙掉一半以上墨量时直接不烘更接近原笔。
+         阈值 0.5 依据：楠.bru 11 支带副笔的笔刷里，掉墨少的 4 支（#50 等）只掉 18%，
+         其余全部掉 51%~96%，中间没有样本，落点不敏感。 */
+      const baked = bakeDualTip(tipImg, brush);
+      const before = tipAlphaStats(tipImg), after = tipAlphaStats(baked);
+      /* 只在「笔尖有结构」时启用：均匀笔尖（整块实心/纯 alpha）相乘等于整体调不透明度，
+         那是第237轮锁定的正常合成，不能拦。 */
+      const structured = before.sd > 0.01;
+      if (baked === tipImg || opts.dualBakeGuard === false || !structured || after.mean >= before.mean * 0.5) tipImg = baked;
+    }
     // 圆度/角度只在 bakeTipTransform 里应用一次（之前 abr 源会被压两次 → 笔刷变得又细又扁）
     if (brush.source !== 'bru' && !synthesizedTip) {
       // Procreate angle/roundness are written to native BRU f20/f22. Preserve
@@ -2235,13 +2252,20 @@
     const cutoff = texture.gray.length * (brightnessBlend ? 0.55 : 0.15);
     while (total < cutoff && background < 254) total += histogram[++background];
     if (background >= 254) return Object.assign({}, brush, { tip: synthTip(shape, 256, opts) });
+    /* 【第219轮】曲线口径分两种：
+       · 亮度混合（f14/亮度）：源纹理是「浅底 + 深色细节」，投影到笔尖时要压掉底色、拉对比，
+         所以走 level² 的平方曲线（22 支实测已还原，保持原样）；
+       · 其它混合（正片叠底/正常）：纹理本身已经是「墨在透明底上」，平方曲线会把本来就很暗的
+         亮点再压一次。楠.bru「35亮片闪光粉粒效果」实测：纹理反相后 mean 4.78 / cov 9.96% / p99 157，
+         平方曲线输出 mean 1.39 / cov 3.70% / p99 59（缩略图里几乎看不到亮片，用户报「还是没还原」），
+         改走线性后 mean 4.12 / cov 9.94% / p99 135，与源纹理一致。 */
     const curve = new Uint8Array(256);
     const brightness = Number.isFinite(brush.textureBrightness) && brush.textureBrightness !== 51 ? brush.textureBrightness / 200 : 0;
     const contrast = Number.isFinite(brush.textureContrast) && brush.textureContrast !== 100 ? brush.textureContrast / 100 : 0;
     for (let i = background + 1; i < curve.length; i++) {
       const level = (i - background) / (255 - background);
       const adjusted = Math.max(0, Math.min(1, level * (1 + contrast + brightness)));
-      curve[i] = Math.round(255 * adjusted * adjusted);
+      curve[i] = Math.round(255 * (brightnessBlend ? adjusted * adjusted : adjusted));
     }
     const side = Math.max(64, Math.min(512, opts.maxTipSize || 2048));
     const stamp = synthTip(shape, side, opts);
@@ -2528,6 +2552,20 @@
       solidRatio: solid / (op || 1),
       d8: deep8 / (solid || 1)
     };
+  }
+
+  /* 笔尖的 alpha 均值与标准差（0..1）。均值判断副笔烘焙有没有把墨量吃掉；
+     标准差用来区分「有结构的笔尖」和「一整块均匀的实心/半透明笔尖」——
+     均匀笔尖相乘只等于整体调不透明度，是有意的合成，不该被保护阀拦下。 */
+  function tipAlphaStats(img) {
+    if (!img || !img.rgba || !img.rgba.length) return { mean: 0, sd: 0 };
+    const n = img.w * img.h;
+    if (!n) return { mean: 0, sd: 0 };
+    let sum = 0, sum2 = 0;
+    for (let i = 3; i < n * 4; i += 4) { const a = img.rgba[i]; sum += a; sum2 += a * a; }
+    const mean = sum / n;
+    const sd = Math.sqrt(Math.max(0, sum2 / n - mean * mean));
+    return { mean: mean / 255, sd: sd / 255 };
   }
 
   function bakeDualTip(tip, brush) {
