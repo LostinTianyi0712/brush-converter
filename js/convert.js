@@ -2285,7 +2285,7 @@
          · 用未反转的纹理覆盖率（REVERSETEX 只影响独立的纹理层，不影响逐笔尖落墨遮罩）
          · 不压 background、不做亮度/对比度曲线、不乘圆盘遮罩
        亮度混合（f14）那条分支是第198/219轮为「浅底+深色细节」定的，保持原样不动。 */
-    if (!brightnessBlend) {
+    /* 【第222轮】亮度混合（f14）也并入正相直通。判据不是混合模式，而是「这颗纹理是不是笔尖落墨遮罩」：       usesBruDabTexture 为真时白=满墨、Dab 就是纹理本身，压背景和平方曲线都会吃掉浅底。       楠.bru 里 34/35/36/37（f2）先前已修成块状，而 6/12/19/33 等 f14 的仍是稀疏颗粒——同一批笔刷被分成两种样子。       实测 idx54「33亮片」源纹理 m232 c100%，旧平方曲线只出 m14.8 c15%，直通后恢复浅底满墨。       f14 的平方曲线保留在下方（已不可达），作为需要时改回来的对照。 */    {
       const rawGray = new Uint8Array(texture.gray.length);
       for (let i = 0; i < rawGray.length; i++) rawGray[i] = brush.textureInverted ? 255 - texture.gray[i] : texture.gray[i];
       const flat = new Uint8Array(side * side * 4);
