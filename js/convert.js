@@ -1100,22 +1100,31 @@
       ? textureGray(brush.textureInverted ? Object.assign({}, brush, { textureInverted:false }) : brush)
       : null;
     if (brush._nativeTexFromBru) {
+      if (process.env.BCU_DEBUG) console.log('[BiT]', JSON.stringify({name: brush.name, dualOn: !!brush.dualOn, dualTip: !!brush.dualTip, nDual: !!brush._nativeDualFromBru, ref: brush.bruDualRefUuid, texId: brush.texAssetId, gB: !!brush._grainFromBuiltin, fp: brush._grainFromBuiltinFp, hasTex: brush.hasTexture, src: brush.source}));
       if (!plainForNative) return null;
+      /* 双笔守卫：内嵌副笔尖的双笔（还行型）必须烘焙——224 轮实测双笔 + 自定义纹理层不出墨。
+         注意只看 dualOn&&dualTip：链接型双笔（迟早/扁头描边：dualOn 但副笔尖是跨包引用，
+         brushset 里没有 Sub01）在 mid 上 dualOn=false，走保留分支——其 keepNativeId 形式
+         与源文件同构（UUID+源原始字节 / ptN 内置引用），不触发 224 的形态。 */
+      if (brush.dualOn && brush.dualTip) return null;
+      /* 【第232轮·field-matrix】源 f6 本来就是内置引用（ptN）且 Grain 像素来自内置库时，
+         直接沿用源 f6：Grain.png 的重编码会破坏逐像素指纹（Good铅笔 pt33 实测 bake），
+         但 ptN 的真值在 App 内置库里。安全阀：导出时记下纹理灰度 md5（_grainFromBuiltinFp），
+         重建时校验——Grain 被改过（halftone 测试的 1 像素改动）指纹对不上就回烘焙。 */
+      if (/^pt/i.test(String(brush.texAssetId || '')) && brush._grainFromBuiltin) {
+        const fp = plainForNative.gray ? util.md5(new Uint8Array(plainForNative.gray)) : null;
+        if (fp && fp === brush._grainFromBuiltinFp) return { id: brush.texAssetId };
+        return null;
+      }
       /* 先试内置纹理库：命中 ptN 就写 f6 引用——比自定义纹理省体积，也让官方 450B
          那种「无笔尖图 + f6=pt65」的原生布局能照抄（第206轮依赖这一点）。 */
       const libN = isNode ? require('./hsj-textures-lib.js') : (root.BC && root.BC.hsjTextureLib);
       const hitN = libN && libN.matchKnown(plainForNative.w, plainForNative.h, plainForNative.gray);
       if (hitN) return { id: hitN };
-      /* 【第224轮·真机结论】这条只成立于**双笔**结构：实测「还行」（双笔 + 自定义纹理）导入后
-         缩略图空白、画不出笔迹。双笔继续回退烘焙，避免 224 轮问题回归。
-         【第231轮·真机复验见 _probe/verify230/report.md】单笔 + 笔尖 PNG + 自定义纹理在
+      /* 【第231轮·真机复验见 _probe/verify230/report.md】单笔 + 笔尖 PNG + 自定义纹理在
          3.4.5 正常出墨，且保留独立纹理层对齐真源 98%/97%（纹理层是乘法调制，烘焙+归零反而
-         把出墨放大 ~2.2 倍）。单笔放行保留层；keepNativeId 让 f6 沿用源 UUID（见 makeBru）。 */
-      if (brush.dualOn && brush.dualTip) return null;
-      /* makeBruEmbedded 拆分后的 primary 不带 dualTip，用标记/引用兜住（「还行」224 轮不出墨的形态）。 */
-      if (brush._nativeDualFromBru || brush.bruDualRefUuid) return null;
-      /* keepNativeId 要求「源 id 是 UUID 且源纹理原始字节在手」——id 与像素 md5 必须自洽
-         （bru.js parse 与 App 端同口径）。ptN 引用的是内置像素，改过的纹理无法用 ptN 表达 → 回退烘焙。 */
+         把出墨放大 ~2.2 倍）。keepNativeId 要求「源 id 是 UUID 且源纹理原始字节在手」——
+         id 与像素 md5 必须自洽（bru.js parse 与 App 端同口径）。 */
       if (!brush._rawBruTexture || !/^[0-9a-f]{32}$/i.test(String(brush.texAssetId || ''))) return null;
       return { custom: true, keepNativeId: true, plain: plainForNative };
     }
@@ -1385,7 +1394,10 @@
          非 keep 路径：仅在「有纹理、未烘焙、ptN 引用或像素可附带」时透传源 texAssetId——
          烘焙输出再写 f6 会让 App 叠加/引用一份不该存在的纹理；无像素的 UUID 是空引用（224 轮不出墨）。 */
       texAssetId: (match && match.keepNativeId && brush.texAssetId) ? brush.texAssetId
-        : (texMatchId || texAssetId || (((brush.source === 'bru' || (brush.hasTexture && !textureBaked && !opts.noTextureBake)) && brush.texAssetId && (/^pt/i.test(String(brush.texAssetId)) || customTexture)) ? brush.texAssetId : undefined) || (opts && opts.texAssetId)),
+        : (texMatchId || texAssetId
+           || (brush.source === 'bru' && brush.texAssetId)   // BRU 同格式重建：沿袭源 f6（227 轮口径；ptN 无像素、路径型悬空引用均照旧）
+           || (((brush.hasTexture && !textureBaked && !opts.noTextureBake) && brush.texAssetId && (/^pt/i.test(String(brush.texAssetId)) || customTexture)) ? brush.texAssetId : undefined)
+           || (opts && opts.texAssetId)),
       /* 【第227轮】f84 纹理混合模式：以前 meta 里根本没有这个键，bru.js 写侧收不到，
          往返后一律变 0（203 支 BRU 源里 45 支失真）。 */
       bruTextureBlendMode: brush.bruTextureBlendMode,
@@ -1408,6 +1420,14 @@
       /* 【第232轮】源 BRU 显式带 f77/f78 的标记必须传下去：bru.js 的写侧靠它决定
          「锥度开关关着也要把尺寸/透明度写出来」。少了这个键，轻舟「色块平铺」f77=0.36 往返成 1。 */
       _bruTaperFields: brush._bruTaperFields === true,
+      /* 【第232轮·field-matrix】字段存在性旗标与原值：写侧「源有字段就写」靠它们
+         （f59/f77/f78/f87/f104/f109——源里出现过的字段不再因开关关闭而消失）。 */
+      _bruScatterCountField: brush._bruScatterCountField === true,
+      _bruSmudgeAmountField: brush._bruSmudgeAmountField === true,
+      _bruWetDepthField: brush._bruWetDepthField === true,
+      _bruF109: brush._bruF109,
+      _bruF87Raw: brush._bruF87Raw,
+      _bruF31Field: brush._bruF31Field === true,
       taperSize: brush.taperSize,
       taperOpacity: brush.taperOpacity,
       wetEdgesOn: brush.wetEdgesOn,
@@ -1451,6 +1471,8 @@
       bruLegacyDirection: brush.bruLegacyDirection,
       oldTexId: brush.oldTexId,
       _rawMeta: opts.fidelity !== false && !opts.forceRebuild ? brush._rawMeta : undefined,
+      /* 【第232轮】未知字段原样透传（field-matrix D 表）：rebuild/brushset 路径靠它过桥。 */
+      _rawUnknown: brush._rawUnknown,
       _rawOriginalName:brush._rawState && brush._rawState.name
     };
     if(meta._rawMeta){
@@ -2439,6 +2461,9 @@
     const warnings = [];
     const baked = list.filter(function (b) { return b._bruGrainInTip; }).length;
     if (baked) warnings.push(baked + ' 支画世界笔刷的逐笔尖纹理已合成到形状中，混合与深度动态为近似效果');
+    /* 【第232轮】未知字段总量超 4KB/支 安全阀触发时的告警（透传被跳过，字段不随 brushset 保留）。 */
+    const skippedUnknown = list.filter(function (b) { return b._rawUnknownSkipped; }).length;
+    if (skippedUnknown) warnings.push(skippedUnknown + ' 支笔刷的未知字段总量超过 4KB，已跳过透传（这些字段不随 brushset 保留）');
     const noTex = list.filter(function (b) {
       try { return b && b.hasTexture && !textureGray(b); } catch (e) { return false; }
     });

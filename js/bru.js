@@ -82,6 +82,20 @@
   }
   function u8arr(arr) { return new Uint8Array(arr); }
 
+  /* 【第232轮·field-matrix】BRU 已知字段号白名单 = 写侧（buildMetadata 里 fVarint/fF32/fBytes(N,)
+     的静态扫描，89 个）∪ 读侧（pushBrush 里 o[N] 的静态扫描）——来源与明细见
+     _probe/field-matrix/extract.js（_probe/field-matrix/report.md §5 D 表）。
+     白名单之外的字段号视为「未知字段」：解析时保留原始 wire 字节（tag+payload，_rawUnknown），
+     重建写 meta 时原样追加，不再静默丢弃（f54 作者署名 199 支、f128 引擎 148 支、f107 108 支…）。
+     新增已知字段后请同步更新此表（extract.js 可重新生成）；漏了也不会写坏——buildMetadata
+     会跳过本次已写出的字段号，不会重复。 */
+  const BRU_KNOWN_FIELDS = new Set([
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
+    28, 29, 31, 32, 33, 35, 36, 37, 42, 43, 44, 47, 49, 50, 51, 56, 57, 58, 59, 60, 61, 62, 63, 64,
+    65, 67, 74, 77, 78, 79, 80, 81, 82, 83, 84, 87, 90, 92, 93, 94, 95, 96, 97, 99, 100, 101, 103,
+    104, 109, 115, 117, 119, 120, 121, 122, 123, 129, 134, 135, 136, 138, 139, 158
+  ]);
+
   /* ---------- metadata builder (validated against 画世界Pro Android) ---------- */
   function buildMetadata(b) {
     const parts = [];
@@ -197,6 +211,10 @@
     if (!b.noShape) {
       parts.push(u8arr(fVarint(32, b.bruShapeInverted ? 1 : 0))); // REVERSESHAPE (native nib invert toggle)
       parts.push(u8arr(fVarint(31, 1)));                          // USESHAPE
+    } else if (b._bruF31Field) {
+      /* 【第232轮·field-matrix】源里「无笔尖图但带 f31」的原生记录（扁头质感描边实测）：
+         noShape 布局也把 f31 原样写回，字段不丢。 */
+      parts.push(u8arr(fVarint(31, 1)));
     }
     if (b.hasTexture) parts.push(u8arr(fVarint(28, 1)));        // TEXTURE ON
     // Native texture panel stores “apply texture to each tip” inverted.
@@ -228,12 +246,18 @@
     /* 【第229轮】原生 BRU 里有「f56 没写、但 f57/f58/f59 有值」的笔刷（轻舟「墨迹/迹墨/蓫痕」：
        scatterOn=false + 强度 55% + 两轴 + 数量 4）。旧实现只要 scatterOn 为假就整组不写，
        往返后强度/数量被抹成 0/1。改成「开关为真、或任一参数存在」就写出，开关本身照旧只在为真时写。 */
-    if (b.scatterOn || b.scatterPct || (b.scatterCount || 1) > 1 || b.scatterBothAxes) {
-      if (b.scatterOn) parts.push(u8arr(fVarint(56, 1)));       // SCATTER ON
-      if (b.scatterBothAxes) parts.push(u8arr(fVarint(57, 1))); // SCATTER BOTH AXES
-      parts.push(u8arr(fF32(58, Math.max(0, Math.min(10, (b.scatterPct || 0) / 100))))); // SCATTER STRENGTH
-      if ((b.scatterCount || 1) > 1) parts.push(u8arr(fVarint(59, Math.round(b.scatterCount)))); // COUNT
-    }
+      if (b.scatterOn || b.scatterPct || (b.scatterCount || 1) > 1 || b.scatterBothAxes) {
+        if (b.scatterOn) parts.push(u8arr(fVarint(56, 1)));       // SCATTER ON
+        if (b.scatterBothAxes) parts.push(u8arr(fVarint(57, 1))); // SCATTER BOTH AXES
+        parts.push(u8arr(fF32(58, Math.max(0, Math.min(10, (b.scatterPct || 0) / 100))))); // SCATTER STRENGTH
+        /* 【第232轮】源里单写 f59=1（数量显式为 1、无其它散布参数）的笔刷：块条件进不去，
+           在块后单独补写（见下）；块内则放宽为「源有 f59 就写」。 */
+        if ((b.scatterCount || 1) > 1 || b._bruScatterCountField) parts.push(u8arr(fVarint(59, Math.round(b.scatterCount)))); // COUNT
+      }
+      /* 【第232轮】块没进（开关/参数全默认）但源里明确写了 f59：原样补写，字段不丢。 */
+      if (!b.scatterOn && !b.scatterPct && !b.scatterBothAxes && (b.scatterCount || 1) <= 1 && b._bruScatterCountField) {
+        parts.push(u8arr(fVarint(59, Math.round(b.scatterCount || 1))));
+      }
     parts.push(u8arr(fVarint(37, b.bruProtoVer === undefined ? 31 : b.bruProtoVer))); // VER（源有就写源）
     /* f42 =「形状RGB值影响透明度」（子消息，开 = {f1:1}，见 bru_标定/字段映射.md §3.3）。官方小方块与全部
        带 ptN 纹理的原生样本都是开；旧写法写空子消息。只有 convert 显式要求（bruShapeRgbOpacity）才写开。 */
@@ -264,12 +288,16 @@
          字节面变大且 _rawMeta 类用例可能受影响。 */
       const taperSizeV = Math.max(0, Math.min(1, b.taperSize === undefined ? 1 : b.taperSize));
       const taperOpacityV = Math.max(0, Math.min(1, b.taperOpacity === undefined ? 1 : b.taperOpacity));
-      if (b.taperOn || Math.abs(taperSizeV - 1) > 1e-6) parts.push(u8arr(fF32(77, taperSizeV)));
-      if (b.taperOn || Math.abs(taperOpacityV - 1) > 1e-6) parts.push(u8arr(fF32(78, taperOpacityV)));
+      /* 【第232轮】_bruTaperFields（源里有 f77/f78）时非默认值也写——「源有字段就写」，字段不丢。 */
+      if (b.taperOn || b._bruTaperFields || Math.abs(taperSizeV - 1) > 1e-6) parts.push(u8arr(fF32(77, taperSizeV)));
+      if (b.taperOn || b._bruTaperFields || Math.abs(taperOpacityV - 1) > 1e-6) parts.push(u8arr(fF32(78, taperOpacityV)));
     }
     if (b.wetEdgesOn) {
       parts.push(u8arr(fVarint(100, 1)));
       parts.push(u8arr(fF32(101, Math.max(0, Math.min(1, 1 - (b.wetEdgesAmount === undefined ? 0.4 : b.wetEdgesAmount))))));
+      parts.push(u8arr(fF32(129, Math.max(0, Math.min(1, 1 - (b.wetEdgesDepth === undefined ? 0.4 : b.wetEdgesDepth))))));
+    } else if (b._bruWetDepthField) {
+      /* 【第232轮·field-matrix】源里 f100 关着但单写了 f129：原样写回深度，不写开关/强度（源也没有）。 */
       parts.push(u8arr(fF32(129, Math.max(0, Math.min(1, 1 - (b.wetEdgesDepth === undefined ? 0.4 : b.wetEdgesDepth))))));
     }
     // #37：混色（f103 开关 / f104 强度，反向存储）。smudge 字段优先；
@@ -278,6 +306,9 @@
     const smudgeAmt = b.smudgeAmount !== undefined ? b.smudgeAmount : (b.dynamicsMix !== undefined ? b.dynamicsMix : 0.3);
     if (smudgeActive) {
       parts.push(u8arr(fVarint(103, 1)));
+      parts.push(u8arr(fF32(104, Math.max(0, Math.min(1, 1 - smudgeAmt)))));
+    } else if (b._bruSmudgeAmountField) {
+      /* 【第232轮·field-matrix】源里 f103 关着但单写了 f104：原样写回强度，不写开关。 */
       parts.push(u8arr(fF32(104, Math.max(0, Math.min(1, 1 - smudgeAmt)))));
     }
     /* 【第216轮】辅助颜色（= 双色 / 副色，Procreate 的 Secondary Color）。
@@ -294,6 +325,10 @@
       if (b.colorJitterSat) parts.push(u8arr(fF32(63, b.colorJitterSat)));
       if (b.colorJitterVal) parts.push(u8arr(fF32(64, b.colorJitterVal)));
       if (fgBgJitter > 0) parts.push(u8arr(fF32(109, fgBgJitter)));  // COLORRANDC（辅助颜色）
+    } else if (b._bruF109 !== undefined && b._bruF109 > 0) {
+      /* 【第232轮·field-matrix】源里 f61 关着但单写了 f109（迟早-真果冻力 f109=0.41）：
+         原样写回强度，不写开关（源也没有）。 */
+      parts.push(u8arr(fF32(109, b._bruF109)));
     }
     parts.push(u8arr(fVarint(79, 1)));                          // TAPEREFFECT
     parts.push(u8arr(fF32(80, b.smoothingStrength === undefined ? 0.2 : Math.max(0, Math.min(1, b.smoothingStrength))))); // SMOOTHSTRENGTH
@@ -319,10 +354,14 @@
            Procreate 侧的 dualBlendMode 是它自己的下标，绕过去会把 12=linearHeight 写成 0。 */
         parts.push(u8arr(fVarint(122, (typeof b.bruDualBlendMode === 'number' && isFinite(b.bruDualBlendMode))
           ? b.bruDualBlendMode : dualBlendValue(b.dualBlendMode, b.bruDualBlendMode))));
-        parts.push(u8arr(fVarint(87, 9629115)));
+        /* 【第232轮·field-matrix】源里带 f87（实测 −1 的 10 字节 varint）时原样写回，
+           替代经验常数 9629115——双笔源里有 f87 的 13 支此前全部 VALUE 失真。 */
+        parts.push(u8arr(b._bruF87Raw || fVarint(87, 9629115)));
         parts.push(u8arr(fF32(158, 90)));
       }
     }
+    /* 【第232轮】非双笔但源里带 f87 的笔刷（eye 等 93 支，值 −1）：原样写回。 */
+    if (!b.bruDualRefUuid && b._bruF87Raw) parts.push(u8arr(b._bruF87Raw));
     if (b.hollowPct !== undefined && b.hollowPct > 0) parts.push(u8arr(fF32(44, Math.max(0, Math.min(0.5, b.hollowPct / 100))))); // 中空度
     if (b.antialiasLevel) parts.push(u8arr(fVarint(96, Math.max(1, Math.min(3, Math.round(b.antialiasLevel))))));
     if (b.borderOn) {
@@ -353,7 +392,25 @@
        s3c→s4 出现 `f138: — → -1`。面板 100%（默认）时值为 0，App 省略不写。 */
     if (sizeInfluence < -1e-6) parts.push(u8arr(fF32(138, sizeInfluence))); // SIZEPRESSUREINFLUENCE
     if (flowInfluence < -1e-6) parts.push(u8arr(fF32(139, flowInfluence))); // FLOWPRESSUREINFLUENCE
-    return util.concat(parts.map(u8arr));
+    /* 【第232轮】未知字段原样透传：把 _rawUnknown 里的原始 wire 字节追加到 meta 末尾
+       （protobuf 字段无序，App 按字段号取值）。只追加本次构建**没有写过**的字段号——
+       某个字段号将来升级为已知时自动停止透传，不会重复写。
+       metadataFor 的补丁路径（_rawMeta 存在）本来就走「原文 + 补丁表」，未知字段号不进
+       补丁表，不会从这里重复进入。 */
+    let metaOut = util.concat(parts.map(u8arr));
+    if (b._rawUnknown && b._rawUnknown.length) {
+      const written = new Set(readFields(metaOut, 0, metaOut.length).map((it) => it.f));
+      const extraBytes = [];
+      for (const u of b._rawUnknown) {
+        if (!u || !u.length) continue;
+        const it = readFields(u, 0, u.length);
+        if (it.length === 1 && it[0].raw && it[0].raw.length === u.length && !written.has(it[0].f)) {
+          extraBytes.push(u);
+        }
+      }
+      if (extraBytes.length) metaOut = util.concat([metaOut].concat(extraBytes));
+    }
+    return metaOut;
   }
 
   const CONTAINER_HEAD = 22;
@@ -851,9 +908,22 @@
         grainStrength: texDepth > 0 ? Math.max(0.1, Math.min(0.8, texDepth)) : 0.35,
         wetEdgesOn: wetOn,
         wetEdgesAmount: wetOn ? Math.max(0, Math.min(1, 1 - wetStrengthRaw)) : 0,
-        wetEdgesDepth: wetOn ? Math.max(0, Math.min(1, 1 - wetDepthRaw)) : 0,
+        /* 【第232轮·field-matrix】f129 源有字段就还原值（哪怕 f100 关着）——写侧「源有就写」靠它取值。
+           旧实现 wetOn=false 时置 0，f129 的源值（eye 0.92）在重建时被写成 1。 */
+        wetEdgesDepth: (o[129] !== undefined || wetOn) ? Math.max(0, Math.min(1, 1 - wetDepthRaw)) : 0,
+        _bruWetDepthField: o[129] !== undefined,
         smudgeOn: mixOn,
-        smudgeAmount: mixOn ? Math.max(0, Math.min(1, 1 - mixStrengthRaw)) : 0,
+        /* 【第232轮·field-matrix】f104 源有字段就还原值（哪怕 f103 关着）。旧实现 mixOn=false 时置 0，
+           f104 的源值（eye 0.01）在重建时被写成 1。 */
+        smudgeAmount: (o[104] !== undefined || mixOn) ? Math.max(0, Math.min(1, 1 - mixStrengthRaw)) : 0,
+        _bruSmudgeAmountField: o[104] !== undefined,
+        _bruScatterCountField: o[59] !== undefined,
+        /* 【第232轮】f109 原值（辅助颜色，colorDynamicsOn 关着时 writer 也要能原样写回）。 */
+        _bruF109: o[109] === undefined ? undefined : Math.max(0, Math.min(1, num(o[109], 0))),
+        _bruF31Field: o[31] !== undefined,
+        /* 【第232轮】f87 原始 wire 字节（实测为 −1 的 10 字节 varint；double 读回会丢精度，
+           所以直接留字节）。双笔经验常数 9629115 只在源没有 f87 时兜底。 */
+        _bruF87Raw: (function () { for (const it of fields) if (it.f === 87 && it.raw && it.raw.length) return it.raw; })(),
         // #37：BRU f103/f104（混色强度）→ Procreate 湿混「混合」。载入/柔化 BRU 无对应
         // 字段，交由 Procreate 默认值；同格式写出仍优先用 smudgeOn/smudgeAmount。
         dynamicsMix: mixOn ? Math.max(0, Math.min(1, 1 - mixStrengthRaw)) : undefined,
@@ -900,6 +970,16 @@
             diameter: embeddedTips[0].w
           });
         }
+      }
+      /* 【第232轮·field-matrix D 表】未知字段原样保留：不在读写白名单里的字段号，
+         按原始 wire 字节（tag+payload）存 _rawUnknown，重建写 meta 时原样追加。
+         f54 作者署名、f128 笔刷引擎、f107 混色亮度修正等都靠这条活过 brushset 往返。 */
+      if (rawMeta && rawMeta.length) {
+        const unknownFields = [];
+        for (const it of fields) {
+          if (!BRU_KNOWN_FIELDS.has(it.f) && it.raw && it.raw.length) unknownFields.push(it.raw);
+        }
+        if (unknownFields.length) brush._rawUnknown = unknownFields;
       }
       brushes.push(brush);
       const parsed = brushes[brushes.length - 1];

@@ -477,6 +477,16 @@
       if (Number.isFinite(ex.color)) brush.bruColor = ex.color;
       if (typeof ex.rgbOpacity === 'boolean') brush.bruShapeRgbOpacity = ex.rgbOpacity;
       if (typeof ex.procTip === 'boolean') brush.bruProceduralTip = ex.procTip;
+      /* 【第232轮】未知字段透传还原（base64 → 原始 wire 字节数组）。 */
+      if (Array.isArray(ex.rawFields)) brush._rawUnknown = ex.rawFields.map(b64ToBytes);
+      /* 【第232轮·field-matrix】字段存在性旗标与原值还原（f59/f77/f78/f87/f104/f109 的「源有就写」）。 */
+      if (ex.scatterCountField === true) brush._bruScatterCountField = true;
+      if (ex.smudgeAmountField === true) brush._bruSmudgeAmountField = true;
+      if (ex.wetDepthField === true) brush._bruWetDepthField = true;
+      if (Number.isFinite(ex.smudgeAmount)) brush.smudgeAmount = ex.smudgeAmount;
+      if (Number.isFinite(ex.f109)) brush._bruF109 = ex.f109;
+      if (typeof ex.f87Raw === 'string' && ex.f87Raw) brush._bruF87Raw = b64ToBytes(ex.f87Raw);
+      if (ex.f31Field === true) brush._bruF31Field = true;
       /* 【第229轮】同上：BRU 独有标量读回，往返才能逐值一致 */
       if (Number.isFinite(ex.sizePx)) brush.sizePx = ex.sizePx;
       if (Number.isFinite(ex.rotationMode)) brush.bruRotationMode = ex.rotationMode;
@@ -515,6 +525,10 @@
       if (typeof tp.texId === 'string' && tp.texId) brush.texAssetId = tp.texId;
       if (typeof tp.texRaw === 'string' && tp.texRaw) brush._rawBruTexture = b64ToBytes(tp.texRaw);
       if (tp.hasTex) brush.hasTexture = true;
+      /* 【第232轮】Grain 像素来自内置纹理库（ptN）时打标记：重建可沿用源 f6 引用，
+         不依赖重编码后的逐像素指纹（Good铅笔 pt33 实测指纹失配）。 */
+      if (tp.grainBuiltin === true) brush._grainFromBuiltin = true;
+      if (typeof tp.grainBuiltinFp === 'string') brush._grainFromBuiltinFp = tp.grainBuiltinFp;
     }
     brush._rawNormalized = {};
     Object.keys(brush).forEach(function(key){const v=brush[key];if(key[0]!=='_' && (v===null || ['number','boolean','string'].indexOf(typeof v)>=0))brush._rawNormalized[key]=v;});
@@ -1098,6 +1112,27 @@
            Procreate 的角度表示 wrap 成 0，不存下来往返就成了 0.00001°）。 */
         fingerPressurePct: brush.bruFingerPressurePct, taperSize: brush.taperSize, angle: brush.angle,
         taperFields: !!brush._bruTaperFields,
+        /* 【第232轮·field-matrix】字段存在性旗标与原值：写侧「源有字段就写」靠它们
+           （f59/f77/f78/f87/f104/f109——源里出现过的字段不再因开关关闭而消失）。 */
+        scatterCountField: !!brush._bruScatterCountField,
+        smudgeAmountField: !!brush._bruSmudgeAmountField,
+        wetDepthField: !!brush._bruWetDepthField,
+        taperOpacity: brush.taperOpacity,
+        smudgeAmount: brush.smudgeAmount,
+        f109: brush._bruF109,
+        f87Raw: brush._bruF87Raw ? bytesToB64(brush._bruF87Raw) : undefined,
+        f31Field: !!brush._bruF31Field,
+        /* 【第232轮·field-matrix D 表】未知字段原样透传（base64 数组）：
+           楠.bru 59 支实测单支未知字段总量最大 ~200B，4KB/支安全阀几乎不会触发；
+           超限跳过并在 makeProcreateBrushset 里告警，防 brushset 体积失控。 */
+        rawFields: (function () {
+          const arr = brush._rawUnknown;
+          if (!arr || !arr.length) return undefined;
+          let total = 0;
+          for (const u of arr) total += u && u.length ? u.length : 0;
+          if (total > 4096) { brush._rawUnknownSkipped = total; return undefined; }
+          return arr.map(bytesToB64);
+        })(),
         /* 【第232轮】taperOpacity 必须和 taperSize 一起往返：archiveParams 对 taperOn=false 的笔刷
            一律写 taperOpacity:0，不存源值的话读回就是 0，补上 f78 反而会把 1 写成 0。 */
         taperOpacity: brush.taperOpacity,
@@ -1125,7 +1160,28 @@
         hasTex: !!(texOrig ? texOrig.hasTexture : brush.hasTexture),
         texId: brush.texAssetId || undefined,
         texRaw: (brush._rawBruTexture && brush._rawBruTexture.length && /^[0-9a-f]{32}$/i.test(String(brush.texAssetId || '')))
-          ? bytesToB64(brush._rawBruTexture) : undefined
+          ? bytesToB64(brush._rawBruTexture) : undefined,
+        /* 【第232轮】Grain 像素来自内置纹理库（textureGray 第四级、ptN 引用）时打标记：
+           Grain.png 的重编码会破坏逐像素指纹（Good铅笔 pt33 实测），但 ptN 真值在 App
+           内置库里，BRU 往返可以直接沿用源 f6 引用。指纹（灰度 md5，与重建侧
+           plainForNative 同口径取非反相灰度）用于校验 Grain 未被改动。 */
+        grainBuiltin: (function () {
+          try {
+            const conv2 = isNode ? require('./convert.js') : root.BC.convert;
+            /* 口径注意：不带 textureInverted:false 覆盖 —— grainPng 写进 Grain.png 的像素就是
+               textureGray(brush)（含源反相）的灰度，mid 侧 plainForNative 剥掉反相后取到的
+               恰好是同一组值，两侧指纹才能对上。 */
+            const t = conv2 && typeof conv2.textureGray === 'function' ? conv2.textureGray(brush) : null;
+            return !!(t && t.builtinTexture);
+          } catch (e) { return false; }
+        })(),
+        grainBuiltinFp: (function () {
+          try {
+            const conv2 = isNode ? require('./convert.js') : root.BC.convert;
+            const t = conv2 && typeof conv2.textureGray === 'function' ? conv2.textureGray(brush) : null;
+            return t && t.gray ? util.md5(new Uint8Array(t.gray)) : undefined;
+          } catch (e) { return undefined; }
+        })()
       });
     }
     return bplist.writeKeyedArchive(params, 'SilicaBrush', ['SilicaBrush', 'ValkyrieBrush', 'NSObject']);
