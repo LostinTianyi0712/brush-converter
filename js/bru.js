@@ -158,7 +158,10 @@
     parts.push(u8arr(fVarint(16, b.bruColor === undefined ? -1 : b.bruColor)));  // COLOR
     const spacing = Math.max(0.001, Math.min(10, (b.spacingPct === undefined ? 10 : b.spacingPct) / 100));
     parts.push(u8arr(fF32(17, spacing)));                       // SPACING
-    parts.push(u8arr(fVarint(19, b.bruRotationMode === undefined ? 1 : (b.bruRotationMode === 1 ? 1 : 0)))); // legacy direction flag
+    /* 【第233轮】f19 是旧的「跟随方向」位，以前从 bruRotationMode 反推——f115∈{2,3,4} 时被改成 0。
+       源里有 f19 就原样写，没有才退回旧规则。 */
+    parts.push(u8arr(fVarint(19, b.bruLegacyDirection === true ? 1 : (b.bruLegacyDirection === false ? 0
+      : (b.bruRotationMode === undefined ? 1 : (b.bruRotationMode === 1 ? 1 : 0)))))); // legacy direction flag
     const roundness = Math.max(0.01, Math.min(1, (b.roundness === undefined ? 100 : b.roundness) / 100));
     parts.push(u8arr(fF32(22, roundness)));                     // ROUNDNESS
     const hardness = Math.max(0, Math.min(1, b.hardness === undefined ? 1 : b.hardness));
@@ -231,7 +234,7 @@
       parts.push(u8arr(fF32(58, Math.max(0, Math.min(10, (b.scatterPct || 0) / 100))))); // SCATTER STRENGTH
       if ((b.scatterCount || 1) > 1) parts.push(u8arr(fVarint(59, Math.round(b.scatterCount)))); // COUNT
     }
-    parts.push(u8arr(fVarint(37, 31)));                         // VER
+    parts.push(u8arr(fVarint(37, b.bruProtoVer === undefined ? 31 : b.bruProtoVer))); // VER（源有就写源）
     /* f42 =「形状RGB值影响透明度」（子消息，开 = {f1:1}，见 bru_标定/字段映射.md §3.3）。官方小方块与全部
        带 ptN 纹理的原生样本都是开；旧写法写空子消息。只有 convert 显式要求（bruShapeRgbOpacity）才写开。 */
     parts.push(u8arr(fBytes(42, b.bruShapeRgbOpacity ? new Uint8Array([0x08, 0x01]) : new Uint8Array(0)))); // RGBTOALPHA
@@ -327,7 +330,7 @@
     }
     if (b.speedPressure) parts.push(u8arr(fVarint(43, 1)));
     parts.push(u8arr(fF32(81, 1)));                             // HOLLOWALPHA
-    parts.push(u8arr(fVarint(82, -1)));                         // HOLLOWCOLOR
+    parts.push(u8arr(fVarint(82, b.hollowColor === undefined ? -1 : b.hollowColor))); // HOLLOWCOLOR（源有就写源）
     parts.push(u8arr(fVarint(83, 1)));                          // HOLALPIND
     parts.push(u8arr(fVarint(90, 1)));                          // NEWSPACECALTYPE
     // Write each field once, including when the effect is disabled: its stored
@@ -544,7 +547,9 @@
           if (shift > 63) return fields;
         }
         // Texture adjustment fields are protobuf int32. Negative values use a ten-byte varint.
-        fields.push({ f, w, v: f === 33 || f === 35 ? lowBits : v });
+        /* 【第233轮】f16（画笔颜色）也是 int32：源里「白」写的是 64 位补码 -1，用 v 累加会超过安全整数、
+           再 |0 变成 0（白变黑）；-20544 也会丢精度成 -20480。fieldmatrix 审计里 116 支受损。 */
+        fields.push({ f, w, v: f === 16 || f === 33 || f === 35 || f === 82 ? lowBits : v });
       } else if (w === 5) {
         if (p + 4 > end) break;
         fields.push({ f, w, v: new DataView(bytes.buffer, bytes.byteOffset + p, 4).getFloat32(0, true) });
@@ -798,6 +803,12 @@
         flowJitterPct: flowJitterPct,
         countJitterPct: countJitterPct,
         angle: angleDeg,
+        /* 【第233轮·fieldmatrix 审计】这三个字段以前「写侧恒用常量」，把源值砸掉：
+           f37 VER（源 29/23 被写成 31）、f82 HOLLOWCOLOR（源真值被写成 -1）、
+           f19 旧「跟随方向」位（被折进 bruRotationMode 再反推，f115∈{2,3,4} 时变 0）。 */
+        bruProtoVer: typeof o[37] === 'number' ? o[37] : undefined,
+        hollowColor: typeof o[82] === 'number' ? o[82] : undefined,
+        bruLegacyDirection: o[19] === undefined ? undefined : !!o[19],
         angleJitterDeg: angleJitterDeg,
         bruRotationMode: Math.max(0, Math.min(4, Math.round(num(o[115], o[19] ? 1 : 0)))),
         roundness: roundnessPct,

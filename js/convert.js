@@ -1446,6 +1446,9 @@
       bruLinkTemplate: brush.bruLinkTemplate,
       dualBlendMode: brush.dualBlendMode === undefined ? (brush.dualBrush && brush.dualBrush.blend) : brush.dualBlendMode,
       bruDualBlendMode: brush.bruDualBlendMode,
+      /* 【第233轮】审计出的三个「写侧恒用常量」字段：源值必须透到写侧 */
+      bruProtoVer: brush.bruProtoVer, hollowColor: brush.hollowColor,
+      bruLegacyDirection: brush.bruLegacyDirection,
       oldTexId: brush.oldTexId,
       _rawMeta: opts.fidelity !== false && !opts.forceRebuild ? brush._rawMeta : undefined,
       _rawOriginalName:brush._rawState && brush._rawState.name
@@ -1457,7 +1460,7 @@
         roundness:[22],hardness:[23],sizeJitterPct:[10],spacingJitterPct:[18],flowJitterPct:[27],countJitterPct:[60],
         /* 【第232轮】保真导出（原生 BRU 改参数再导出）只重写 mapping 里登记过的字段。
            f84 纹理混合模式、f43 速度压感、f16 画笔颜色以前都没登记，改了等于没改。 */
-        bruTextureBlendMode:[84],speedPressure:[43],bruColor:[16],
+        bruTextureBlendMode:[84],speedPressure:[43],bruColor:[16],bruProtoVer:[37],hollowColor:[82],bruLegacyDirection:[19],
         hasTexture:[28,123],texAssetId:[6],bruTexturePerTip:[99],textureInverted:[29],textureDepth:[123],textureScale:[24],textureBrightness:[35],textureContrast:[33],scatterOn:[56,57,58,59],
         scatterPct:[58],scatterCount:[59],scatterBothAxes:[57],taperOn:[74,77,78],taperSize:[77],taperOpacity:[78],wetEdgesOn:[100,101,129],
         wetEdgesAmount:[101],wetEdgesDepth:[129],borderOn:[92],borderBlend:[95],borderBrightness:[93],borderStrength:[94],renderCount:[97],
