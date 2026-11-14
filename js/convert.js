@@ -1343,7 +1343,9 @@
            导入后笔刷空白（这正是「导出还是不行」的原因之一）。 */
       /* 【第231轮】keepNativeId：无笔尖图布局的 f7 保持空串（源「眼睛」f7 就是空），
          其余照旧（笔尖 PNG 内容 md5 / 源内置占位名）。 */
-      texId: keepNoShape ? '' : (brush.source === 'bru' && brush._tipFromBuiltin && brush._tipFromBuiltin === brush.oldTexId &&
+      /* 【第238轮】原条件只认 `source === 'bru'`，可 brushset 往返回来 source 已变 procreate，
+         于是永远写重编码 md5、App 认不出内置笔尖名 → 回退实心。放开到「带 _bruExtra 的往返笔刷」。 */
+      texId: keepNoShape ? '' : ((brush.source === 'bru' || !!brush._bruExtra) && brush._tipFromBuiltin && brush._tipFromBuiltin === brush.oldTexId &&
         opts.fidelity !== false && !opts.forceRebuild
         ? brush.oldTexId : util.md5(pngBytes).toUpperCase()),
       sizePx,

@@ -508,7 +508,9 @@
       if (Number.isFinite(ex.taperOpacity) && !brush.taperOn) brush.taperOpacity = ex.taperOpacity;
       if (Number.isFinite(ex.protoVer)) brush.bruProtoVer = ex.protoVer;
       if (Number.isFinite(ex.hollowColor)) brush.hollowColor = ex.hollowColor;
-      if (typeof ex.legacyDirection === 'boolean') brush.bruLegacyDirection = ex.legacyDirection;   // 只补被归档清零的那一侧
+      if (typeof ex.legacyDirection === 'boolean') brush.bruLegacyDirection = ex.legacyDirection;
+      if (typeof ex.oldTexId === 'string') brush.oldTexId = ex.oldTexId;
+      if (typeof ex.tipFromBuiltin === 'string') brush._tipFromBuiltin = ex.tipFromBuiltin;   // 只补被归档清零的那一侧
       if (Number.isFinite(ex.angle)) brush.angle = ex.angle;
       if (typeof ex.taperFields === 'boolean') brush._bruTaperFields = ex.taperFields;
     }
@@ -1132,7 +1134,10 @@
            一律写 taperOpacity:0，不存源值的话读回就是 0，补上 f78 反而会把 1 写成 0。 */
         taperOpacity: brush.taperOpacity,
         /* 【第233轮】审计三连：容器协议版本、中空色、旧跟随方向位——brushset 没有承载位 */
-        protoVer: brush.bruProtoVer, hollowColor: brush.hollowColor, legacyDirection: brush.bruLegacyDirection
+        protoVer: brush.bruProtoVer, hollowColor: brush.hollowColor, legacyDirection: brush.bruLegacyDirection,
+        /* 【第238轮】f7 笔尖 id：App 的内置笔尖查找按源 id 来，重编码 Shape 的 md5 它认不出，
+           查不到就回退实心方块（verify235 plain 组真机实锤）。源名与「是否内置名」必须一起带过去。 */
+        oldTexId: brush.oldTexId, tipFromBuiltin: brush._tipFromBuiltin
       });
     }
     /* 【第228轮】烘焙回退（`bruIndependentTexture` 对自定义纹理返回 null）之后 hasTexture 已变 false，
