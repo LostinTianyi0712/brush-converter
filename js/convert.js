@@ -988,23 +988,31 @@
     return makeBru(primary, Object.assign({}, opts, { embedSubTip: false }));
   }
 
-  /* Procreate 的纹理亮度/对比度：中性 51 / 100，调低会写成负数（偏移语义）。
-     画世界 f35/f33 是 0~100 的绝对值，所以负值要加回中性再看。 */
-  function bruTexBrightness(brush) {
-    const v = brush && brush.textureBrightness;
-    if (v === undefined || !Number.isFinite(Number(v))) return 51;
-    const n = Number(v);
-    const abs = n < 0 ? 51 + n : n;
-    return Math.max(0, Math.min(100, Math.round(abs * 100) / 100));
-  }
-  function bruTexContrast(brush) {
-    const v = brush && brush.textureContrast;
-    if (v === undefined || !Number.isFinite(Number(v))) return 100;
-    const n = Number(v);
-    const abs = n < 0 ? 100 + n : n;
-    return Math.max(0, Math.min(100, Math.round(abs * 100) / 100));
-  }
-
+  /* BRU 的 f35/f33 是**有符号绝对值**：原生样本「眼睛」f35 = -6、「头发亮晶晶」f33 = -3，
+     读侧原样返回，写侧就必须原样写出。旧实现把负值当「相对中性 51/100 的偏移」再加回中性，
+     往返后 -6 变 45、-3 变 97（203 支里 23/12 支失真）。Procreate 侧需要的那套换算
+     留在 procreate.js 里单独做，不混进 BRU 出口。 */
+  function bruTexBrightness(brush) {
+    const v = brush && brush.textureBrightness;
+    if (v === undefined || !Number.isFinite(Number(v))) return 51;
+    const n = Number(v);
+    /* 负值有两种语义，差一个 +51：
+       Procreate/ABR 源的负值是「相对中性 51 的偏移」（第206轮真机标定，bru_texture_lbc_test 锁着）；
+       BRU 源的 f35 是**有符号绝对值**（原生「眼睛」= -6，wire 98 02 fa ff..01），读侧原样返回、写侧必须原样写出。
+       brushset 往返读回时 source 变 procreate，靠 _bruTexParams 快照认出「这是 BRU 来的」。 */
+    const fromBru = brush.source === 'bru' || !!brush._bruTexParams;
+    const abs = (!fromBru && n < 0) ? 51 + n : n;
+    return Math.max(fromBru ? -100 : 0, Math.min(100, Math.round(abs * 100) / 100));
+  }
+  function bruTexContrast(brush) {
+    const v = brush && brush.textureContrast;
+    if (v === undefined || !Number.isFinite(Number(v))) return 100;
+    const n = Number(v);
+    const fromBru = brush.source === 'bru' || !!brush._bruTexParams;
+    const abs = (!fromBru && n < 0) ? 100 + n : n;
+    return Math.max(fromBru ? -200 : 0, Math.min(100, Math.round(abs * 100) / 100));
+  }
+
   /* 从笔尖 alpha 轮廓估算硬边程度：纯二值边（只有 0/255）≈1，
      大面积半透明过渡（柔边圆笔）会显著降低。用于源笔刷没有 hardness 字段时，
      不要一律按 1（硬边）写 BRU。 */

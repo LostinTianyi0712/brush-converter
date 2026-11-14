@@ -1024,7 +1024,11 @@
         color: brush.bruColor, rgbOpacity: brush.bruShapeRgbOpacity
       });
     }
-    if (brush.source === 'bru' && brush.hasTexture) {
+    /* 【第228轮】烘焙回退（`bruIndependentTexture` 对自定义纹理返回 null）之后 hasTexture 已变 false，
+       原条件会让 BRU 的纹理参数整组丢失，读回时 brightness 只能取 Procreate 的 0.45 → 往返 -6 变 45。
+       源是 BRU 且带任一纹理参数时就存，和设备侧是否还能保留独立纹理层无关。 */
+    if (brush.source === 'bru' && (brush.hasTexture || brush.textureBrightness !== undefined ||
+        brush.textureContrast !== undefined || brush.textureScale !== undefined || brush.textureDepth !== undefined)) {
       params.brushConvBruTex = JSON.stringify({
         scale: brush.textureScale, bright: brush.textureBrightness, contrast: brush.textureContrast,
         inverted: !!brush.textureInverted, depth: brush.textureDepth, blend: brush.bruTextureBlendMode,

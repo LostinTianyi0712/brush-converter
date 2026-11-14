@@ -203,8 +203,16 @@
        依据：bru_标定 / 样本 / pressure193 / 官方小方块等 165 份原生 BRU 的 f35 全部是 varint（如 `98 02 64` = 100）；
        全字段 wire type 对照里，我们写出的字段只有 f35 与原生不符。App 用 protobuf 读，类型不符的字段按未知字段
        丢弃、取缺省值 —— 也就是以前所有转出的纹理亮度在 App 里都没有生效（第204轮 pt65 试制版也带着这个错）。 */
-    parts.push(u8arr(fVarint(35, Math.round(Math.max(0, Math.min(100, b.textureBrightness === undefined ? 51 : b.textureBrightness)))))); // TEXBRIGHTNESS
-    parts.push(u8arr(fVarint(33, Math.max(0, Math.min(200, Math.round(b.textureContrast === undefined ? 100 : b.textureContrast)))))); // CONTRAST
+    /* 【第228轮】源 BRU 里没有 f35/f33 时不写（画世界的语义：不写 = 取缺省），有值就原样写出。
+   f35/f33 是**有符号绝对值**：原生样本「眼睛」f35 = -6（wire: 98 02 FA FF FF FF FF FF FF FF FF 01），
+   「头发亮晶晶」f33 = -3。旧实现把负值当成「相对中性 51/100 的偏移」再加回中性，
+   往返后 -6 变 45、-3 变 97 —— 亮度/对比整体偏 51/100，203 支里 23 支 / 12 支受影响。 */
+    if (b.textureBrightness !== undefined && Number.isFinite(Number(b.textureBrightness))) {
+      parts.push(u8arr(fVarint(35, Math.max(-100, Math.min(100, Math.round(Number(b.textureBrightness))))))); // TEXBRIGHTNESS
+    }
+    if (b.textureContrast !== undefined && Number.isFinite(Number(b.textureContrast))) {
+      parts.push(u8arr(fVarint(33, Math.max(-200, Math.min(200, Math.round(Number(b.textureContrast))))))); // CONTRAST
+    }
     if (b.textureDepth) parts.push(u8arr(fF32(123, Math.max(0, Math.min(1, b.textureDepth))))); // TEXTUREDEPTH
     if (sizePressOn) parts.push(u8arr(fVarint(36, 1)));         // SUPPORTPRESSURE
     if (transferOn) parts.push(u8arr(fVarint(47, 1)));          // TRANSFER
