@@ -1070,15 +1070,10 @@
     /* 【第225轮·真机】BRU 有一组数值 Procreate 没有对等存储位，不存下来转回时会被重算而失真：
        「蜡笔」hardness 0.39 → 0.988（软笔变硬笔，墨量涨 4~5 倍）、maxSizePx 500 → 70、
        「34亮片」scatterPct 207 → 100（散布收紧，墨芯深一倍）。真机像素量化已确认这些是主因。 */
-    if (brush.source === 'bru') {
-      const snap = {};
-      Object.keys(brush).forEach(function (k) {
-        const v = brush[k];
-        if (k[0] === '_') return;
-        if (v === null || ['number', 'boolean', 'string'].indexOf(typeof v) >= 0) snap[k] = v;
-      });
-      try { params.brushConvBruFull = JSON.stringify(brush._bruFullSource || snap); } catch (e) {}
-    }
+    /* 【第236轮·清理】这里以前每支都写一份 78 键的 `brushConvBruFull` 快照，
+       但全仓没有任何读取点（第227轮的「全字段还原」方案已回滚）。属于纯死变量，
+       白占 archive 体积（每支几百字节到 1KB），删除。字段保真现在走两条路：
+       逐字段 `brushConvBruExtra` + 白名单外的未知字段原样透传。 */
     if (brush.source === 'bru') {
       params.brushConvBruExtra = JSON.stringify({
         hardness: brush.hardness, maxSizePx: brush.maxSizePx,

@@ -1162,10 +1162,10 @@
 
   function makeBru(brush, opts) {
     brush = angleControlAliases(brush);
-    /* 【第227轮】全字段还原：导出 brushset 时存了源 BRU 的完整标量快照，这里只还原
-       「用户没改过」的字段（当前值 === 读回时的快照值），改过的以新值为准。
-       这样一次覆盖 textureDepth / minOpacityRatio / angleJitterDeg / scatterBothAxes /
-       spacingPct / taperSize 等全部往返失真字段，不用逐个打补丁。 */
+    /* 【第236轮·清理】这里原本写着第227轮的「全字段快照还原」方案——那段代码当年实测红 21 项，
+       已回滚删除，注释却留了下来，容易让人以为存在「一次兜住所有字段」的路。
+       现在的保真策略是两条腿：① 逐字段 Extra（brushConvBruExtra / brushConvBruTex / brushConvBruPressure）；
+       ② 白名单外的未知字段原样透传（bru.js 的 BRU_KNOWN_FIELDS + _rawUnknown）。 */
     /* 【第224轮】带 _nativeDualFromBru 标记的 brushset（本工具从画世界原生双笔导出的）       转回 bru 时还原内嵌副笔，而不是把副笔烘进主笔。第181轮那条「非 BRU 源禁止内嵌」       是为了避开原生 Procreate 副笔的重影（真机实测），原生档案没有这个标记，行为不变。 */    if (brush && brush.dualTip && (opts.embedSubTip || brush._nativeDualFromBru)) {      return makeBruEmbedded(brush, Object.assign({}, opts, { forceEmbedSubTip: brush._nativeDualFromBru ? true : opts.forceEmbedSubTip }));    }
     opts = opts || {};
     /* 同格式直抄：源就是 .bru、目标也是 .bru，且尺寸/间距/压感/烘焙等选项都没动过
@@ -1234,6 +1234,12 @@
     const texMatchNoShape = !!(texMatchId && disc && !opts._packMember);
     /* 【第231轮】BRU 往返单笔保留层 + 源是程序化笔尖（f99 语义、无笔尖图）→ 走「无笔尖图 +
        f6 纹理像素」的原生布局（楠.bru「眼睛」式）。合包成员不行：包内条目必须有笔尖 PNG。 */
+    /* 【第235轮】源是程序化笔尖（无笔尖图）时也要保持 noShape 布局：旧的 `match && match.keepNativeId`
+       只覆盖「有纹理且命中往返标记」的眼睛类，漏掉「无纹理的纯程序化圆笔」（压感硬圆_1 / 不透明软圆_1 /
+       颗粒 / ⑨号笔刷 等 7 支），它们往返后被合成了一张笔尖图，bruProceduralTip 从 true 变 false。 */
+    /* 【第235轮·回滚】曾试过把「无纹理的程序化圆笔」也纳入 noShape，让 bruProceduralTip 往返保值，
+       但那条路要改渲染形态，连踩 halftone 的 f31 断言与眼睛类的 keepNativeId 分支（三版都没干净）。
+       收益只是一个派生标记字段、不影响实际渲染，判断为不划算——保留原条件。 */
     const keepNoShape = !!(match && match.keepNativeId && brush.bruProceduralTip && !opts._packMember);
     let textureBaked = false;
     if (brush.source !== 'bru' && brush.hasTexture && opts.noTextureBake !== true && !texMatchId) {
