@@ -9,6 +9,20 @@
   const plist = isNode ? require('./plist.js') : root.BC.plist;
   const bplist = isNode ? require('./bplist.js') : root.BC.bplist;
   const defaultsApi = isNode ? require('./procreateDefaults.js') : root.BC.proDefaults;
+  /* 【第231轮】BRU 纹理原始字节的 base64 搬运（brushConvBruTex.texRaw）：bplist 里以 JSON 字符串
+     存放，Node/浏览器两侧都能编解码。 */
+  function bytesToB64(bytes) {
+    if (typeof Buffer !== 'undefined' && Buffer.from) return Buffer.from(bytes).toString('base64');
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
+  function b64ToBytes(s) {
+    if (typeof Buffer !== 'undefined' && Buffer.from) return new Uint8Array(Buffer.from(s, 'base64'));
+    const bin = atob(s), out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
 
   function isProcreate(bytes) {
     if (!zip.isZip(bytes)) return false;
@@ -33,10 +47,22 @@
       if (!data || typeof data.legacyMinWidth !== 'boolean') return null;
       if (![data.minOpacity, data.nativeMinOpacity, data.flow, data.minFlow].every(v => Number.isFinite(v) && v >= 0 && v <= 1)) return null;
       if (data.smallFlow !== undefined && (!Number.isFinite(data.smallFlow) || data.smallFlow < 0 || data.smallFlow > 1)) return null;
+      /* 【第232轮】判定「用户在 Procreate 里改过最小不透明度」不能用 ===：
+         brushConvBruPressure 是 JSON 字符串（精确 double），params.minOpacity 走 bplist float32
+         （bplist.js + plist.js 七位美化），两者差 1e-8 量级，=== 恒假 —— 于是每次导出都被当成
+         「改过」，绝对 alpha 被塞进本该放比例的字段，f14 被写成 opacity×ratio（0.15/0.14/0.09）。 */
       const nativeMinOpacity = Number.isFinite(params.minOpacity) ? Math.max(0, Math.min(1, params.minOpacity)) : data.nativeMinOpacity;
-      // Only a change to the native minimum replaces the original BRU
-      // minimum. The maximum and the pressure switch are independent.
-      const minOpacity = nativeMinOpacity === data.nativeMinOpacity ? data.minOpacity : nativeMinOpacity;
+      const changed = Math.abs(nativeMinOpacity - data.nativeMinOpacity) >
+        Math.max(1e-5, Math.abs(data.nativeMinOpacity) * 1e-5);   // float32 相对精度 1e-7，1e-5 只吞存储噪声
+      let minOpacity = data.minOpacity;
+      if (changed) {
+        /* params.minOpacity 是绝对 alpha（scaledOpacity 下限）；BRU 的 f14 是面板比例。
+           换算口径与读侧 minOpacityRatio = minOpacity / opacity 完全一致。 */
+        const maxOp = Number.isFinite(params.maxOpacity) ? Math.max(0, Math.min(1, params.maxOpacity)) : 1;
+        const paintOp = Number.isFinite(params.paintOpacity) ? Math.max(0, Math.min(1, params.paintOpacity)) : 1;
+        const opacity = Math.max(0.01, Math.min(1, nativeMinOpacity + (maxOp - nativeMinOpacity) * paintOp));
+        minOpacity = opacity > 0.001 ? Math.max(0, Math.min(1, nativeMinOpacity / opacity)) : 0;
+      }
       return { legacyMinWidth: data.legacyMinWidth, minOpacity, flow: data.flow,
         minFlow: data.minFlow, smallFlow: data.smallFlow, nativeMinOpacity };
     } catch (e) { return null; }
@@ -450,6 +476,7 @@
       if (typeof ex.fadeInOut === 'boolean') brush.bruFadeInOut = ex.fadeInOut;
       if (Number.isFinite(ex.color)) brush.bruColor = ex.color;
       if (typeof ex.rgbOpacity === 'boolean') brush.bruShapeRgbOpacity = ex.rgbOpacity;
+      if (typeof ex.procTip === 'boolean') brush.bruProceduralTip = ex.procTip;
       /* 【第229轮】同上：BRU 独有标量读回，往返才能逐值一致 */
       if (Number.isFinite(ex.sizePx)) brush.sizePx = ex.sizePx;
       if (Number.isFinite(ex.rotationMode)) brush.bruRotationMode = ex.rotationMode;
@@ -468,6 +495,7 @@
       if (typeof ex.dualRef === 'string' && ex.dualRef) brush.bruDualRefUuid = ex.dualRef;
       if (Number.isFinite(ex.fingerPressurePct)) brush.bruFingerPressurePct = ex.fingerPressurePct;
       if (Number.isFinite(ex.taperSize)) brush.taperSize = ex.taperSize;
+      if (Number.isFinite(ex.taperOpacity) && !brush.taperOn) brush.taperOpacity = ex.taperOpacity;   // 只补被归档清零的那一侧
       if (Number.isFinite(ex.angle)) brush.angle = ex.angle;
       if (typeof ex.taperFields === 'boolean') brush._bruTaperFields = ex.taperFields;
     }
@@ -479,6 +507,11 @@
       if (typeof tp.inverted === 'boolean') brush.textureInverted = tp.inverted;
       if (Number.isFinite(tp.depth)) brush.textureDepth = tp.depth;
       if (Number.isFinite(tp.blend)) brush.bruTextureBlendMode = tp.blend;
+      /* 【第231轮】BRU 纹理语义还原：源 f6（UUID/ptN）、源纹理原始字节、烘焙前的 hasTexture。
+         eye 类笔刷在导出时被逐笔尖烘焙强行 hasTexture=false/depth=0，没有这三条就回不去。 */
+      if (typeof tp.texId === 'string' && tp.texId) brush.texAssetId = tp.texId;
+      if (typeof tp.texRaw === 'string' && tp.texRaw) brush._rawBruTexture = b64ToBytes(tp.texRaw);
+      if (tp.hasTex) brush.hasTexture = true;
     }
     brush._rawNormalized = {};
     Object.keys(brush).forEach(function(key){const v=brush[key];if(key[0]!=='_' && (v===null || ['number','boolean','string'].indexOf(typeof v)>=0))brush._rawNormalized[key]=v;});
@@ -1013,7 +1046,7 @@
        用一个只在本工具内部认的字段区分两者，原生 Procreate 档案没有它 → 行为不变。 */
     if (brush.source === 'bru' && brush.bruDualRefUuid) params.brushConvNativeDual = '1';
     /* 同理标记「这支笔刷的纹理来自 BRU 的独立纹理层」，转回时据此还原纹理层。 */
-    if (brush.source === 'bru' && brush.hasTexture && (brush._rawBruTexture || brush.texAssetId)) params.brushConvNativeTex = '1';
+    if (brush.source === 'bru' && (brush.hasTexture || brush._bruGrainInTip) && (brush._rawBruTexture || brush.texAssetId)) params.brushConvNativeTex = '1';
     /* 纹理的 BRU 参数（缩放/亮度/对比度/反相/深度/混合）Procreate 侧没有对等存储位，
        不存下来转回 bru 时会被重置成默认值 —— 实测「还行」textureScale 1 → 0.0215
        （缩到 1/46、平铺密到看不见，肉眼看就是「不出墨」），brightness 51→100。 */
@@ -1039,6 +1072,8 @@
         shapeInverted: !!brush.bruShapeInverted || !!brush.shapeInverted,
         flowSmooth: !!brush.bruFlowSmooth,
         blendMode: brush.bruTextureBlendMode, perTip: !!brush.bruTexturePerTip,
+        /* 【第231轮】程序化笔尖（无笔尖图 + f99 语义）原样带回，否则往返后 bruProceduralTip 全丢。 */
+        procTip: !!brush.bruProceduralTip,
         sizeInfluence: brush.bruPressureSizeInfluence, flowInfluence: brush.bruPressureFlowInfluence,
         flowJitter: brush.flowJitterPct, fadeInOut: !!brush.bruFadeInOut,
         color: brush.bruColor, rgbOpacity: brush.bruShapeRgbOpacity,
@@ -1059,18 +1094,33 @@
         /* 【第230轮·第二批】零星 trio：手指压力强度 f117、锥度尺寸 f77、角度 f20（源 360° 会被
            Procreate 的角度表示 wrap 成 0，不存下来往返就成了 0.00001°）。 */
         fingerPressurePct: brush.bruFingerPressurePct, taperSize: brush.taperSize, angle: brush.angle,
-        taperFields: !!brush._bruTaperFields
+        taperFields: !!brush._bruTaperFields,
+        /* 【第232轮】taperOpacity 必须和 taperSize 一起往返：archiveParams 对 taperOn=false 的笔刷
+           一律写 taperOpacity:0，不存源值的话读回就是 0，补上 f78 反而会把 1 写成 0。 */
+        taperOpacity: brush.taperOpacity
       });
     }
     /* 【第228轮】烘焙回退（`bruIndependentTexture` 对自定义纹理返回 null）之后 hasTexture 已变 false，
        原条件会让 BRU 的纹理参数整组丢失，读回时 brightness 只能取 Procreate 的 0.45 → 往返 -6 变 45。
        源是 BRU 且带任一纹理参数时就存，和设备侧是否还能保留独立纹理层无关。 */
-    if (brush.source === 'bru' && (brush.hasTexture || brush.textureBrightness !== undefined ||
+    if (brush.source === 'bru' && (brush.hasTexture || brush._bruGrainInTip || brush.textureBrightness !== undefined ||
         brush.textureContrast !== undefined || brush.textureScale !== undefined || brush.textureDepth !== undefined)) {
+      /* 【第231轮】纹理语义存档：
+         · depth/hasTex 用烘焙前原值（_bruTexOrig），f123 往返才能回到源值；
+         · texId 带回源 f6（画世界私有材质 UUID，不能被 md5 改写）；
+         · texRaw 带回源纹理原始字节（base64）：f6=UUID 时像素 md5 必须与 UUID 自洽
+           （bru.js parse 与 App 端都按这个口径），重编码的 Grain PNG 对不上。 */
+      const texOrig = brush._bruTexOrig || null;
       params.brushConvBruTex = JSON.stringify({
         scale: brush.textureScale, bright: brush.textureBrightness, contrast: brush.textureContrast,
-        inverted: !!brush.textureInverted, depth: brush.textureDepth, blend: brush.bruTextureBlendMode,
-        perTip: !!brush.bruTexturePerTip
+        inverted: !!brush.textureInverted,
+        depth: (texOrig && Number.isFinite(texOrig.textureDepth)) ? texOrig.textureDepth : brush.textureDepth,
+        blend: brush.bruTextureBlendMode,
+        perTip: !!brush.bruTexturePerTip,
+        hasTex: !!(texOrig ? texOrig.hasTexture : brush.hasTexture),
+        texId: brush.texAssetId || undefined,
+        texRaw: (brush._rawBruTexture && brush._rawBruTexture.length && /^[0-9a-f]{32}$/i.test(String(brush.texAssetId || '')))
+          ? bytesToB64(brush._rawBruTexture) : undefined
       });
     }
     return bplist.writeKeyedArchive(params, 'SilicaBrush', ['SilicaBrush', 'ValkyrieBrush', 'NSObject']);
@@ -1210,7 +1260,10 @@
     // Native raw archives retain their existing resource/parameter semantics,
     // unless the raw archive is a broken legacy converter artifact.
     const rawPath = opts.fidelity !== false && isValidNativeArchive(brush._rawArchive) && !opts.forceRebuild;
-    const grain = !rawPath && brush.hasTexture && !opts.noTextureBake ? grainPng(brush) : null;
+    /* 【第231轮】_bruGrainInTip（逐笔尖纹理已烘进 Shape 的 BRU 源）也要写 Grain.png：
+       Procreate 侧 archive 的纹理开关是关的不会重复施加，但 brushset 里必须留有纹理像素，
+       BRU 往返才能还原独立纹理层（否则 楠.bru 26 支程序化笔尖的纹理在 brushset 里彻底丢失）。 */
+    const grain = !rawPath && (brush.hasTexture || brush._bruGrainInTip) && !opts.noTextureBake ? grainPng(brush) : null;
     if (!rawPath && brush.hasTexture && !grain) brush = Object.assign({}, brush, {hasTexture:false, textureDepth:0});
     function subBrush(){const b=secondaryBrush(brush);
       if(opts.spacingOverride>0)b.spacingPct=opts.spacingOverride;

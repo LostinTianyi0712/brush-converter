@@ -257,8 +257,12 @@
        旧条件只看 taperOn，往返把 0.36 抹成默认 1。改成「开关为真、或任一锥度参数存在」就写出，f74 仍只在为真时写。 */
     if (b.taperOn || b._bruTaperFields) {
       if (b.taperOn) parts.push(u8arr(fVarint(74, 1)));
-      parts.push(u8arr(fF32(77, Math.max(0, Math.min(1, b.taperSize === undefined ? 1 : b.taperSize)))));
-      parts.push(u8arr(fF32(78, Math.max(0, Math.min(1, b.taperOpacity === undefined ? 1 : b.taperOpacity)))));
+      /* 【第232轮】逐字段「非默认才写」：否则补上 _bruTaperFields 之后 198 支会多写 f77=1 f78=1，
+         字节面变大且 _rawMeta 类用例可能受影响。 */
+      const taperSizeV = Math.max(0, Math.min(1, b.taperSize === undefined ? 1 : b.taperSize));
+      const taperOpacityV = Math.max(0, Math.min(1, b.taperOpacity === undefined ? 1 : b.taperOpacity));
+      if (b.taperOn || Math.abs(taperSizeV - 1) > 1e-6) parts.push(u8arr(fF32(77, taperSizeV)));
+      if (b.taperOn || Math.abs(taperOpacityV - 1) > 1e-6) parts.push(u8arr(fF32(78, taperOpacityV)));
     }
     if (b.wetEdgesOn) {
       parts.push(u8arr(fVarint(100, 1)));
@@ -392,7 +396,10 @@
     if (!noShape && (!img || !img.length)) throw new Error('缺少笔尖图像数据');
     const meta = metadataFor(brush, opts);
     const embedded = !noShape && brush.embeddedSubPng && brush.embeddedSubPng.length ? brush.embeddedSubPng : null;
-    const texture = !noShape && brush.bruTextureBytes;
+    /* 【第231轮】noShape 也能带纹理段：楠.bru「眼睛」的原生布局就是「无笔尖图 + f6 纹理像素」
+       （rec+0x52=0、imgLen=0、texLen=实长，实测 _probe/verify230）。此前 `!noShape &&`
+       把这条布局整个堵死，眼睛类笔刷往返保真无从表达。 */
+    const texture = brush.bruTextureBytes;
     const texLength = texture ? texture.length : 0;
     const total = BODY_START + meta.length + img.length + texLength + (embedded ? embedded.length : 0);
     if (total > 0xffffffff) throw new Error('单支 BRU 超过 4GB，无法写出');
@@ -408,11 +415,15 @@
     dv.setUint32(rec + 0x5e, img.length, false);             // image length
     dv.setUint32(rec + 0x62, texLength, false);              // separate texture length
     if (noShape) {
-      /* 逐字节照抄官方 450B 小方块的记录头：rec+0x52 = 1，rec+0x5a / 0x5e / 0x62 三个长度位 = 0xFFFFFFFF。 */
-      dv.setUint32(rec + 0x52, 1, false);
-      dv.setUint32(rec + 0x5a, 0xffffffff, false);
-      dv.setUint32(rec + 0x5e, 0xffffffff, false);
-      dv.setUint32(rec + 0x62, 0xffffffff, false);
+      /* 450B 小方块式（rec+0x52=1 + 三个 0xFFFFFFFF）只适用于**无任何附加数据**的记录；
+         带纹理段时改用楠.bru「眼睛」式（rec+0x52=0、imgLen=0、texLen=实长），
+         两种变体的解析都由 parseBru 覆盖（楠.bru #1 即眼睛式，实测）。 */
+      if (!texLength) {
+        dv.setUint32(rec + 0x52, 1, false);
+        dv.setUint32(rec + 0x5a, 0xffffffff, false);
+        dv.setUint32(rec + 0x5e, 0xffffffff, false);
+        dv.setUint32(rec + 0x62, 0xffffffff, false);
+      }
     }
     // 原生单支 BRU：记录 end 覆盖主图之后追加的副笔尖 PNG；img length 仍只算主图
     dv.setUint32(rec + 0x66, total, false); // end
