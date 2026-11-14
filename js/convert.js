@@ -1345,7 +1345,11 @@
          其余照旧（笔尖 PNG 内容 md5 / 源内置占位名）。 */
       /* 【第238轮】原条件只认 `source === 'bru'`，可 brushset 往返回来 source 已变 procreate，
          于是永远写重编码 md5、App 认不出内置笔尖名 → 回退实心。放开到「带 _bruExtra 的往返笔刷」。 */
-      texId: keepNoShape ? '' : ((brush.source === 'bru' || !!brush._bruExtra) && brush._tipFromBuiltin && brush._tipFromBuiltin === brush.oldTexId &&
+      /* 【第239轮】第238轮那版还要求 `_tipFromBuiltin === oldTexId`，可 `_tipFromBuiltin` 只有
+         在「从内置库取到笔尖像素」（restoreHsjTips）时才赋值；本例源 oldTexId 是 32 字符 md5，
+         builtinTipKey 判不出内置名 → 恒 undefined → 条件恒假 → 修了等于没修（verify238 实测）。
+         现在只要求：来自 BRU 往返 + 源里有 f7，就沿用源名。 */
+      texId: keepNoShape ? '' : ((brush.source === 'bru' || !!brush._bruExtra) && brush.oldTexId &&
         opts.fidelity !== false && !opts.forceRebuild
         ? brush.oldTexId : util.md5(pngBytes).toUpperCase()),
       sizePx,
