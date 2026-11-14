@@ -769,7 +769,27 @@
       w = nw; h = nh;
     }
     const gray = new Uint8Array(w * h);
-    for (let i = 0; i < w * h; i++) gray[i] = rgba[i * 4 + 3];
+    /* 【第242轮】笔尖图案有两种载体，必须逐支判断（第241轮一刀切把亮片的墨反没了）：
+       · RGB 在 alpha>0 区域**全白** → 图案在 alpha 里。这类包括 Procreate 原生笔尖，
+         以及「纹理正相直通」合成的亮片系列（34~37）——现行 alpha 口径就是对的；
+       · RGB 带暗部 → 图案在 RGB 暗部（BRU 原生的「眼部高光12_1」「噪点」等，离线统计 105/164 支）→ 要取反。
+       Shape.png 的语义是「白 = 着墨」（verify241 四变体真机裁决），所以取反写成 255-灰度，形状外写黑。
+       离线预演脚本：_probe/polarity_preview.js（bright-ink 59 / dark-ink 105）。 */
+    let rgbAllWhite = true;
+    for (let k = 0; k < w * h; k++) {
+      const o = k * 4;
+      if (rgba[o + 3] === 0) continue;
+      if (rgba[o] < 250 || rgba[o + 1] < 250 || rgba[o + 2] < 250) { rgbAllWhite = false; break; }
+    }
+    if (rgbAllWhite) {
+      for (let k = 0; k < w * h; k++) gray[k] = rgba[k * 4 + 3];
+    } else {
+      for (let k = 0; k < w * h; k++) {
+        const o = k * 4;
+        const a = rgba[o + 3];
+        gray[k] = a === 0 ? 0 : 255 - Math.round((rgba[o] + rgba[o + 1] + rgba[o + 2]) / 3);
+      }
+    }
     return { png: png.encodeGray(w, h, gray), w, h };
   }
 

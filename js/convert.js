@@ -1280,7 +1280,23 @@
       const uiDepth = Math.max(0, Math.min(1, brush.textureDepth === undefined ? 1 : Number(brush.textureDepth) || 0));
       effectiveTextureDepth = Math.round((1 - uiDepth) * 10000) / 10000;
     }
-    const pngBytes = png.encode(w, h, brush.source === 'bru' ? rgba : png.toMaskRgba(rgba));
+    /* 【第242轮】笔尖 PNG 的编码语义在三个格式之间不一样：
+       · BRU 原生：图案在 **RGB 暗部**（暗=墨），alpha 只表形状（形状外=0）；
+       · Procreate：图案在 **alpha**（white=opaque），RGB 恒白；
+       · 以前对 brushset 回读的笔刷也走 toMaskRgba，图案留在 alpha，App 按 RGB 取色就拿到全白 → 实心。 */
+    let encodeRgba = rgba;
+    if (brush.source !== 'bru' && brush._bruExtra) {
+      encodeRgba = new Uint8Array(rgba.length);
+      for (let i = 0; i < rgba.length; i += 4) {
+        const a = rgba[i + 3];
+        const v = a === 0 ? 0 : 255 - a;          // 形状外写黑（源就是这么存的），其余反相 → 图案进 RGB 暗部
+        encodeRgba[i] = v; encodeRgba[i + 1] = v; encodeRgba[i + 2] = v;
+        encodeRgba[i + 3] = a === 0 ? 0 : 255;    // alpha 只保留形状
+      }
+    } else if (brush.source !== 'bru') {
+      encodeRgba = png.toMaskRgba(rgba);
+    }
+    const pngBytes = png.encode(w, h, encodeRgba);
     const sizeScale = opts.sizeScale || 1;
     let sizePx = (brush.sizePx || 100) * sizeScale;
     if (!isFinite(sizePx) || sizePx <= 0) sizePx = Math.max(4, Math.max(w, h));
