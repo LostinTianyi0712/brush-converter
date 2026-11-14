@@ -222,8 +222,11 @@
     if (b.countJitterPct) parts.push(u8arr(fF32(60, Math.min(1, b.countJitterPct / 100)))); // COUNT JITTER
     if (b.angle) parts.push(u8arr(fF32(20, b.angle)));          // ANGLE
     if (b.angleJitterDeg) parts.push(u8arr(fF32(21, b.angleJitterDeg))); // ANGLE JITTER
-    if (b.scatterOn) {
-      parts.push(u8arr(fVarint(56, 1)));                        // SCATTER ON
+    /* 【第229轮】原生 BRU 里有「f56 没写、但 f57/f58/f59 有值」的笔刷（轻舟「墨迹/迹墨/蓫痕」：
+       scatterOn=false + 强度 55% + 两轴 + 数量 4）。旧实现只要 scatterOn 为假就整组不写，
+       往返后强度/数量被抹成 0/1。改成「开关为真、或任一参数存在」就写出，开关本身照旧只在为真时写。 */
+    if (b.scatterOn || b.scatterPct || (b.scatterCount || 1) > 1 || b.scatterBothAxes) {
+      if (b.scatterOn) parts.push(u8arr(fVarint(56, 1)));       // SCATTER ON
       if (b.scatterBothAxes) parts.push(u8arr(fVarint(57, 1))); // SCATTER BOTH AXES
       parts.push(u8arr(fF32(58, Math.max(0, Math.min(10, (b.scatterPct || 0) / 100))))); // SCATTER STRENGTH
       if ((b.scatterCount || 1) > 1) parts.push(u8arr(fVarint(59, Math.round(b.scatterCount)))); // COUNT

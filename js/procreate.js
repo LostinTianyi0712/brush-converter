@@ -450,6 +450,18 @@
       if (typeof ex.fadeInOut === 'boolean') brush.bruFadeInOut = ex.fadeInOut;
       if (Number.isFinite(ex.color)) brush.bruColor = ex.color;
       if (typeof ex.rgbOpacity === 'boolean') brush.bruShapeRgbOpacity = ex.rgbOpacity;
+      /* 【第229轮】同上：BRU 独有标量读回，往返才能逐值一致 */
+      if (Number.isFinite(ex.sizePx)) brush.sizePx = ex.sizePx;
+      if (Number.isFinite(ex.rotationMode)) brush.bruRotationMode = ex.rotationMode;
+      if (typeof ex.bothAxes === 'boolean') brush.scatterBothAxes = ex.bothAxes;
+      if (Number.isFinite(ex.roundness)) brush.roundness = ex.roundness;
+      if (Number.isFinite(ex.dualBlendMode)) brush.bruDualBlendMode = ex.dualBlendMode;
+      if (typeof ex.scatterOn === 'boolean') brush.scatterOn = ex.scatterOn;
+      if (typeof ex.speedPressure === 'boolean') brush.speedPressure = ex.speedPressure;
+      if (typeof ex.borderOn === 'boolean') brush.borderOn = ex.borderOn;
+      if (Number.isFinite(ex.borderBlend)) brush.borderBlend = ex.borderBlend;
+      if (Number.isFinite(ex.borderBrightness)) brush.borderBrightness = ex.borderBrightness;
+      if (Number.isFinite(ex.borderStrength)) brush.borderStrength = ex.borderStrength;
     }
     if (brush._bruTexParams) {
       const tp = brush._bruTexParams;
@@ -1021,7 +1033,18 @@
         blendMode: brush.bruTextureBlendMode, perTip: !!brush.bruTexturePerTip,
         sizeInfluence: brush.bruPressureSizeInfluence, flowInfluence: brush.bruPressureFlowInfluence,
         flowJitter: brush.flowJitterPct, fadeInOut: !!brush.bruFadeInOut,
-        color: brush.bruColor, rgbOpacity: brush.bruShapeRgbOpacity
+        color: brush.bruColor, rgbOpacity: brush.bruShapeRgbOpacity,
+        /* 【第229轮】brushset 没有对等存储位的 BRU 标量：尺寸只有整数精度、
+           旋转控制/两轴散布/圆度/双笔混合模式在 Procreate 侧根本没有承载物，
+           不存下来往返必丢（sizePx 59 支、rotationMode 34、bothAxes 13、roundness 12、dualBlend 10）。 */
+        sizePx: brush.sizePx, rotationMode: brush.bruRotationMode,
+        bothAxes: brush.scatterBothAxes === undefined ? undefined : !!brush.scatterBothAxes,
+        roundness: brush.roundness, dualBlendMode: brush.bruDualBlendMode,
+        /* 【第229轮·第二批】混边四件套 + 散布开关 + 速度压感同样没有 Procreate 承载物：
+           不存下来往返就整组丢失（borderBlend 16→4、scatterOn false→true、speedPressure true→false）。 */
+        scatterOn: brush.scatterOn, speedPressure: !!brush.speedPressure,
+        borderOn: !!brush.borderOn, borderBlend: brush.borderBlend,
+        borderBrightness: brush.borderBrightness, borderStrength: brush.borderStrength
       });
     }
     /* 【第228轮】烘焙回退（`bruIndependentTexture` 对自定义纹理返回 null）之后 hasTexture 已变 false，

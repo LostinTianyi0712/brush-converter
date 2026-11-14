@@ -1255,7 +1255,9 @@
     const sizeScale = opts.sizeScale || 1;
     let sizePx = (brush.sizePx || 100) * sizeScale;
     if (!isFinite(sizePx) || sizePx <= 0) sizePx = Math.max(4, Math.max(w, h));
-    sizePx = Math.max(1, Math.min(3000, Math.round(sizePx * 100) / 100));
+    /* 【第229轮】不再把尺寸 round 到 2 位：源 BRU 的 f8 是 float32（70.12000274658203），
+       round 之后往返变成 70，59 支笔刷各偏 0.005~0.12px。f32 原样存得住，交给编码器取整。 */
+    sizePx = Math.max(1, Math.min(3000, sizePx));
     let spacingPct = opts.spacingOverride > 0 ? opts.spacingOverride : (brush.spacingPct === undefined ? 10 : brush.spacingPct);
     /* 【第186轮】Procreate 的 spacing 最小可调值是 1%，存成 0 表示「自动间距」而不是
        「无限密」。以前一律钳到 BRU 下限 0.1%，画世界按 dab 逐个盖印，256px 笔尖
@@ -1317,7 +1319,7 @@
       /* 【第195轮】优先用公开字段 maxSizePx（BRU 解析侧现在会回填 f12），再用私有 _rawMaxWidth 兜底。
          旧写法只认 _rawMaxWidth，导致 maxSizePx=800 的笔刷被压到 500，f12/f135/f136 全部失真。 */
       maxSizePx: Math.max(sizePx, brush.source === 'procreate' && brush.maxSizePx > 0
-        ? Math.min(5000, Math.round(brush.maxSizePx * sizeScale * 100) / 100)
+        ? Math.min(5000, brush.maxSizePx * sizeScale)
         : brush.maxSizePx || brush._rawMaxWidth || 500),
       spacingPct,
       opacity: densityOpacity !== null ? densityOpacity : (brush.opacity === undefined ? 1 : brush.opacity),
