@@ -1132,10 +1132,12 @@
     return png.encode(t.w, t.h, rgba);
   }
 
-  function makeBru(brush, opts) {
-    brush = angleControlAliases(brush);
-    /* 【第224轮】从我们导出的 brushset 转回来时，把存下来的 BRU 纹理参数还原，
-       否则 textureScale 会被重置成「笔刷尺寸/纹理宽」（还行：1 → 0.0215，纹理缩到看不见）。 */
+  function makeBru(brush, opts) {
+    brush = angleControlAliases(brush);
+    /* 【第227轮】全字段还原：导出 brushset 时存了源 BRU 的完整标量快照，这里只还原
+       「用户没改过」的字段（当前值 === 读回时的快照值），改过的以新值为准。
+       这样一次覆盖 textureDepth / minOpacityRatio / angleJitterDeg / scatterBothAxes /
+       spacingPct / taperSize 等全部往返失真字段，不用逐个打补丁。 */
     /* 【第224轮】带 _nativeDualFromBru 标记的 brushset（本工具从画世界原生双笔导出的）       转回 bru 时还原内嵌副笔，而不是把副笔烘进主笔。第181轮那条「非 BRU 源禁止内嵌」       是为了避开原生 Procreate 副笔的重影（真机实测），原生档案没有这个标记，行为不变。 */    if (brush && brush.dualTip && (opts.embedSubTip || brush._nativeDualFromBru)) {      return makeBruEmbedded(brush, Object.assign({}, opts, { forceEmbedSubTip: brush._nativeDualFromBru ? true : opts.forceEmbedSubTip }));    }
     opts = opts || {};
     /* 同格式直抄：源就是 .bru、目标也是 .bru，且尺寸/间距/压感/烘焙等选项都没动过
@@ -1353,6 +1355,9 @@
       // App 内置纹理库资源 id（f6）：只在目标不是原生 BRU 且调用方/源笔刷指定了 id 时才写。
       // 原生 BRU 进来的笔刷原样保留自己已有的 id（raw 元数据路径会保持）。
       texAssetId: texMatchId || texAssetId || brush.texAssetId || (opts && opts.texAssetId),
+      /* 【第227轮】f84 纹理混合模式：以前 meta 里根本没有这个键，bru.js 写侧收不到，
+         往返后一律变 0（203 支 BRU 源里 45 支失真）。 */
+      bruTextureBlendMode: brush.bruTextureBlendMode,
       bruTextureBytes: customTexture,
       hasTexture: brush.source === 'bru' ? brush.hasTexture : !!(texAssetId || texMatchId),
       // Fixed texture keeps the same dot grid through successive dabs. Native
@@ -1360,8 +1365,7 @@
       bruTexturePerTip: match && match.custom ? false : brush.bruTexturePerTip,
       // 第206轮：内置纹理精确命中时照抄原生结构（见上方 texMatch 注释）；未命中时这三项都是 undefined/false，输出不变
       noShape: texMatchNoShape || undefined,
-      bruColor: texMatchId ? -16777216 : undefined,
-      bruShapeRgbOpacity: texMatchId ? true : undefined,
+      bruColor: brush.bruColor !== undefined ? brush.bruColor : (texMatchId ? -16777216 : undefined),      bruShapeRgbOpacity: brush.bruShapeRgbOpacity !== undefined ? brush.bruShapeRgbOpacity : (texMatchId ? true : undefined),
       textureInverted: brush.textureInverted,
       /* 【第224轮】往返场景用源里存下的 textureScale，不再按「笔刷尺寸/纹理宽」重算，         否则 11px 的小笔刷把 512 纹理缩到 0.0215，平铺密到肉眼看就是不出墨。 */      textureScale: match && match.custom && !brush._nativeTexFromBru ? match.scale : brush.textureScale,
       /* 【第224轮】往返场景的 textureBrightness/Contrast 是**绝对值**（源里读出来就是 51/100），         不能再按「中性值 + 偏移」算一遍 —— 51+51 clamp 成 100、100+100 成 200，纹理会过曝变白，         实测「还行」就是这样变得看不出墨。 */      textureBrightness: match && match.custom && !brush._nativeTexFromBru ? Math.max(0, Math.min(100, 51 + (brush.textureBrightness || 0))) : bruTexBrightness(brush),

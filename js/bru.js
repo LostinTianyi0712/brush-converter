@@ -224,6 +224,12 @@
     /* f42 =「形状RGB值影响透明度」（子消息，开 = {f1:1}，见 bru_标定/字段映射.md §3.3）。官方小方块与全部
        带 ptN 纹理的原生样本都是开；旧写法写空子消息。只有 convert 显式要求（bruShapeRgbOpacity）才写开。 */
     parts.push(u8arr(fBytes(42, b.bruShapeRgbOpacity ? new Uint8Array([0x08, 0x01]) : new Uint8Array(0)))); // RGBTOALPHA
+    /* 【第227轮】f84 = 纹理混合模式。读侧一直在读（num(o[84],0)），但**写侧从来没有**，
+       导致往返后一律变 0：全量 203 支 BRU 源里有 45 支失真（14 → 0、12 → 0）。
+       官方样本实测编码是 varint（AE11「眼睛」= a0 05 0c → 值 12），这里按同类型写。 */
+    if (typeof b.bruTextureBlendMode === 'number' && isFinite(b.bruTextureBlendMode) && b.bruTextureBlendMode !== 0) {
+      parts.push(u8arr(fVarint(84, b.bruTextureBlendMode)));
+    }
     parts.push(u8arr(fVarint(49, 1)));                          // PRESSUSEPERCENT
     /* 【第193轮真机标定】f51 = 面板「流量压力·最小值」/ 100，**不与 flow 相乘**。
        证据：MuMu + 画世界 3.4.5 上把该滑块 14%→60% 导出，diff 只有 `f51: 0.14→0.6`；
@@ -790,6 +796,11 @@
         hasTexture: textureOn,
         bruTexturePerTip: !o[99],
         bruTextureBlendMode: num(o[84], 0),
+        /* 【第226轮】f16（颜色）与 f42（形状RGB影响透明度）以前只写不读，往返时源值丢了：
+           f16 退回默认 -1（白）、f42 消失，而官方样本是 0xFF000000（-16777216）+ f42={1:1}。
+           读出来才能在往返里保持；写侧规则不动。 */
+        bruColor: typeof o[16] === 'number' ? (o[16] | 0) : undefined,
+        bruShapeRgbOpacity: !!(o[42] && typeof o[42] === 'object' && (o[42][1] === 1 || o[42][1] === true)),
         texAssetId: o[6] instanceof Uint8Array ? util.utf8Decode(o[6]).replace(/\u0000+$/, '') : undefined,
         textureInverted: !!o[29],
         textureScale: texScale,

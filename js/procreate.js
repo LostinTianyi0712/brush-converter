@@ -446,6 +446,10 @@
       if (typeof ex.perTip === 'boolean') brush.bruTexturePerTip = ex.perTip;
       if (Number.isFinite(ex.sizeInfluence)) brush.bruPressureSizeInfluence = ex.sizeInfluence;
       if (Number.isFinite(ex.flowInfluence)) brush.bruPressureFlowInfluence = ex.flowInfluence;
+      if (Number.isFinite(ex.flowJitter)) brush.flowJitterPct = ex.flowJitter;
+      if (typeof ex.fadeInOut === 'boolean') brush.bruFadeInOut = ex.fadeInOut;
+      if (Number.isFinite(ex.color)) brush.bruColor = ex.color;
+      if (typeof ex.rgbOpacity === 'boolean') brush.bruShapeRgbOpacity = ex.rgbOpacity;
     }
     if (brush._bruTexParams) {
       const tp = brush._bruTexParams;
@@ -997,6 +1001,15 @@
        「蜡笔」hardness 0.39 → 0.988（软笔变硬笔，墨量涨 4~5 倍）、maxSizePx 500 → 70、
        「34亮片」scatterPct 207 → 100（散布收紧，墨芯深一倍）。真机像素量化已确认这些是主因。 */
     if (brush.source === 'bru') {
+      const snap = {};
+      Object.keys(brush).forEach(function (k) {
+        const v = brush[k];
+        if (k[0] === '_') return;
+        if (v === null || ['number', 'boolean', 'string'].indexOf(typeof v) >= 0) snap[k] = v;
+      });
+      try { params.brushConvBruFull = JSON.stringify(brush._bruFullSource || snap); } catch (e) {}
+    }
+    if (brush.source === 'bru') {
       params.brushConvBruExtra = JSON.stringify({
         hardness: brush.hardness, maxSizePx: brush.maxSizePx,
         scatterPct: brush.scatterPct, scatterCount: brush.scatterCount,
@@ -1006,7 +1019,9 @@
         shapeInverted: !!brush.bruShapeInverted || !!brush.shapeInverted,
         flowSmooth: !!brush.bruFlowSmooth,
         blendMode: brush.bruTextureBlendMode, perTip: !!brush.bruTexturePerTip,
-        sizeInfluence: brush.bruPressureSizeInfluence, flowInfluence: brush.bruPressureFlowInfluence
+        sizeInfluence: brush.bruPressureSizeInfluence, flowInfluence: brush.bruPressureFlowInfluence,
+        flowJitter: brush.flowJitterPct, fadeInOut: !!brush.bruFadeInOut,
+        color: brush.bruColor, rgbOpacity: brush.bruShapeRgbOpacity
       });
     }
     if (brush.source === 'bru' && brush.hasTexture) {
