@@ -455,13 +455,21 @@
       if (Number.isFinite(ex.rotationMode)) brush.bruRotationMode = ex.rotationMode;
       if (typeof ex.bothAxes === 'boolean') brush.scatterBothAxes = ex.bothAxes;
       if (Number.isFinite(ex.roundness)) brush.roundness = ex.roundness;
+      /* 【第230轮】只恢复 BRU 的数字枚举；Procreate 侧的 dualBlendMode 是数字下标，
+         改成 BRU 名字串会破坏 makeProcreateBrush 的往返（fidelity_test 锁着）。 */
       if (Number.isFinite(ex.dualBlendMode)) brush.bruDualBlendMode = ex.dualBlendMode;
-      if (typeof ex.scatterOn === 'boolean') brush.scatterOn = ex.scatterOn;
-      if (typeof ex.speedPressure === 'boolean') brush.speedPressure = ex.speedPressure;
-      if (typeof ex.borderOn === 'boolean') brush.borderOn = ex.borderOn;
       if (Number.isFinite(ex.borderBlend)) brush.borderBlend = ex.borderBlend;
       if (Number.isFinite(ex.borderBrightness)) brush.borderBrightness = ex.borderBrightness;
       if (Number.isFinite(ex.borderStrength)) brush.borderStrength = ex.borderStrength;
+      if (typeof ex.scatterOn === 'boolean') brush.scatterOn = ex.scatterOn;
+      if (typeof ex.speedPressure === 'boolean') brush.speedPressure = ex.speedPressure;
+      if (typeof ex.borderOn === 'boolean') brush.borderOn = ex.borderOn;
+      if (typeof ex.dualEnabled === 'boolean') brush.bruDualEnabled = ex.dualEnabled;
+      if (typeof ex.dualRef === 'string' && ex.dualRef) brush.bruDualRefUuid = ex.dualRef;
+      if (Number.isFinite(ex.fingerPressurePct)) brush.bruFingerPressurePct = ex.fingerPressurePct;
+      if (Number.isFinite(ex.taperSize)) brush.taperSize = ex.taperSize;
+      if (Number.isFinite(ex.angle)) brush.angle = ex.angle;
+      if (typeof ex.taperFields === 'boolean') brush._bruTaperFields = ex.taperFields;
     }
     if (brush._bruTexParams) {
       const tp = brush._bruTexParams;
@@ -1044,7 +1052,14 @@
            不存下来往返就整组丢失（borderBlend 16→4、scatterOn false→true、speedPressure true→false）。 */
         scatterOn: brush.scatterOn, speedPressure: !!brush.speedPressure,
         borderOn: !!brush.borderOn, borderBlend: brush.borderBlend,
-        borderBrightness: brush.borderBrightness, borderStrength: brush.borderStrength
+        borderBrightness: brush.borderBrightness, borderStrength: brush.borderStrength,
+        /* 【第230轮】双笔三件套：f119 开关、f121 引用的副笔 uuid、f122 混合模式。
+           brushset 没有对等结构，不存下来往返后 f119/f122 整组消失（10 支双笔：enabled true→false、blend 3→0）。 */
+        dualEnabled: brush.bruDualEnabled, dualRef: brush.bruDualRefUuid || undefined,
+        /* 【第230轮·第二批】零星 trio：手指压力强度 f117、锥度尺寸 f77、角度 f20（源 360° 会被
+           Procreate 的角度表示 wrap 成 0，不存下来往返就成了 0.00001°）。 */
+        fingerPressurePct: brush.bruFingerPressurePct, taperSize: brush.taperSize, angle: brush.angle,
+        taperFields: !!brush._bruTaperFields
       });
     }
     /* 【第228轮】烘焙回退（`bruIndependentTexture` 对自定义纹理返回 null）之后 hasTexture 已变 false，

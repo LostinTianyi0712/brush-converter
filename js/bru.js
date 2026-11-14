@@ -253,8 +253,10 @@
     /* f67 = 流量平滑开关。标定证据：p193_s5(关闭) → s6(开启)，diff 只有 `f67: — → 1`，
        反向 s10→s11 之外再关回也是一样（不写即关闭）。面板默认关闭，所以默认不写。 */
     if (b.bruFlowSmooth) parts.push(u8arr(fVarint(67, 1)));      // FLOWSMOOTH
-    if (b.taperOn) {
-      parts.push(u8arr(fVarint(74, 1)));
+    /* 【第230轮】同 scatter：原生 BRU 有「f74 没写、f77 有值」的笔刷（轻舟「色块平铺」taperOn=false + 尺寸 0.36），
+       旧条件只看 taperOn，往返把 0.36 抹成默认 1。改成「开关为真、或任一锥度参数存在」就写出，f74 仍只在为真时写。 */
+    if (b.taperOn || b._bruTaperFields) {
+      if (b.taperOn) parts.push(u8arr(fVarint(74, 1)));
       parts.push(u8arr(fF32(77, Math.max(0, Math.min(1, b.taperSize === undefined ? 1 : b.taperSize)))));
       parts.push(u8arr(fF32(78, Math.max(0, Math.min(1, b.taperOpacity === undefined ? 1 : b.taperOpacity)))));
     }
@@ -306,7 +308,10 @@
         ]);
         parts.push(u8arr(fBytes(121, msg)));
         // 真实双笔刷文件里还有 f87 / f158，一并写入（经验值，来自样本）
-        parts.push(u8arr(fVarint(122, dualBlendValue(b.dualBlendMode, b.bruDualBlendMode))));
+        /* 【第230轮】BRU 源带着数字枚举（f122 原值）时直接用，别再经名字表绕一圈：
+           Procreate 侧的 dualBlendMode 是它自己的下标，绕过去会把 12=linearHeight 写成 0。 */
+        parts.push(u8arr(fVarint(122, (typeof b.bruDualBlendMode === 'number' && isFinite(b.bruDualBlendMode))
+          ? b.bruDualBlendMode : dualBlendValue(b.dualBlendMode, b.bruDualBlendMode))));
         parts.push(u8arr(fVarint(87, 9629115)));
         parts.push(u8arr(fF32(158, 90)));
       }
@@ -661,6 +666,9 @@
       const mixStrengthRaw = num(o[104], 1);                          // 混色强度（反向）
       const taperOn = !!o[74];                                        // 锥度开关（f74）
       const taperSize = num(o[77], 1);                                // 锥度尺寸强度（f77）
+      /* 【第230轮】源里到底有没有 f77/f78：有就必须原样写出（哪怕 f74 关着），
+         没有就不要凭空补默认值，否则 183 支会被写成显式值。 */
+      const bruTaperFields = o[77] !== undefined || o[78] !== undefined;
       const taperOpacity = num(o[78], 1);                             // 锥度不透明度（f78）
       const colorDynOn = !!o[61];                                     // 颜色动态（f61）
       const colorHue = num(o[62], 0), colorSat = num(o[63], 0), colorVal = num(o[64], 0);
@@ -829,6 +837,7 @@
         dynamicsMix: mixOn ? Math.max(0, Math.min(1, 1 - mixStrengthRaw)) : undefined,
         taperOn: taperOn,
         taperSize: taperSize,
+        _bruTaperFields: bruTaperFields,
         taperOpacity: taperOpacity,
         colorDynamicsOn: colorDynOn,
         colorJitterHue: colorHue,
