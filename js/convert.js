@@ -4133,8 +4133,10 @@ Write-Host 'restart MediBang Paint Pro'
       try {
         let tip = bakedTipFor(Object.assign({}, b, { angle: 0, roundness: 100 }), opts || {});
         let flatTex = false;
+        let synthTipUsed = false;
         if (blankSai2Tip(tip)) {
           tip = synthTip(Object.assign({}, b, { roundness: 100, angle: 0 }), 256, opts || {});
+          synthTipUsed = true;
           warnings.push((b.name || '未命名') + '：源笔尖是空白占位图，已按硬度/圆度合成 SAI2 形状（原自动笔刷参数无法完整还原）');
         }
         /* SAI2 的 brushtex 是纹理素材原图，反相由工具参数 texinvf 决定（toolnrm 里会写）。
@@ -4148,6 +4150,11 @@ Write-Host 'restart MediBang Paint Pro'
           warnings.push((b.name || '未命名') + '：纹理是纯色图，已跳过 brushtex（纯色纹理在 SAI2 里不产生质感）');
         }
         const out = Object.assign({}, b, { tip: { w: tip.w, h: tip.h, rgba: tip.rgba }, _sai2Texture: texture });
+        /* 幂等：占位图这批笔刷的硬度是「合成出来」的，不是外格式原生字段。INI 写侧
+           （sai2.js EdgeHardness）按 nativeSource+moved 判定，本就只对外格式来源省键，
+           合成路径若也省掉，回读后该笔刷变成 SAI2 原生来源、第二轮会补写 EdgeHardness，
+           于是 导出→导入→再导出 出不了逐字节收敛（第163轮定点用例 118 项）。 */
+        if (synthTipUsed) out._sai2SynthTip = true;
         if (flatTex) out._sai2FlatTexture = true;
         return withFixedTipFlips(out);
       } catch (e) { return b; }

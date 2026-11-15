@@ -219,7 +219,10 @@
        往返里「硬度」整项丢失，只有走 toolnrm 的 edgehdns 才留下。源里有就按源写；源里没有
        但用户改过硬度的 SAI2 原生笔刷，也必须补一个键出来，否则改硬度对 SAI2 完全无效。
        外格式来源维持原样（不加新键），保持既有导出字节不变。 */
-    if (had('EdgeHardness') || (nativeSource && moved(['hardness']))) {
+    /* _sai2SynthTip：占位图合成路径（convert.js blankSai2Tip）的硬度是合成输入，
+       必须和回读后的 SAI2 原生笔刷走同一条写出口径，否则第二轮会多出这个键，
+       导出→导入→再导出无法逐字节收敛。 */
+    if (had('EdgeHardness') || (nativeSource && moved(['hardness'])) || brush._sai2SynthTip === true) {
       put('EdgeHardness', Math.max(0, Math.min(100, Math.round((brush.hardness === undefined ? 1 : brush.hardness) * 100))), ['hardness']);
     }
     /* 本工具不认识的键原样透传（Blur / 自定义键 …）：
