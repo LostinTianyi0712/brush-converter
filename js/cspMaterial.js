@@ -81,15 +81,133 @@
     const item=util.concat([word(p.length),p,word(2),word(n.length),n,word(1),word(c.length),c,word(0)]);
     return util.concat([word(8),word(1),word(item.length+4),item]);
   }
-  function make(image,name){
+  /* ── 源值回写（对齐 gobrushWrite 的 applyPropPlan）────────────────────────
+     旧 make() 先把模板 91 行 rawRows 整表克隆，再只改 8 列（MaterialName、
+     Canvas W·H、CanvasPreview、Offscreen、LayerName）→ 其余列永远输出
+     G-pen 5.1.5 脚手架值，接线率 5~8%。现在改成：
+       · SOURCE_MAPPED 里的列由当前笔刷计算（名字/画布/预览/瓦片）；
+       · 其余列一律照抄源 .sut 的值；
+       · 源里有、模板里没有的列 → 给表补列后逐行追加值；
+       · 源里有、模板里没有的表 → 记进 stats.skipped（SQLite 表级追加不支持）。
+     判据与 GoPaint 一致：映射列「当前值 vs 初值快照」，非映射列只搬运源值。 */
+  const SOURCE_MAPPED = {
+    Material: ['MaterialName'],
+    Canvas: ['CanvasWidth', 'CanvasHeight'],
+    CanvasPreview: ['ImageWidth', 'ImageHeight', 'ImageData'],
+    Offscreen: ['Attribute', 'BlockData']
+  };
+  function isMapped(table, column) {
+    const list = SOURCE_MAPPED[table];
+    return !!list && list.indexOf(column) >= 0;
+  }
+  function cloneValue(v) {
+    return (v instanceof Uint8Array) ? v.slice() : v;
+  }
+  function sameValue(a, b) {
+    if (a === b) return true;
+    if (a === undefined || b === undefined || a === null || b === null) return false;
+    if (a instanceof Uint8Array && b instanceof Uint8Array) {
+      if (a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+      return true;
+    }
+    return false;
+  }
+  /* 读侧：material_0.layer → 完整 {tables:[{name,columns,rows}]}。
+     明文 SQLite 直接读；C2F 明文正文拆出来同样读；加密正文读不全 → null。 */
+  function tables(layer) {
+    if (!(layer instanceof Uint8Array)) return null;
+    let body = layer;
+    if (!sql.isSqlite(body)) {
+      const magic = [137, 67, 50, 70, 13, 10, 26, 10];
+      if (!magic.every(function (v, i) { return body[i] === v; })) return null;
+      let pos = 8; const chunks = [];
+      while (pos < body.length) {
+        if (pos + 12 > body.length) return null;
+        const n = le32(body, pos), end = pos + 8 + n;
+        if (end + 4 > body.length) return null;
+        if (util.utf8Decode(body.subarray(pos + 4, pos + 8)) === 'dATA') {
+          if (n < 2 || body[pos + 8] !== 0 || body[pos + 9] !== 0) return null;
+          chunks.push(body.subarray(pos + 10, end));
+        }
+        pos = end + 4;
+      }
+      if (!chunks.length) return null;
+      body = util.concat(chunks);
+      if (!sql.isSqlite(body)) return null;
+    }
+    const db = sql.read(body);
+    return {
+      tables: db.tables.map(function (t) {
+        return {
+          name: t.name, columns: t.columns.slice(),
+          rows: t.rawRows.map(function (r) { return { rowid: r.rowid, values: r.values.map(cloneValue) }; })
+        };
+      })
+    };
+  }
+  /* 读侧：源 .sut 的全部 rawRows/列 → brush.cspRows，并留初值快照
+     brush.cspRowBase（GoPaint 的 gopaintProps / gopaintPropBase 等价物）。 */
+  function source(brush, layer) {
+    const snap = tables(layer);
+    if (!brush || !snap) return null;
+    brush.cspRows = snap.tables;
+    brush.cspRowBase = snap.tables.map(function (t) {
+      return {
+        name: t.name, columns: t.columns.slice(),
+        rows: t.rows.map(function (r) { return r.values.map(cloneValue); })
+      };
+    });
+    return brush.cspRows;
+  }
+  function baseValue(base, table, column) {
+    if (!base) return undefined;
+    for (let i = 0; i < base.length; i++) {
+      if (base[i].name !== table) continue;
+      const ci = base[i].columns.indexOf(column);
+      return ci < 0 || !base[i].rows.length ? undefined : base[i].rows[0][ci];
+    }
+    return undefined;
+  }
+  function make(image,name,options){
     check(image);
+    options=options||{};
     const tpl=seed.get('material'),db=sql.read(tpl),rows={},ids=Object.create(null);
     function remap(s){return s.replace(/[0-9a-f]{10}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{10}/g,function(id){return ids[id]||(ids[id]=uuid());});}
-    let catalog=remap(seed.get('catalog')).replace(/BC136_L/g,function(){return xml(name);});
+    /* 模板自带的素材名从模板 catalog.xml 里读（不再硬编码 'BC136_L'） */
+    const tplCatalog=seed.get('catalog');
+    const tplName=((/<catalog[\s\S]*?<\/catalog>/.exec(tplCatalog)||[''])[0].match(/<name>([^<]*)<\/name>/)||[])[1]||'';
+    const nameRe=tplName?new RegExp(tplName.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'g'):null;
+    let catalog=remap(tplCatalog);
+    if(nameRe)catalog=catalog.replace(nameRe,function(){return xml(name);});
     const catalogId=/uuid="([^"]+)"/.exec(catalog)[1];
     const info=remap(seed.get('info')),ice=remap(seed.get('ice'));
-    db.tables.forEach(function(t){rows[t.name]=t.rawRows.map(function(r){return {rowid:r.rowid,values:r.values.map(function(v){return typeof v==='string'?remap(v):v;})};});});
+    db.tables.forEach(function(t){rows[t.name]=t.rawRows.map(function(r){return {rowid:r.rowid,values:r.values.map(function(v){return typeof v==='string'?remap(v):cloneValue(v);})};});});
     function change(table,row,values){const t=sql.getTable(db,table);Object.keys(values).forEach(function(k){const ci=t.columns.indexOf(k);if(ci<0)throw Error('CSP素材模板缺少列 '+k);row.values[ci]=values[k];});}
+    const report={copied:0,appended:[],skipped:[]};
+    /* ── 源值回写：非映射列逐列照抄源值（映射列留给下面的显式 change） ───── */
+    const src=options.source?tables(options.source):null;
+    if(src)src.tables.forEach(function(st){
+      const t=sql.getTable(db,st.name),out=rows[st.name];
+      if(!t||!out){report.skipped.push(st.name);return;}
+      st.columns.forEach(function(col,ci){
+        if(isMapped(st.name,col))return;
+        let at=t.columns.indexOf(col);
+        if(at<0){
+          /* 源里有、模板里没有 → 给表补列并给本表每行补位，再逐行填源值 */
+          t.columns.push(col);at=t.columns.length-1;
+          out.forEach(function(r){while(r.values.length<=at)r.values.push(null);});
+          report.appended.push(st.name+'.'+col);
+        }
+        st.rows.forEach(function(srow,ri){
+          const row=out[ri];if(!row)return;
+          while(row.values.length<at)row.values.push(null);
+          row.values[at]=cloneValue(srow.values[ci]);
+          report.copied++;
+        });
+      });
+      if(st.rows.length>out.length)report.skipped.push(st.name+':源'+st.rows.length+'行>模板'+out.length+'行');
+    });
     const rgba=new Uint8Array(image.w*image.h*4);for(let i=0;i<image.mask.length;i++)rgba[i*4+3]=image.mask[i];
     const preview=png.encode(image.w,image.h,rgba);
     change('Material',rows.Material[0],{MaterialName:name});
@@ -101,7 +219,10 @@
       const blocks=encodeBlocks(actual?image:null,image.w,image.h);
       change('Offscreen',row,{Attribute:attribute(row.values[off.columns.indexOf('Attribute')],image.w,image.h,blocks.sizes),BlockData:blocks.data});
     });
-    rows.Layer.forEach(function(row){const t=sql.getTable(db,'Layer'),ci=t.columns.indexOf('LayerName');if(row.values[ci]==='BC136_L')row.values[ci]=name;});
+    /* 层名：源值已在回写阶段照抄；仍等于模板名的行才换成新名字 */
+    const layerTable=sql.getTable(db,'Layer'),layerCi=layerTable?layerTable.columns.indexOf('LayerName'):-1;
+    if(layerCi>=0&&tplName)rows.Layer.forEach(function(row){if(row.values[layerCi]===tplName)row.values[layerCi]=name;});
+    if(options.stats){options.stats.copied=report.copied;options.stats.appended=report.appended;options.stats.skipped=report.skipped;}
     const layer=c2f(writer.buildSut(tpl,{tableRows:rows}));
     const ratio=Math.min(1,128/image.w,128/image.h),tw=Math.max(1,Math.round(image.w*ratio)),th=Math.max(1,Math.round(image.h*ratio));
     const thumbnail=png.encode(tw,th,png.resize(rgba,image.w,image.h,tw,th));
@@ -113,13 +234,13 @@
       {name:'thumbnail/thumbnail.png',data:thumbnail}
     ]);
     const cat='.:74:92:'+catalogId,path=cat+':data:material_0.layer';
-    return {data:archive,path:path,catalog:cat,ref:reference(path,name,cat)};
+    return {data:archive,path:path,catalog:cat,ref:reference(path,name,cat),stats:report};
   }
   function build(options){
     const params=Object.assign({},options.params),materials=[];
     params.BrushUsePatternImage=0;params.BrushPatternImageArray=null;params.TextureImage=null;
     function attach(image,kind){
-      const material=make(image,options.name+(kind==='texture'?'_纹理':''));
+      const material=make(image,options.name+(kind==='texture'?'_纹理':''),{source:options.source,stats:options.stats});
       materials.push({rowid:materials.length+1,values:[null,0,material.path,0,material.data,material.catalog,null]});
       if(kind==='tip'){params.BrushUsePatternImage=1;params.BrushPatternImageArray=material.ref;params.BrushChangePatternColor=1;}
       else {params.TextureImage=material.ref;params.TextureDensity=options.textureDensity===undefined?100:options.textureDensity;params.TextureScale2=options.textureScale===undefined?100:options.textureScale;params.TextureReverseDensity=0;}
@@ -292,6 +413,6 @@
     const n=util.u32(blob,12);if(n%2||n>blob.length-16)return null;
     let s='';for(let i=16;i<16+n;i+=2)s+=String.fromCharCode(le16(blob,i));return s;
   }
-  const api={build:build,make:make,reference:reference,read:read,referencePath:referencePath,validateSource:validateSource,MAX_PIXELS:MAX_PIXELS};
+  const api={build:build,make:make,reference:reference,read:read,referencePath:referencePath,validateSource:validateSource,tables:tables,source:source,baseValue:baseValue,isMapped:isMapped,sameValue:sameValue,SOURCE_MAPPED:SOURCE_MAPPED,MAX_PIXELS:MAX_PIXELS};
   if(node)module.exports=api;else root.BC=Object.assign(root.BC||{},{cspMaterial:api});
 })(typeof globalThis!=='undefined'?globalThis:this);
