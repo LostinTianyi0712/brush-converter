@@ -974,7 +974,7 @@
     const sub = makeBru(pair.secondary, Object.assign({}, opts, { embedSubTip: false }));
     const enabled = brush.dualOn !== false && brush.bruDualEnabled !== false;
     const primary = Object.assign({}, pair.primary, {
-      embeddedSubPng: sub.pngBytes,
+      embeddedSubPng: sub.meta.noShape || sub.meta.bruBuiltinTipRef ? null : sub.pngBytes,
       bruDualSubBrush: sub.meta,
       bruDualEnabled: enabled,
       dualSubName: sub.meta.name,
@@ -1162,13 +1162,13 @@
   }
 
   function makeBru(brush, opts) {
+    opts = opts || {};
     brush = angleControlAliases(brush);
     /* 【第236轮·清理】这里原本写着第227轮的「全字段快照还原」方案——那段代码当年实测红 21 项，
        已回滚删除，注释却留了下来，容易让人以为存在「一次兜住所有字段」的路。
        现在的保真策略是两条腿：① 逐字段 Extra（brushConvBruExtra / brushConvBruTex / brushConvBruPressure）；
        ② 白名单外的未知字段原样透传（bru.js 的 BRU_KNOWN_FIELDS + _rawUnknown）。 */
     /* 【第224轮】带 _nativeDualFromBru 标记的 brushset（本工具从画世界原生双笔导出的）       转回 bru 时还原内嵌副笔，而不是把副笔烘进主笔。第181轮那条「非 BRU 源禁止内嵌」       是为了避开原生 Procreate 副笔的重影（真机实测），原生档案没有这个标记，行为不变。 */    if (brush && brush.dualTip && (opts.embedSubTip || brush._nativeDualFromBru)) {      return makeBruEmbedded(brush, Object.assign({}, opts, { forceEmbedSubTip: brush._nativeDualFromBru ? true : opts.forceEmbedSubTip }));    }
-    opts = opts || {};
     /* 同格式直抄：源就是 .bru、目标也是 .bru，且尺寸/间距/压感/烘焙等选项都没动过
        —— 原样返回源字节。画世界内置笔刷常常没有内嵌位图（450B 那类），任何重新
        生成都会换掉笔尖图案；透传是唯一能保证「导入后和原来一模一样」的路径。 */
@@ -1233,15 +1233,19 @@
     const texMatchId = match && (match.custom ? (customTexture && util.md5(customTexture).toUpperCase())
       : ((brush._nativeTexFromBru || opts.bruTexMatch === 'always' || disc) && match.id));
     const texMatchNoShape = !!(texMatchId && disc && !opts._packMember);
-    /* 【第231轮】BRU 往返单笔保留层 + 源是程序化笔尖（f99 语义、无笔尖图）→ 走「无笔尖图 +
-       f6 纹理像素」的原生布局（楠.bru「眼睛」式）。合包成员不行：包内条目必须有笔尖 PNG。 */
-    /* 【第235轮】源是程序化笔尖（无笔尖图）时也要保持 noShape 布局：旧的 `match && match.keepNativeId`
-       只覆盖「有纹理且命中往返标记」的眼睛类，漏掉「无纹理的纯程序化圆笔」（压感硬圆_1 / 不透明软圆_1 /
-       颗粒 / ⑨号笔刷 等 7 支），它们往返后被合成了一张笔尖图，bruProceduralTip 从 true 变 false。 */
-    /* 【第235轮·回滚】曾试过把「无纹理的程序化圆笔」也纳入 noShape，让 bruProceduralTip 往返保值，
-       但那条路要改渲染形态，连踩 halftone 的 f31 断言与眼睛类的 keepNativeId 分支（三版都没干净）。
-       收益只是一个派生标记字段、不影响实际渲染，判断为不划算——保留原条件。 */
-    const keepNoShape = !!(match && match.keepNativeId && brush.bruProceduralTip && !opts._packMember);
+    // The brushset shape is a stand-in for these BRU nibs. If it was edited
+    // or the original texture must be baked, keep the resulting bitmap.
+    const nativeProcedural = brush.source === 'bru' && !brush.tip;
+    const bridgeExtra = brush._bruExtra;
+    const fallbackHash = bridgeExtra && (bridgeExtra.fallbackShapeHash || bridgeExtra.procShapeHash);
+    const bridgeTipUnchanged = bridgeExtra && opts.fidelity !== false && !opts.forceRebuild &&
+      !brush.flipX && !brush.flipY && !brush.shapeInverted && (!brush.hasTexture || !!texMatchId) &&
+      brush._rawTipState === util.brushFingerprint({tip: brush.tip}) &&
+      (!fallbackHash || (brush._rawShape && util.md5(brush._rawShape) === fallbackHash));
+    const keepNoShape = !!(brush.bruProceduralTip && !bakingDual && (nativeProcedural || bridgeTipUnchanged));
+    const builtinRef = builtinTipKey(brush);
+    const bridgeBuiltin = !!(builtinRef && bridgeExtra && (bridgeExtra.builtinTipRef === builtinRef || brush._tipFromBuiltin === brush.oldTexId));
+    const keepBuiltinTip = !!(!bakingDual && bridgeBuiltin && bridgeTipUnchanged);
     let textureBaked = false;
     if (brush.source !== 'bru' && brush.hasTexture && opts.noTextureBake !== true && !texMatchId) {
       const texture = textureGray(brush);
@@ -1281,12 +1285,10 @@
       const uiDepth = Math.max(0, Math.min(1, brush.textureDepth === undefined ? 1 : Number(brush.textureDepth) || 0));
       effectiveTextureDepth = Math.round((1 - uiDepth) * 10000) / 10000;
     }
-    /* 【第242轮】笔尖 PNG 的编码语义在三个格式之间不一样：
-       · BRU 原生：图案在 **RGB 暗部**（暗=墨），alpha 只表形状（形状外=0）；
-       · Procreate：图案在 **alpha**（white=opaque），RGB 恒白；
-       · 以前对 brushset 回读的笔刷也走 toMaskRgba，图案留在 alpha，App 按 RGB 取色就拿到全白 → 实心。 */
+    // Put coverage into dark RGB only when the source BRU used f42.
+    // With f42 off, BRU reads alpha and would otherwise lose soft edges.
     let encodeRgba = rgba;
-    if (brush.source !== 'bru' && brush._bruExtra) {
+    if (brush.source !== 'bru' && brush._bruExtra && brush.bruShapeRgbOpacity === true) {
       encodeRgba = new Uint8Array(rgba.length);
       for (let i = 0; i < rgba.length; i += 4) {
         const a = rgba[i + 3];
@@ -1366,7 +1368,7 @@
          在「从内置库取到笔尖像素」（restoreHsjTips）时才赋值；本例源 oldTexId 是 32 字符 md5，
          builtinTipKey 判不出内置名 → 恒 undefined → 条件恒假 → 修了等于没修（verify238 实测）。
          现在只要求：来自 BRU 往返 + 源里有 f7，就沿用源名。 */
-      texId: keepNoShape ? '' : ((brush.source === 'bru' || !!brush._bruExtra) && brush.oldTexId &&
+      texId: keepNoShape ? '' : ((brush.source === 'bru' || !!brush._bruExtra) && brush.oldTexId && (!bridgeBuiltin || keepBuiltinTip) &&
         opts.fidelity !== false && !opts.forceRebuild
         ? brush.oldTexId : util.md5(pngBytes).toUpperCase()),
       sizePx,
@@ -1378,6 +1380,9 @@
       spacingPct,
       opacity: densityOpacity !== null ? densityOpacity : (brush.opacity === undefined ? 1 : brush.opacity),
       minSizeRatio: usePressure ? (brush.minSizeRatio === undefined ? 0.1 : brush.minSizeRatio) : 1,
+      _bruNativeSmallWidth: (keepNoShape || keepBuiltinTip) && bridgeTipUnchanged && opts.pressure === undefined &&
+        sizeScale === 1 && brush.sizePx === bridgeExtra.sizePx && brush.minSizeRatio === bridgeExtra.nativeMinSizeRatio
+        ? bridgeExtra.nativeSmallWidth : undefined,
       minOpacityRatio: usePressure ? (brush.minOpacityRatio === undefined ? 0.25 : brush.minOpacityRatio) : 1,
       bruSmallAlpha: useOriginalMinOpacity ? bruPressure.minOpacity : undefined,
       pressure: usePressure,
@@ -1439,6 +1444,8 @@
       bruTexturePerTip: match && match.custom && brush.bruTexturePerTip === undefined ? false : brush.bruTexturePerTip,
       // 第206轮：内置纹理精确命中时照抄原生结构（见上方 texMatch 注释）；未命中时这三项都是 undefined/false，输出不变
       noShape: (keepNoShape || texMatchNoShape) || undefined,
+      bruBuiltinTipRef: keepBuiltinTip,
+      _bruProceduralOmissions: bridgeTipUnchanged ? bridgeExtra.procOmissions : undefined,
       bruColor: brush.bruColor !== undefined ? brush.bruColor : (texMatchId ? -16777216 : undefined),      bruShapeRgbOpacity: brush.bruShapeRgbOpacity !== undefined ? brush.bruShapeRgbOpacity : (texMatchId ? true : undefined),
       textureInverted: brush.textureInverted,
       /* 【第224轮】往返场景用源里存下的 textureScale，不再按「笔刷尺寸/纹理宽」重算，         否则 11px 的小笔刷把 512 纹理缩到 0.0215，平铺密到肉眼看就是不出墨。 */      textureScale: match && match.custom && !brush._nativeTexFromBru ? match.scale : brush.textureScale,
@@ -1475,6 +1482,7 @@
       smudgeOn: brush.smudgeOn !== undefined ? brush.smudgeOn : (brush.dynamicsMix > 0 ? true : brush.smudgeOn),
       smudgeAmount: brush.smudgeAmount !== undefined ? brush.smudgeAmount : (brush.dynamicsMix !== undefined ? brush.dynamicsMix : brush.smudgeAmount),
       colorDynamicsOn: brush.colorDynamicsOn,
+      colorPerTip: brush.colorPerTip,
       colorJitterHue: brush.colorJitterHue,
       colorJitterSat: brush.colorJitterSat,
       colorJitterVal: brush.colorJitterVal,
@@ -1543,7 +1551,7 @@
     /* AUDIT-20261111-06：单支 makeBru 对「未改动的原生 BRU」返回整文件透传（pngBytes/meta 都是 null）。
        多支合包时不能把它当包内条目——以前直接报「缺少笔尖图像数据」。合包统一走重建路径：与来自多支
        .bru 的笔刷同一条路（_rawMeta 字段级保留未改参数），只关掉整文件透传。单支合包上面已原样返回。 */
-    // 多支布局保留笔尖 PNG；独立纹理仍可通过 f6 引用，不能用单支的无图记录头。
+    // The pack writer uses a zero image length for native procedural nibs.
     const packOpts = Object.assign({}, opts, { _noFilePassthrough: true, _packMember: brushList.length > 1 });
     brushList.forEach(function (brush, i) {
       const made = makeBru(brush, packOpts);
@@ -1559,7 +1567,7 @@
     items.forEach(function (item, i) {
       if (!item.bruDualSubBrush) return;
       const sub = item.bruDualSubBrush;
-      if (item.embeddedSubPng) {
+      if (item.embeddedSubPng || sub.noShape || sub.bruBuiltinTipRef) {
         // makeBruEmbedded has already converted the secondary metadata.
         item.dualSubName = sub.name;
         return;
@@ -2357,6 +2365,10 @@
   // layer cannot reproduce this compositing with an untextured round tip.
   function procreateExportTip(brush, opts) {
     if (opts.fidelity !== false && brush._rawArchive && !opts.forceRebuild) return brush;
+    if (brush.source === 'bru' && (!brush.tip || brush._tipFromBuiltin === brush.oldTexId)) {
+      const builtinRef = builtinTipKey(brush);
+      if (builtinRef) brush = Object.assign({}, brush, { _bruBuiltinTipRef: builtinRef });
+    }
     const tip = tipToRGBA(brush);
     if (tip) return Object.assign({}, brush, { tip });
     const shape = Object.assign({}, brush, { angle: 0, roundness: 100 });

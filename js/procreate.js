@@ -758,8 +758,27 @@
     return null;
   }
 
-  function shapePng(tip, maxSize) {
+  function shapePng(tip, maxSize, useRgbOpacity) {
     let w = tip.w, h = tip.h, rgba = tip.rgba;
+    // Convert coverage before resizing so RGB under transparent pixels
+    // cannot affect the downsampled mask.
+    let useDarkRgb = false;
+    if (useRgbOpacity) {
+      for (let i = 0; i < rgba.length; i += 4) {
+        if (rgba[i + 3] && Math.min(rgba[i], rgba[i + 1], rgba[i + 2]) < 250) {
+          useDarkRgb = true;
+          break;
+        }
+      }
+    }
+    if (useDarkRgb) {
+      const mask = new Uint8Array(rgba.length);
+      for (let i = 0; i < rgba.length; i += 4) {
+        const ink = 255 - Math.round((rgba[i] + rgba[i + 1] + rgba[i + 2]) / 3);
+        mask[i + 3] = Math.round(ink * rgba[i + 3] / 255);
+      }
+      rgba = mask;
+    }
     const maxSide = Math.max(w, h);
     const limit = Math.max(64, Math.min(2048, maxSize || 512));
     if (maxSide > limit) {
@@ -769,27 +788,7 @@
       w = nw; h = nh;
     }
     const gray = new Uint8Array(w * h);
-    /* 【第242轮】笔尖图案有两种载体，必须逐支判断（第241轮一刀切把亮片的墨反没了）：
-       · RGB 在 alpha>0 区域**全白** → 图案在 alpha 里。这类包括 Procreate 原生笔尖，
-         以及「纹理正相直通」合成的亮片系列（34~37）——现行 alpha 口径就是对的；
-       · RGB 带暗部 → 图案在 RGB 暗部（BRU 原生的「眼部高光12_1」「噪点」等，离线统计 105/164 支）→ 要取反。
-       Shape.png 的语义是「白 = 着墨」（verify241 四变体真机裁决），所以取反写成 255-灰度，形状外写黑。
-       离线预演脚本：_probe/polarity_preview.js（bright-ink 59 / dark-ink 105）。 */
-    let rgbAllWhite = true;
-    for (let k = 0; k < w * h; k++) {
-      const o = k * 4;
-      if (rgba[o + 3] === 0) continue;
-      if (rgba[o] < 250 || rgba[o + 1] < 250 || rgba[o + 2] < 250) { rgbAllWhite = false; break; }
-    }
-    if (rgbAllWhite) {
-      for (let k = 0; k < w * h; k++) gray[k] = rgba[k * 4 + 3];
-    } else {
-      for (let k = 0; k < w * h; k++) {
-        const o = k * 4;
-        const a = rgba[o + 3];
-        gray[k] = a === 0 ? 0 : 255 - Math.round((rgba[o] + rgba[o + 1] + rgba[o + 2]) / 3);
-      }
-    }
+    for (let k = 0; k < w * h; k++) gray[k] = rgba[k * 4 + 3];
     return { png: png.encodeGray(w, h, gray), w, h };
   }
 
@@ -1069,7 +1068,7 @@
     params.creationDate = { 'NS.time': Math.round((Date.now() / 1000 - PROCREATE_EPOCH) * 1000) / 1000 };
     return params;
   }
-  function buildArchive(brush, opts) {
+  function buildArchive(brush, opts, shapeBytes) {
     const params = archiveParams(brush, opts);
     if (brush.source === 'bru' && Number.isFinite(brush.minOpacityRatio) && Number.isFinite(brush.flowPct) && Number.isFinite(brush.minFlowRatio)) {
       params.brushConvBruPressure = JSON.stringify({ legacyMinWidth: !!brush.bruLegacyMinWidth && !!brush.pressureSize,
@@ -1108,6 +1107,11 @@
         blendMode: brush.bruTextureBlendMode, perTip: !!brush.bruTexturePerTip,
         /* 【第231轮】程序化笔尖（无笔尖图 + f99 语义）原样带回，否则往返后 bruProceduralTip 全丢。 */
         procTip: !!brush.bruProceduralTip,
+        fallbackShapeHash: (brush.bruProceduralTip || brush._bruBuiltinTipRef) && shapeBytes ? util.md5(shapeBytes) : undefined,
+        builtinTipRef: brush._bruBuiltinTipRef || undefined,
+        procOmissions: brush._bruProceduralOmissions,
+        nativeSmallWidth: brush._bruNativeSmallWidth,
+        nativeMinSizeRatio: brush.minSizeRatio,
         sizeInfluence: brush.bruPressureSizeInfluence, flowInfluence: brush.bruPressureFlowInfluence,
         flowJitter: brush.flowJitterPct, fadeInOut: !!brush.bruFadeInOut,
         color: brush.bruColor, rgbOpacity: brush.bruShapeRgbOpacity,
@@ -1400,9 +1404,9 @@
     }
     const tip = tipRGBA(brush, opts);
     if (!tip) throw new Error('该笔刷没有笔尖图像，无法写入 Procreate 格式');
-    const shape = shapePng(tip, opts.maxTipSize || 2048);
+    const shape = shapePng(tip, opts.maxTipSize || 2048, brush.source === 'bru' && brush.bruShapeRgbOpacity);
     const thumb = thumbPng(tip, { spacingPct: brush.spacingPct, opacity: brush.opacity });
-    const archive = buildArchive(brush, opts);
+    const archive = buildArchive(brush, opts, shape.png);
     const entries = [
       { name: 'Brush.archive', data: archive },
       { name: 'Shape.png', data: shape.png },
