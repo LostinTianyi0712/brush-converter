@@ -12,6 +12,17 @@
    non-standard embedded GBR resource, which Krita imports but cannot paint with. */
 (function (root) {
   'use strict';
+
+  /* 【第257轮】Krita 的 paint-op 引擎名白名单。读侧 parseKpp 已经把它存进 brush.paintop，
+     写侧以前恒写 paintbrush（喷枪/调色刀/涂抹转回来全变普通画笔）。不认识的引擎名回落，
+     避免把 Krita 不认识的值写进 Preset 导致整个预设打不开。 */
+  const PAINTOPS = ['paintbrush', 'airbrush', 'smudge', 'colorsmudge', 'filter', 'grid',
+    'hairy', 'deform', 'experiment', 'curve', 'tangentnormal', 'spray', 'particle',
+    'clone', 'hatching', 'roundmarker', 'bristle'];
+  function safePaintop(v) {
+    const t = String(v === undefined || v === null ? '' : v).trim();
+    return PAINTOPS.indexOf(t) >= 0 ? t : 'paintbrush';
+  }
   const isNode = typeof module !== 'undefined' && module.exports && typeof process !== 'undefined';
   const util = isNode ? require('./util.js') : root.BC.util;
   const png = isNode ? require('./png.js') : root.BC.png;
@@ -593,7 +604,7 @@
       '" diameter="' + num(diameter, 40) + '" id="default" hfade="' + num(hardness, 1) + '" type="circle"/> </Brush> ';
 
     const params = [
-      ['paintop', 'string', cdata('paintbrush')],
+      ['paintop', 'string', cdata(safePaintop(brush.paintop))],
       ['brush_definition', 'string', cdata(brushDef)],
       ['Texture/Pattern/Enabled', 'string', cdata('false')],
       ['CompositeOp', 'string', cdata('normal')],
@@ -619,7 +630,7 @@
       ['requiredBrushFile', 'string', cdata('')],
       ['requiredBrushFilesList', 'string', cdata('')]
     ];
-    let xml = '<Preset name="' + name + '" paintopid="paintbrush"> ';
+    let xml = '<Preset name="' + name + '" paintopid="' + safePaintop(brush.paintop) + '"> ';
     for (const p of params) {
       xml += '<param name="' + p[0] + '" type="' + p[1] + '">' + p[2] + '</param> ';
     }
@@ -668,7 +679,7 @@
       '<MaskGenerator ratio="' + ratio.toFixed(3) + '" antialiasEdges="1" spikes="2" vfade="' + hardness.toFixed(3) +
       '" diameter="' + diameter.toFixed(3) + '" id="default" hfade="' + hardness.toFixed(3) + '" type="circle"/> </Brush> ';
     const params = [
-      ['paintop', 'string', cdata('paintbrush')],
+      ['paintop', 'string', cdata(safePaintop(brush.paintop))],
       ['brush_definition', 'string', cdata(brushDef)],
       ['Texture/Pattern/Enabled', 'string', cdata('false')],
       ['CompositeOp', 'string', cdata('normal')],
@@ -689,7 +700,7 @@
       ['requiredBrushFile', 'string', cdata('')],
       ['requiredBrushFilesList', 'string', cdata('')]
     ];
-    let xml = '<Preset name="' + xmlEsc(brush.name || 'brush') + '" paintopid="paintbrush"> ';
+    let xml = '<Preset name="' + xmlEsc(brush.name || 'brush') + '" paintopid="' + safePaintop(brush.paintop) + '"> ';
     for (const p of params) xml += '<param name="' + p[0] + '" type="' + p[1] + '">' + p[2] + '</param> ';
     xml += '</Preset>';
     return asciiEntities(xml);
@@ -708,7 +719,7 @@
       '" BrightnessAdjustment="0" AdjustmentMidPoint="127" useAutoSpacing="0" filename="' + xmlEsc(gbrName) +
       '" angle="' + angleRad + '" scale="1" brushApplication="0" ContrastAdjustment="0" autoSpacingCoeff="1"/>';
     const params = [
-      ['paintop', 'string', cdata('paintbrush')],
+      ['paintop', 'string', cdata(safePaintop(brush.paintop))],
       ['brush_definition', 'string', cdata(brushDef)],
       ['Texture/Pattern/Enabled', 'string', cdata('false')],
       ['CompositeOp', 'string', cdata('normal')],
@@ -727,7 +738,7 @@
       ['requiredBrushFile', 'string', cdata(gbrName)],
       ['requiredBrushFilesList', 'string', cdata(gbrName)]
     ];
-    let xml = '<Preset name="' + xmlEsc(brush.name || 'brush') + '" paintopid="paintbrush"> ';
+    let xml = '<Preset name="' + xmlEsc(brush.name || 'brush') + '" paintopid="' + safePaintop(brush.paintop) + '"> ';
     for (const p of params) xml += '<param name="' + p[0] + '" type="' + p[1] + '">' + p[2] + '</param> ';
     xml += '</Preset>';
     return asciiEntities(xml);
