@@ -1,4 +1,4 @@
-﻿/* Infinite Painter brush: .prbr = zip { preview (PNG), properties.json }
+/* Infinite Painter brush: .prbr = zip { preview (PNG), properties.json }
    properties.json layout (observed on real files):
      display-name, head-properties{spacing, softness, angle, flow, structure, ...},
      stroke-properties{paint-size, paint-opacity, size-maximum, ...},
@@ -74,6 +74,8 @@
     const stroke = props['stroke-properties'] || {};
     const blend = props['blend-properties'] || {};
     const dyn = props['dynamics-properties'] || {};
+    const jitter = props['jitter-properties'] || {};
+    const tex = props['texture-properties'] || {};
 
     const name = String(props['display-name'] || (fileName || '').replace(/\.[^.]+$/, '') || 'infinite painter brush');
     const sizeRaw = num(stroke, ['paint-size'], 0);
@@ -107,8 +109,20 @@
     // they are not embedded in .prbr, so synthesize a round tip from hardness/softness.
     const headName = (props['source-properties'] && props['source-properties'].head) || 'round';
     warnings.push('Infinite Painter 笔尖是内置形状（' + headName + '），未随文件保存；转换时用硬度/柔边参数生成圆头笔尖');
-    const wet = num(blend, ['smudge-amount'], 0);
+    /* 【minor-fix】smudge-amount 过去只出现在告警文案里，值本身没有进 brush：
+       「读了但没落到任何字段」等于跨格式必然丢。这里落到通用的混色字段上，
+       写侧再按同一个键写回（见 writePrbr），本格式往返与跨格式都能带上。 */
+    const wet = clamp(num(blend, ['smudge-amount'], 0), 0, 1);
     if (wet > 0.5) warnings.push('该 Infinite Painter 笔刷含较强混色/涂抹（smudge=' + wet.toFixed(2) + '），转换后只保留基础笔迹');
+    /* 【minor-fix】以下四组同属「源里有、过去一律不读」：
+       head.flow（0..1 流量）、stroke.wet-edges（0..1 湿边）、
+       jitter.size/angle/scatter（抖动，0..1 与角度制）、texture.structure（纹理强度）。
+       写回键与读键一一对应，单位按已观测样本（见 _probe/minor-fix/report.md）。 */
+    const headFlow = num(head, ['flow'], 1);
+    const wetEdges = num(stroke, ['wet-edges'], 0);
+    const jitSize = num(jitter, ['size'], 0);
+    const jitAngle = num(jitter, ['angle'], 0);
+    const jitScatter = num(jitter, ['scatter'], 0);
     return {
       brushes: [{
         name: name,
@@ -116,6 +130,7 @@
         sizePx: sizePx,
         spacingPct: spacingPct,
         opacity: opacity,
+        flowPct: clamp(headFlow, 0, 1),
         hardness: hardness,
         angle: angle,
         roundness: 100,
@@ -124,8 +139,20 @@
         minSizeRatio: minSizeRatio,
         pressureOpacity: pressureFlow,
         minOpacityRatio: minOpacityRatio,
+        smudgeOn: wet > 0.001,
+        smudgeAmount: wet,
+        wetEdgesOn: wetEdges > 0.001,
+        wetEdgesAmount: clamp(wetEdges, 0, 1),
+        sizeJitterPct: clamp(jitSize, 0, 1) * 100,
+        angleJitterDeg: clamp(Math.abs(jitAngle), 0, 360),
+        scatterOn: jitScatter > 0.001,
+        scatterPct: clamp(jitScatter, 0, 1) * 100,
+        textureDepth: clamp(num(tex, ['structure'], 0), 0, 1),
         source: 'infpainter',
-        headName: headName
+        headName: headName,
+        /* 【minor-fix】源 properties.json 全量快照：写侧只覆盖自己映射过的键，
+           其余原样写回（第 232 轮纪律：只透传未知、不覆盖已知）。 */
+        _rawPrbrProps: props
       }],
       warnings: warnings
     };
@@ -137,8 +164,7 @@
       'blend-properties': { 'flow': 1, 'mix-in': 0, 'mix-in dilution': 0, 'mix-wet': false, 'smudge-amount': 0, 'strength': 0.2 },
       'display-name': 'brush',
       'dynamics-properties': {
-        'pressure - effects dilution': false,
-        'pressure - effects flow': false,
+        'pressure - effects dilution': false,        'pressure - effects flow': false,
         'pressure - effects head depth': false,
         'pressure - effects scatter': false,
         'pressure - effects size': false,
@@ -189,7 +215,7 @@
       'parent': 2,
       'source-properties': {
         'custom-head': '', 'custom-stroke texture': '', 'head': '', 'head - color': false,
-        'head - colorize': 1, 'head - profile': [0, 1, 1, 0], 'stroke texture': '',
+        'head - colorize': 1, 'head - conversion format': 1, 'head - profile': [0, 1, 1, 0], 'stroke texture': '',
         'stroke texture - color': false, 'stroke texture - colorize': 1, 'stroke texture - profile': [0, 1, 1, 0]
       },
       'stroke-properties': {
@@ -205,29 +231,116 @@
     };
   }
 
+  /* 【minor-fix】写侧基座过去恒是 defaultProps()：106 个 properties 叶子只有 8 个
+     会被覆写，其余全部退回模板默认值（.prbr→.prbr 往返实测 72/218 失真，
+     smudge-amount / 6 条压力曲线 / texture.structure / parent 等全灭）。
+     现在改成「默认值打底 + 源快照只透传未知键」：
+       · MANAGED 里的键 = 本工具真正映射的键，写侧用 brush 值覆盖（行为与过去一致）；
+       · 其余键（含 source-properties 全部子键、parent、blend-properties.strength、
+         stroke-properties.blend-size/erase-size/lazy-stroke …）原样沿用源值；
+       · 源里没有快照（非 .prbr 来源）时与过去完全一致。 */
+  const MANAGED = {
+    'blend-properties': ['smudge-amount'],
+    'dynamics-properties': [
+      'pressure - effects size', 'pressure - effects flow',
+      'pressure profile - size', 'pressure profile - flow'
+    ],
+    'head-properties': ['angle', 'flow', 'softness', 'spacing'],
+    'jitter-properties': ['angle', 'scatter', 'size'],
+    'stroke-properties': ['blend-opacity', 'paint-opacity', 'paint-size', 'wet-edges']
+  };
+
+  function cloneProps(p) {
+    try { return JSON.parse(JSON.stringify(p)); } catch (e) { return null; }
+  }
+  function overlayUnknown(target, source) {
+    if (!source || typeof source !== 'object') return target;
+    for (const section of Object.keys(source)) {
+      const val = source[section];
+      if (val === null || typeof val !== 'object' || Array.isArray(val)) {
+        /* 顶层标量（display-name / parent）不受 MANAGED 段落表约束：
+           只要源里有就沿用，写侧真正要改的键在下面显式赋新值。 */
+        if (section !== 'display-name') target[section] = val;
+        continue;
+      }
+      if (!target[section] || typeof target[section] !== 'object' || Array.isArray(target[section])) {
+        target[section] = cloneProps(val) || {};
+        continue;
+      }
+      const managed = MANAGED[section] || [];
+      for (const key of Object.keys(val)) {
+        if (managed.indexOf(key) >= 0) continue;
+        target[section][key] = cloneProps(val[key]);
+      }
+    }
+    return target;
+  }
+  /* 把源曲线按新的下限等比缩放：形状（中间控制点）保留，端点落到 min..1。
+     源曲线缺失或退化时退回过去的两点近似，保证行为与旧版一致。 */
+  function rescaleProfile(profile, min) {
+    if (!Array.isArray(profile) || profile.length < 6) return null;
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 1; i < profile.length; i += 2) {
+      const y = profile[i];
+      if (typeof y !== 'number' || !isFinite(y)) return null;
+      if (y < lo) lo = y;
+      if (y > hi) hi = y;
+    }
+    if (!(hi > lo)) return null;
+    const out = profile.slice();
+    for (let i = 1; i < out.length; i += 2) out[i] = min + (out[i] - lo) / (hi - lo) * (1 - min);
+    return out;
+  }
+
   function writePrbr(brush) {
-    const props = defaultProps();
+    const src = cloneProps(brush && brush._rawPrbrProps);
+    const props = src ? overlayUnknown(defaultProps(), src) : defaultProps();
+    /* 段落缺失（截断/外来文件）时补壳，避免下行直接抛错 */
+    for (const section of ['blend-properties', 'dynamics-properties', 'head-properties', 'jitter-properties', 'source-properties', 'stroke-properties', 'texture-properties']) {
+      if (!props[section] || typeof props[section] !== 'object') props[section] = defaultProps()[section];
+    }
     props['display-name'] = String(brush.name || 'brush');
     const sizePx = clamp(brush.sizePx || 16, 1, 2000);
     props['stroke-properties']['paint-size'] = sizePx;
-    props['stroke-properties']['size-maximum'] = 1;
-    props['stroke-properties']['paint-opacity'] = (brush.opacity === undefined ? 1 : brush.opacity);
-    props['stroke-properties']['blend-opacity'] = 1;
+    /* size-maximum 是「最大尺寸倍数」，本工具不映射它：
+       源里有就原样保留（不动源数值才谈得上往返一致），没有则用中性 1。 */
+    if (!(src && src['stroke-properties'] && isFinite(Number(src['stroke-properties']['size-maximum'])))) {
+      props['stroke-properties']['size-maximum'] = 1;
+    }
+    /* 不透明度在 .prbr 里是 paint-opacity × blend-opacity 两级：
+       写侧过去把结果全塞进 paint-opacity 并把 blend-opacity 拉回 1，
+       两级分解方式（Hard Airbrush 0.81×0.48）就此丢失。改成反解：
+       blend-opacity 有源值就保留，paint-opacity = 目标 / 该值。 */
+    const opacityTarget = clamp(brush.opacity === undefined ? 1 : brush.opacity, 0, 1);
+    const srcBlendOpacity = src && src['stroke-properties'] ? Number(src['stroke-properties']['blend-opacity']) : NaN;
+    const blendKeep = isFinite(srcBlendOpacity) && srcBlendOpacity > 0.001 ? clamp(srcBlendOpacity, 0.1, 1) : 1;
+    props['stroke-properties']['blend-opacity'] = blendKeep;
+    props['stroke-properties']['paint-opacity'] = clamp(opacityTarget / blendKeep, 0, 1);
     props['head-properties']['spacing'] = Math.max(0.001, Math.min(2, (brush.spacingPct || 10) / 100));
     props['head-properties']['softness'] = Math.max(0, Math.min(1, 1 - (brush.hardness === undefined ? 1 : brush.hardness)));
     props['head-properties']['angle'] = ((brush.angle || 0) * Math.PI / 180);
+    props['head-properties']['flow'] = clamp(brush.flowPct === undefined ? 1 : brush.flowPct, 0, 1);
+    props['stroke-properties']['wet-edges'] = clamp(brush.wetEdgesAmount === undefined ? (brush.wetEdgesOn ? 1 : 0) : brush.wetEdgesAmount, 0, 1);
+    props['blend-properties']['smudge-amount'] = clamp(brush.smudgeOn === false ? 0 : (brush.smudgeAmount === undefined ? 0 : brush.smudgeAmount), 0, 1);
+    props['jitter-properties']['size'] = clamp((brush.sizeJitterPct || 0) / 100, 0, 1);
+    props['jitter-properties']['angle'] = clamp(brush.angleJitterDeg || 0, 0, 360);
+    props['jitter-properties']['scatter'] = clamp(brush.scatterOn === false ? 0 : (brush.scatterPct || 0) / 100, 0, 1);
+    /* 压力曲线：源的形状（中间控制点、点数）优先，只把端点缩放到新的下限；
+       源没有曲线时才写过去的两点直线。开关关闭时曲线原样保留源值。 */
+    const srcDyn = (src && src['dynamics-properties']) || {};
+    function profileFor(key, on, min) {
+      const source = srcDyn[key];
+      if (!on) return Array.isArray(source) ? source.slice() : props['dynamics-properties'][key];
+      return rescaleProfile(source, min) || [0, 1, 0.5, (1 + min) / 2, 1, min];
+    }
     const pressureSize = !!brush.pressureSize;
     props['dynamics-properties']['pressure - effects size'] = pressureSize;
-    if (pressureSize) {
-      const min = Math.max(0.02, Math.min(1, brush.minSizeRatio === undefined ? 0.3 : brush.minSizeRatio));
-      props['dynamics-properties']['pressure profile - size'] = [0, 1, 0.5, (1 + min) / 2, 1, min];
-    }
+    props['dynamics-properties']['pressure profile - size'] = profileFor('pressure profile - size',
+      pressureSize, Math.max(0.02, Math.min(1, brush.minSizeRatio === undefined ? 0.3 : brush.minSizeRatio)));
     const pressureFlow = !!brush.pressureOpacity;
     props['dynamics-properties']['pressure - effects flow'] = pressureFlow;
-    if (pressureFlow) {
-      const min = Math.max(0, Math.min(1, brush.minOpacityRatio === undefined ? 0.3 : brush.minOpacityRatio));
-      props['dynamics-properties']['pressure profile - flow'] = [0, 1, 0.5, (1 + min) / 2, 1, min];
-    }
+    props['dynamics-properties']['pressure profile - flow'] = profileFor('pressure profile - flow',
+      pressureFlow, Math.max(0, Math.min(1, brush.minOpacityRatio === undefined ? 0.3 : brush.minOpacityRatio)));
     // preview: render a simple stroke from the brush tip
     const tip = brush.tip;
     let previewPng = null;

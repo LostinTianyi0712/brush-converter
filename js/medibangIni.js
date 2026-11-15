@@ -75,13 +75,18 @@
       if (isBitmap && e.bitmapFile) tip = decodeBitmap(files, e.bitmapFile);
       const minRatio = width > 0 ? Math.max(0, Math.min(1, minW / width)) : 0;
       let bs = null;
+      let bsBytes = null;
       if (e.script && files) {
         const raw = files[e.script] || files['brush_script/' + e.script];
         if (raw) {
+          bsBytes = raw;
           try { bs = parseBsScript(util.utf8Decode(raw)); } catch (err) { bs = null; }
         }
       }
       const bsOpacityParam = bs && bs.params.find(function (p2) { return /opacity/i.test(p2.name); });
+      /* 【minor-fix】pAlpha 只有「源条目没写这个键」时才允许用脚本里的 opacity 参数兜底：
+         源里明确写了 pAlpha=false 时以源为准，否则往返会把 false 改成 true（写侧失真）。 */
+      const pAlphaExplicit = e.pAlpha !== undefined && String(e.pAlpha).trim() !== '';
       brushes.push({
         name: e.name || ('MediBang ' + (e.index + 1)),
         tip: tip,
@@ -91,7 +96,9 @@
         minSizeRatio: minRatio,
         minOpacityRatio: 0,
         pressureSize: String(e.pSize).toLowerCase() !== 'false',
-        pressureOpacity: String(e.pAlpha).toLowerCase() === 'true' || !!(bsOpacityParam && bsOpacityParam.def > 0),
+        pressureOpacity: pAlphaExplicit
+          ? String(e.pAlpha).toLowerCase() === 'true'
+          : !!(bsOpacityParam && bsOpacityParam.def > 0),
         _medibangBs: bs || undefined,
         hardness: 1,
         angle: 0,
@@ -102,6 +109,11 @@
           option: e.option, option2: e.option2, option3: e.option3, option4: e.option4, option5: e.option5,
           bitmapFile: e.bitmapFile || null, iriNuki: String(e.iriNuki).toLowerCase() === 'true'
         },
+        /* 【minor-fix】源条目全量原文 + 脚本字节：写侧过去对 group/cloudId/cloudUuid/
+           option1..5/iriNuki 一律写常量，且 .bs 脚本从不写回（程序笔刷被降级成位图后
+           脚本整份消失）。这两份快照让写侧能「只覆盖自己算的键、其余原样带回」。 */
+        _medibangEntry: Object.assign({}, e),
+        _medibangScript: bsBytes || null,
         source: 'medibang'
       });
     }
@@ -134,9 +146,23 @@
     return { params: params, defaultSize: defaultSize, defaultMin: defaultMin, randomRotate: /random_rotate\s*=\s*true/.test(src), hasTexture: /bs_texture|bs_textureid/.test(src), usesFlow: /bs_flow/.test(src) };
   }
 
+  function sanitizeFile(name) {
+    const v = String(name || '').replace(/[\\/:*?"<>|\r\n\t]/g, '_').trim();
+    return v && !/^\.+$/.test(v) ? v : null;
+  }
+
   function sanitize(name) {
     return String(name || 'brush').replace(/[\\/:*?"<>|\r\n\t]/g, '_').slice(0, 40) || 'brush';
   }
+
+  /* 写侧自己算的键：其余键（group / cloudId / cloudUuid / option1..5 / iriNuki /
+     bs_* 以及任何未来新增键）一律从源条目原样带回，源里没有才落默认值。
+     过去这些键全部写常量，且 .bs 脚本从不写回——程序笔刷被降级成位图后脚本整份丢失
+     （实测 21/37 失真）。 */
+  const COMPUTED_KEYS = ['index', 'name', 'type', 'width', 'min', 'opacity', 'pSize', 'pAlpha', 'bitmapFile', 'script'];
+  /* 只在「源条目没有这个键」时使用的默认值（与旧实现的常量一致） */
+  const KEY_DEFAULTS_BITMAP = { group: '-1', cloudUuid: '', option: '5', option2: '0', option3: '50', option4: '0', option5: '1' };
+  const KEY_DEFAULTS_PROGRAM = { group: '-1', cloudUuid: '', option: '0', option2: '3' };
 
   /* 笔刷列表 -> MediBang 云笔刷包（Brush2.ini + brush_bitmap/*.png）
      解压后把内容复制到 %LOCALAPPDATA%\Medibang\CloudAlpaca 即可被识别 */
@@ -144,6 +170,7 @@
     opts = opts || {};
     const lines = ['[General]', 'activeIndex=0', 'version=1', ''];
     const images = [];
+    const usedNames = Object.create(null);
     let idx = 0;
     for (const b of (brushList || [])) {
       const name = sanitize(b.name || ('brush ' + (idx + 1)));
@@ -151,34 +178,60 @@
       const min = Math.max(0, Math.min(size, Math.round(size * (b.minSizeRatio === undefined ? 0 : b.minSizeRatio))));
       const opacity = Math.max(0, Math.min(1, b.opacity === undefined ? 1 : b.opacity));
       const tip = b.tip;
-      const isBitmap = !!(tip && tip.rgba);
+      const srcEntry = b._medibangEntry || null;
+      const srcScript = b._medibangScript || null;
+      /* 源是「程序笔刷」且脚本还在手上：保持 program 类型并把原脚本写回，
+         这样脚本里的动态参数不会因为「转成一张位图」而全部消失。
+         convert 的 makeMediBangIniPack 会给程序笔刷合成笔尖，这里以源类型为准。 */
+      const srcIsProgram = !!(srcEntry && /^program/i.test(String(srcEntry.type || '')) && srcScript);
+      const isBitmap = !srcIsProgram && !!(tip && tip.rgba);
       const sec = [String(idx)];
       const push = function (k, v) { sec.push(k + '=' + v); };
+      const written = Object.create(null);
+      const put = function (k, v) {
+        written[k] = true;
+        /* 数值相同就沿用源里的写法（"1.0" 不写成 "1"）：文本级 diff 也归零 */
+        if (srcEntry && srcEntry[k] !== undefined) {
+          const was = Number(srcEntry[k]), now = Number(v);
+          if (isFinite(was) && isFinite(now) && was === now) { sec.push(k + '=' + srcEntry[k]); return; }
+        }
+        sec.push(k + '=' + v);
+      };
       lines.push('[' + idx + ']');
-      push('name', name);
-      push('type', isBitmap ? 'bitmap' : 'program');
-      push('group', '-1');
-      push('width', String(size));
-      push('min', String(min));
-      push('opacity', String(Math.round(opacity * 100) / 100));
-      push('pSize', (b.pressureSize === undefined ? b.pressure : b.pressureSize) ? 'true' : 'false');
-      push('pAlpha', b.pressureOpacity ? 'true' : 'false');
-      push('cloudId', String(-1 - idx));
-      push('cloudUuid', '');
+      put('name', name);
+      put('type', isBitmap ? 'bitmap' : 'program');
+      put('width', String(size));
+      put('min', String(min));
+      put('opacity', String(Math.round(opacity * 100) / 100));
+      put('pSize', (b.pressureSize === undefined ? b.pressure : b.pressureSize) ? 'true' : 'false');
+      put('pAlpha', b.pressureOpacity ? 'true' : 'false');
       if (isBitmap) {
-        const file = 'brushconv_' + (idx + 1) + '.png';
-        push('bitmapFile', file);
-        push('option', '5');
-        push('option2', '0');
-        push('option3', '50');
-        push('option4', '0');
-        push('option5', '1');
+        const want = b._medibang && b._medibang.bitmapFile ? sanitizeFile(b._medibang.bitmapFile) : null;
+        let file = want && !usedNames[want] ? want : 'brushconv_' + (idx + 1) + '.png';
+        if (usedNames[file]) file = 'brushconv_' + (idx + 1) + '.png';
+        usedNames[file] = true;
+        put('bitmapFile', file);
         images.push({ name: 'brush_bitmap/' + file, data: png.encode(tip.w, tip.h, tip.rgba) });
+      } else if (srcIsProgram) {
+        const want = b._medibang && b._medibang.script ? sanitizeFile(b._medibang.script) : null;
+        let file = want && !usedNames[want] ? want : 'brushconv_' + (idx + 1) + '.bs';
+        if (usedNames[file]) file = 'brushconv_' + (idx + 1) + '.bs';
+        usedNames[file] = true;
+        put('script', file);
+        images.push({ name: 'brush_script/' + file, data: new Uint8Array(srcScript) });
       } else {
-        push('script', 'brushconv_' + (idx + 1) + '.bs');
-        push('option', '0');
-        push('option2', '3');
+        put('script', 'brushconv_' + (idx + 1) + '.bs');
       }
+      /* 源条目的其余键：先按源里的原始顺序带回，再补齐缺失的默认值 */
+      const defaults = isBitmap ? KEY_DEFAULTS_BITMAP : KEY_DEFAULTS_PROGRAM;
+      if (srcEntry) {
+        for (const k of Object.keys(srcEntry)) {
+          if (COMPUTED_KEYS.indexOf(k) >= 0 || written[k]) continue;
+          put(k, String(srcEntry[k]));
+        }
+      }
+      for (const k of Object.keys(defaults)) if (!written[k]) put(k, defaults[k]);
+      if (!written.cloudId) put('cloudId', String(-1 - idx));
       lines.push(sec.slice(1).join('\n'));
       lines.push('');
       idx++;

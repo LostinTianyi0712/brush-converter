@@ -189,6 +189,15 @@
       ? clamp(roundness, 0, 100)
       : clamp(roundness > 1.5 ? roundness / 100 : roundness, 0.05, 1) * 100;
     if (isFinite(angle)) b.angle = angle;
+    /* 【minor-fix】pressure 过去被忽略：写侧恒写 pressure:false，
+       源里写的 true 往返变成 false（「写常量砸源值」的最小版本）。
+       另外把展平后的原始键表留在 brush 上，写侧才能「只覆盖自己算的键」。 */
+    const pressureRaw = map.pressure;
+    if (pressureRaw !== undefined) {
+      b.pressure = pressureRaw === true || /^(true|1|yes|on)$/i.test(String(pressureRaw).trim());
+      b.pressureSize = b.pressure;
+    }
+    b._ipcfgRaw = map;
     warnings.push('已识别字段：' + Object.keys(map).slice(0, 12).join(', '));
     return { brushes: [b], warnings: warnings };
   }
@@ -226,6 +235,20 @@
     return z.write(files);
   }
 
+  /* 写侧自己算的键；源里其余展平键（含本工具不认识的 'extra-*'）原样带回，
+     源里没有时保持与旧实现完全相同的键集合与顺序。 */
+  const IPCFG_MANAGED = ['format', 'name', 'size', 'spacing', 'opacity', 'hardness', 'roundness', 'angle', 'pressure'];
+
+  function setPath(obj, path, value) {
+    const parts = String(path).split('/');
+    let cur = obj;
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (!cur[parts[i]] || typeof cur[parts[i]] !== 'object' || Array.isArray(cur[parts[i]])) cur[parts[i]] = {};
+      cur = cur[parts[i]];
+    }
+    cur[parts[parts.length - 1]] = value;
+  }
+
   function writeIpcfg(brush) {
     const doc = {
       format: 'brushconv.ipcfg',
@@ -238,6 +261,13 @@
       angle: brush.angle || 0,
       pressure: !!brush.pressure
     };
+    const raw = brush._ipcfgRaw;
+    if (raw && typeof raw === 'object') {
+      for (const key of Object.keys(raw)) {
+        if (IPCFG_MANAGED.indexOf(key) >= 0) continue;
+        setPath(doc, key, raw[key]);
+      }
+    }
     return util.utf8Encode(JSON.stringify(doc, null, 2));
   }
 

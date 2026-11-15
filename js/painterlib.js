@@ -114,14 +114,25 @@
       const nibPath = path.replace(/\.xml$/i, '.nib');
       let tip = null;
       if (files[nibPath]) tip = nibAlpha(files[nibPath]);
-      brushes.push(Object.assign({
+      const one = Object.assign({
         name: base,
         category: category,
         tip: tip,
         source: 'painter',
         _painterPath: path,
         _painterRaw: { xml: files[path], nib: files[nibPath] || null, category: category }
-      }, params, { name: base, category: category, tip: tip }));
+      }, params, { name: base, category: category, tip: tip });
+      /* 【minor-fix】convert.makePainter 在「参数被改过」时会显式清掉 _painterRaw
+         （否则原 XML 会把编辑吞掉），于是写侧只能退回 brushXml 骨架——
+         除本工具映射的 12 个属性外，delta-angle / spread / bristle-fraction /
+         min-grain / max-grain / wet / merge-mode / stroke-opacity / damping
+         以及引擎私有子元素全部被写常量砸掉（实测改一项参数 17/40 失真）。
+         这里把「原始 XML 文本 + NIB 字节」另存一份下划线字段（fingerprint 不计入），
+         写侧就能在原 XML 上做属性级 patch，而不是整块重建。 */
+      one._painterXml = files[path];
+      one._painterNib = files[nibPath] || null;
+      one._painterNibTipState = tip ? util.brushFingerprint({ tip: tip }) : null;
+      brushes.push(one);
     }
     brushes.forEach(function (b) { b._rawBrushState = util.brushFingerprint(b); });
     return {
@@ -186,6 +197,61 @@
 
   function esc(x) { return String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
 
+  /* 在指定元素的开始标签内改一个属性。value 未变（数值在 1e-9 相对误差内相等）
+     时保持原文本一字不动——这样「没改参数的往返」仍然是逐字节一致的。 */
+  function patchAttr(xml, element, attrName, current, encoded) {
+    const re = new RegExp('<' + element + '\\b([^>]*)>');
+    const m = re.exec(xml);
+    if (!m) return xml;
+    let attrs = m[1];
+    const ar = new RegExp('(^|[\\s])' + attrName + '="([^"]*)"');
+    const am = ar.exec(attrs);
+    if (am) {
+      const was = current === null ? null : Number(am[2]);
+      const same = current === null
+        ? am[2] === encoded
+        : (isFinite(was) && Math.abs(was - current) <= Math.max(1e-9, Math.abs(current) * 1e-9));
+      if (same) return xml;
+      attrs = attrs.slice(0, am.index) + am[1] + attrName + '="' + encoded + '"' + attrs.slice(am.index + am[0].length);
+    } else {
+      attrs = attrs + ' ' + attrName + '="' + encoded + '"';
+    }
+    return xml.slice(0, m.index) + '<' + element + attrs + '>' + xml.slice(m.index + m[0].length);
+  }
+
+  /* 把通用笔刷模型「回写」进原始 Painter XML：
+     只动本工具真正映射的属性，控件/引擎私有属性与子元素原样保留；
+     某个属性在源 XML 里不存在时补在对应元素上，不新建元素。 */
+  function patchPainterXml(xmlText, brush) {
+    let xml = String(xmlText);
+    const radius = Math.max(0.5, (brush.sizePx || 40) / 2);
+    const minFrac = brush.minSizeRatio === undefined ? 1 : brush.minSizeRatio;
+    const angle = brush.angle || 0;
+    const thin = (brush.roundness === undefined ? 100 : brush.roundness) / 100;
+    const hardness = brush.hardness === undefined ? 1 : brush.hardness;
+    const grain = brush.textureDepth === undefined ? 0 : brush.textureDepth;
+    const randSize = (brush.sizeJitterPct || 0) / 100;
+    const jitter = (brush.scatterPct || 0) / 100;
+    const opacity = brush.opacity === undefined ? 1 : brush.opacity;
+    const advance = Math.max(0.01, (brush.spacingPct === undefined ? 25 : brush.spacingPct) / 100);
+    const flow = (brush.flowPct === undefined ? 1 : brush.flowPct) * 400;
+    /* variant-name 是 Painter 的「变体/分类名」，不是笔刷名（笔刷名就是文件名）。
+       原 XML 里它多半是 Airbrushes 这类分类值，patch 它会平白改掉源语义，
+       所以这里不动它；画笔改名的落点是文件名（writeLibrary 的 dir/nm）。 */
+    xml = patchAttr(xml, 'physical-brush-parameters', 'radius', radius, radius.toFixed(2));
+    xml = patchAttr(xml, 'physical-brush-parameters', 'min-radius-fraction', minFrac, minFrac.toFixed(3));
+    xml = patchAttr(xml, 'physical-brush-parameters', 'base-angle', angle, angle.toFixed(1));
+    xml = patchAttr(xml, 'physical-brush-parameters', 'thinness', thin, thin.toFixed(2));
+    xml = patchAttr(xml, 'physical-brush-parameters', 'random-size', randSize, randSize.toFixed(2));
+    xml = patchAttr(xml, 'physical-brush-parameters', 'hardness', hardness, hardness.toFixed(2));
+    xml = patchAttr(xml, 'dab-application-parameters', 'opacity', opacity, opacity.toFixed(2));
+    xml = patchAttr(xml, 'dab-application-parameters', 'grain', grain, grain.toFixed(2));
+    xml = patchAttr(xml, 'stroke-path-parameters', 'advance', advance, advance.toFixed(3));
+    xml = patchAttr(xml, 'stroke-path-parameters', 'flow', brush.flowPct === undefined ? null : flow / 400, flow.toFixed(1));
+    xml = patchAttr(xml, 'stroke-path-parameters', 'jitter', jitter, jitter.toFixed(2));
+    return xml;
+  }
+
   /* 把笔尖 alpha 画成 Painter nib 约定：浅灰底 + 深色 dab，再编码成 JPEG */
   function nibFromTip(tip, size) {
     let jpegEncode;
@@ -218,25 +284,43 @@
       const nm = String(b.name || ('brush' + (i + 1))).replace(/[\/:*?"<>|]/g, '_');
       const dir = (i + 1) + ' ' + cat;
       const raw = b._painterRaw;
-      if (raw && raw.xml && raw.nib) {
-        // 来自 Painter 库：直接复用原 XML + nib，往返无损
-        files.push({ name: dir + '/' + nm + '.xml', data: raw.xml });
-        files.push({ name: dir + '/' + nm + '.nib', data: raw.nib });
-      } else {
-        files.push({ name: dir + '/' + nm + '.xml', data: util.utf8Encode(brushXml(b)) });
-        const tn = b.tip ? Math.max(b.tip.w || 0, b.tip.h || 0) : 0;
-        const nib = nibFromTip(b.tip, tn >= 96 ? 50 : 30);
-        if (nib) files.push({ name: dir + '/' + nm + '.nib', data: nib.bytes });
+      /* 源 XML 有三个来源，优先级从高到低：
+         ① _painterRaw（未改参数，convert 保留）→ 原样复用；
+         ② _painterXml（改过参数，convert 会清掉 ①）→ 在原 XML 上做属性级 patch；
+         ③ 无源（外来笔刷）→ brushXml 骨架。 */
+      const srcXml = (raw && raw.xml) || b._painterXml || null;
+      if (srcXml) {
+        const xmlOut = (raw && raw.xml && raw.nib)
+          ? raw.xml                                   // ① 逐字节原样
+          : util.utf8Encode(patchPainterXml(util.utf8Decode(srcXml), b));
+        files.push({ name: dir + '/' + nm + '.xml', data: xmlOut });
+        /* NIB 也尽量保原字节：笔尖像素没变（指纹一致）时没必要重新 JPEG 压一遍。 */
+        const tipState = b.tip ? util.brushFingerprint({ tip: b.tip }) : null;
+        const keepNib = (raw && raw.nib) ||
+          (b._painterNib && b._painterNibTipState && tipState === b._painterNibTipState ? b._painterNib : null);
+        if (keepNib) { files.push({ name: dir + '/' + nm + '.nib', data: keepNib }); return; }
+        const tn0 = b.tip ? Math.max(b.tip.w || 0, b.tip.h || 0) : 0;
+        const nib0 = nibFromTip(b.tip, tn0 >= 96 ? 50 : 30);
+        if (nib0) files.push({ name: dir + '/' + nm + '.nib', data: nib0.bytes });
         else if (b.tip && b.tip.rgba) {
           const img = { w: b.tip.w, h: b.tip.h, rgba: b.tip.rgba };
           files.push({ name: dir + '/' + nm + '_tip.png', data: pngMod.encode(img.w, img.h, img.rgba) });
         }
+        return;
+      }
+      files.push({ name: dir + '/' + nm + '.xml', data: util.utf8Encode(brushXml(b)) });
+      const tn = b.tip ? Math.max(b.tip.w || 0, b.tip.h || 0) : 0;
+      const nib = nibFromTip(b.tip, tn >= 96 ? 50 : 30);
+      if (nib) files.push({ name: dir + '/' + nm + '.nib', data: nib.bytes });
+      else if (b.tip && b.tip.rgba) {
+        const img = { w: b.tip.w, h: b.tip.h, rgba: b.tip.rgba };
+        files.push({ name: dir + '/' + nm + '_tip.png', data: pngMod.encode(img.w, img.h, img.rgba) });
       }
     });
     return zipMod.write(files);
   }
 
-  const api = { isLibraryZip, parseLibrary, parseXml, nibAlpha, writeLibrary, brushXml, nibFromTip };
+  const api = { isLibraryZip, parseLibrary, parseXml, nibAlpha, writeLibrary, brushXml, nibFromTip, patchPainterXml };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { painterlib: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

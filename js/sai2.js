@@ -90,8 +90,38 @@
     return {w:n,h:n,data:out};
   }
 
+  /* ---------- 写侧「回声」纪律（第 248 轮） ----------
+     源 INI 里原样出现的键，只要它对应的参数没被改动过，就**逐字回写源文本**；
+     源 INI 里没有的键，参数也没被改动过，就**不写**。
+     这两条对应 _probe/field-matrix/report.md 里的两类毛病：
+       ① 「字段有值 ≠ 源里有这个 wire 字段」—— 用 `if (b.x)` 把「源没有」写成「显式默认值」；
+       ② 「写侧恒用常量把源值砸掉」—— 源写 +180 被规范化成 -180、源写 96:50 被改写成 96:100。
+     判据是 brush 属性有没有被改过（`_sai2SourceAttrs` 是解析那一刻的快照），
+     不是「算出来的值恰好等于源值」—— 后者对 `Count=0`（读侧夹成 1）这种就失效了。 */
+  const INI_KEYS = ['Density', 'AngleControl', 'Angle', 'AngleJitter', 'Scaling', 'ShapeSize',
+    'SizeJitter', 'Spacing', 'Scattering', 'WxHRatio', 'WxHJitter', 'Count', 'CountJitter',
+    'AllDirScattering', 'GaussianDistribution', 'AbsoluteSize', 'IntegerPosition',
+    'HighQualitySampling', 'ColJitter', 'HueJitter', 'SaturationJitter', 'BrightnessJitter',
+    'ApplyToEachShape', 'Opacity', 'EdgeHardness'];
+
+  function sameVal(a, b) {
+    return a === b || (typeof a === 'number' && typeof b === 'number' && a !== a && b !== b);
+  }
+
+  /* 一组依赖属性都没动过 → 该键的源文本仍然是「用户当初说的值」 */
+  function untouched(brush, snap, deps) {
+    if (!snap) return false;
+    for (let i = 0; i < deps.length; i++) if (!sameVal(brush[deps[i]], snap[deps[i]])) return false;
+    return true;
+  }
+
   function buildIni(brush) {
     const raw = brush._sai2ini || {};
+    const rawText = brush._sai2iniText || null;
+    const nativeSource = !!brush._sai2ini;
+    const snap = brush._sai2SourceAttrs || null;
+    const had = function (k) { return Object.prototype.hasOwnProperty.call(raw, k); };
+    const moved = function (deps) { return !untouched(brush, snap, deps || []); };
     const nativeValue = function (key, fallback) { return raw[key] === undefined ? fallback : raw[key]; };
     const patternSize = Number(raw.AbsoluteSize) === 1 && Number.isFinite(Number(raw.ShapeSize))
       ? Number(raw.ShapeSize) * (brush._sai2SourceSize > 0 ? brush.sizePx / brush._sai2SourceSize : 1) : brush.sizePx;
@@ -137,33 +167,70 @@
       '; Converted by BrushConverter',
       '[Parameters]'
     ];
-    if (density !== null) lines.push('Density = ' + density);
-    lines.push(
-      'AngleControl = ' + angleControl,
-      'Angle = ' + (angle >= 0 ? '+' : '') + angle,
-      'AngleJitter = ' + angleJitter,
-      'Scaling = ' + scaling,
-      'ShapeSize = ' + size,
-      'SizeJitter = ' + sizeJitter,
-      'Spacing = ' + spacing,
-      'Scattering = ' + scattering,
-      'WxHRatio = ' + nativeRatio,
-      'WxHJitter = ' + wxhJitter,
-      'Count = ' + count,
-      'CountJitter = ' + countJitter,
-      'AllDirScattering = ' + allDir,
-      'GaussianDistribution = ' + nativeValue('GaussianDistribution', 0),
-      'AbsoluteSize = ' + nativeValue('AbsoluteSize', 0),
-      'IntegerPosition = ' + nativeValue('IntegerPosition', 0),
-      'HighQualitySampling = ' + nativeValue('HighQualitySampling', brush._sai2ini ? 0 : 1),
-      'ColJitter = ' + colJitter,
-      'HueJitter = ' + hueJitter,
-      'SaturationJitter = ' + satJitter,
-      'BrightnessJitter = ' + briJitter,
-      'ApplyToEachShape = ' + applyPerTip,
-      'Opacity = ' + opacity,
-      ''
-    );
+    /* 一个键怎么落地：源里有原文且参数没动 → 回写原文；源里没有且参数没动 → 不写；
+       其余（参数被改过 / 外格式来源没有源 INI）→ 写算出来的值。 */
+    const put = function (key, value, deps, mode) {
+      const has = had(key);
+      if (!has && !nativeSource) { lines.push(key + ' = ' + value); return; }
+      if (mode !== 'force' && !moved(deps)) {
+        if (has && rawText && rawText[key] !== undefined) { lines.push(key + ' = ' + rawText[key]); return; }
+        if (!has && mode !== 'always') return;
+      }
+      lines.push(key + ' = ' + value);
+    };
+    /* 原生 INI 只有 Density 一个键承载「浓度」。用户在界面只改不透明度时，
+       必须把这次变化折进 Density —— 否则 SAI2 读的是旧流量，改完等于没改。 */
+    let densityOut = density;
+    let densityForce = false;
+    if (had('Density') && !had('Opacity') && snap &&
+        !sameVal(brush.opacity, snap.opacity) && sameVal(brush.flowPct, snap.flowPct) &&
+        Number.isFinite(Number(brush.opacity))) {
+      densityOut = Math.max(0, Math.min(100, Math.round(Number(brush.opacity) * 100)));
+      densityForce = true;
+    }
+    if (densityOut !== null) put('Density', densityOut, ['flowPct'], densityForce ? 'force' : null);
+    put('AngleControl', angleControl, ['bruRotationMode','dynamicsControlAngle','tiltAngleDyn']);
+    put('Angle', (angle >= 0 ? '+' : '') + angle, ['angle']);
+    put('AngleJitter', angleJitter, ['angleJitterDeg','source']);
+    put('Scaling', scaling, ['sai2Scaling']);
+    put('ShapeSize', size, ['sizePx']);
+    put('SizeJitter', sizeJitter, ['sizeJitterPct']);
+    put('Spacing', spacing, ['spacingPct']);
+    put('Scattering', scattering, ['scatterOn','scatterPct']);
+    put('WxHRatio', nativeRatio, ['roundness']);
+    put('WxHJitter', wxhJitter, ['roundnessJitterPct']);
+    put('Count', count, ['scatterOn','scatterCount']);
+    put('CountJitter', countJitter, ['scatterOn','countJitterPct']);
+    put('AllDirScattering', allDir, ['scatterBothAxes']);
+    put('GaussianDistribution', nativeValue('GaussianDistribution', 0), []);
+    put('AbsoluteSize', nativeValue('AbsoluteSize', 0), []);
+    put('IntegerPosition', nativeValue('IntegerPosition', 0), []);
+    /* 高清采样是 SAI2 的采样质量开关，回归用例 152 明确要求「源里省了也要显式写 0」，
+       避免回读端拿不到这个开关的确定值 —— 这里按 always 处理，不参与「省缺省键」的省略。 */
+    put('HighQualitySampling', nativeValue('HighQualitySampling', brush._sai2ini ? 0 : 1), [], 'always');
+    put('ColJitter', colJitter, ['colorDynamicsOn','colorJitterFgBg','jitterSecondary','jitterStrokeSecondary']);
+    put('HueJitter', hueJitter, ['colorDynamicsOn','colorJitterHue']);
+    put('SaturationJitter', satJitter, ['colorDynamicsOn','colorJitterSat']);
+    put('BrightnessJitter', briJitter, ['colorDynamicsOn','colorJitterVal']);
+    put('ApplyToEachShape', applyPerTip, ['colorPerTip','colorJitterHue','dynamicsJitterStrokeHue',
+      'dynamicsJitterStrokeSaturation','dynamicsJitterStrokeLightness','jitterStrokeSecondary']);
+    put('Opacity', opacity, ['opacity']);
+    /* 边缘硬度：读侧认 EdgeHardness（没有才退回 prsfeel），写侧过去从没写过 —— 裸 INI
+       往返里「硬度」整项丢失，只有走 toolnrm 的 edgehdns 才留下。源里有就按源写；源里没有
+       但用户改过硬度的 SAI2 原生笔刷，也必须补一个键出来，否则改硬度对 SAI2 完全无效。
+       外格式来源维持原样（不加新键），保持既有导出字节不变。 */
+    if (had('EdgeHardness') || (nativeSource && moved(['hardness']))) {
+      put('EdgeHardness', Math.max(0, Math.min(100, Math.round((brush.hardness === undefined ? 1 : brush.hardness) * 100))), ['hardness']);
+    }
+    /* 本工具不认识的键原样透传（Blur / 自定义键 …）：
+       「不知道含义」不等于「可以丢」，这与 BRU 侧未知字段透传是同一条纪律。 */
+    if (nativeSource) {
+      for (const k of Object.keys(raw)) {
+        if (INI_KEYS.indexOf(k) >= 0) continue;
+        lines.push(k + ' = ' + (rawText && rawText[k] !== undefined ? rawText[k] : raw[k]));
+      }
+    }
+    lines.push('');
     return util.utf8Encode(lines.join('\r\n'));
   }
 
@@ -279,12 +346,28 @@
     };
   }
 
-  /* 生成 SAI2 toolnrm（笔刷预设 INI） */
+  /* 生成 SAI2 toolnrm（笔刷预设 INI）
+     与 buildIni 同一套回声纪律：源 toolnrm 里有的键、参数没动过 → 回写原文；
+     源里没有、参数也没动过 → 不写。写死的结构性常量（desc/brpat_vsbpos/brwav/
+     drawmode/dpmax/quality）必须始终写，它们是记录的一部分，缺了 SAI2 不认这条工具。 */
   function writeToolnrm(brushes) {
     const NL = String.fromCharCode(10);
     const out = ['; SAI2 brush presets (toolnrm) - generated by brushconv', ''];
     (brushes || []).forEach(function (b, i) {
       const rawTool = b._sai2tool || {};
+      const rawText = b._sai2ToolText || null;
+      const nativeSource = !!b._sai2tool;
+      const snap = b._sai2ToolAttrs || null;
+      const had = function (k) { return Object.prototype.hasOwnProperty.call(rawTool, k); };
+      const put = function (key, value, deps, mode) {
+        const has = had(key);
+        if (!has && !nativeSource) { out.push(key + '=' + value); return; }
+        if (mode !== 'force' && untouched(b, snap, deps || [])) {
+          if (has && rawText && rawText[key] !== undefined) { out.push(key + '=' + rawText[key]); return; }
+          if (!has && mode !== 'always') return;
+        }
+        out.push(key + '=' + value);
+      };
       const size = Math.max(1, Math.min(5000, Math.round(b.sizePx || 30)));
       const depth = Math.max(0, Math.min(100, Math.round((b.opacity === undefined ? 1 : b.opacity) * 100)));
       const szmin = Math.max(0, Math.min(100, Math.round((b.minSizeRatio === undefined ? 0 : b.minSizeRatio) * 100)));
@@ -299,44 +382,45 @@
       const keepopac = b.keepOpacity !== undefined ? (b.keepOpacity ? 1 : 0)
         : (rawTool.f_keepopac !== undefined ? (Number(rawTool.f_keepopac) ? 1 : 0) : 0);
       out.push('[' + (i + 1) + ']');
+      /* 段号与 id 必须自洽，这是记录序号不是源值，不参与回声 */
       out.push('id=' + (i + 1));
       const safeName = String(b.name || ('brush ' + (i + 1))).split(String.fromCharCode(13)).join(' ').split(String.fromCharCode(10)).join(' ');
-      out.push('name=' + safeName);
-      out.push('desc=brushconv');
-      out.push('brpat_vsbpos=0');
-      out.push('brwav=3');
-      out.push('drawmode=1');
-      out.push('brsize=' + size);
-      out.push('brsizesc=' + size);
-      out.push('depth=' + depth);
-      out.push('f_prs2sz=' + (b.pressureSize ? 1 : 0));
-      out.push('f_prs2dp=' + (b.pressureOpacity ? 1 : 0));
-      out.push('f_prs2bl=' + prs2bl);
-      out.push('prsfeel=' + Math.round((b.hardness === undefined ? 1 : b.hardness) * 100));
-      out.push('szmin=' + szmin);
-      out.push('dpmin=' + Math.round((b.minOpacityRatio === undefined ? 0 : b.minOpacityRatio) * 100));
-      out.push('dpmax=0');
-      out.push('quality=4');
-      out.push('blend=' + Math.round((b.smudgeAmount === undefined ? 0 : b.smudgeAmount) * 100));
-      out.push('water=' + Math.round((b.wetEdgesAmount === undefined ? 0 : b.wetEdgesAmount) * 100));
-      out.push('stretch=' + stretch);
-      out.push('bfval=' + bfval);
-      out.push('txval=' + Math.max(0,Math.min(100,Math.round((b.textureDepth===undefined?1:b.textureDepth)*100))));
+      put('name', safeName, ['name']);
+      put('desc', 'brushconv', [], 'always');
+      put('brpat_vsbpos', 0, [], 'always');
+      put('brwav', 3, [], 'always');
+      put('drawmode', 1, [], 'always');
+      put('brsize', size, ['sizePx']);
+      put('brsizesc', size, ['sizePx']);
+      put('depth', depth, ['opacity']);
+      put('f_prs2sz', (b.pressureSize ? 1 : 0), ['pressureSize']);
+      put('f_prs2dp', (b.pressureOpacity ? 1 : 0), ['pressureOpacity']);
+      put('f_prs2bl', prs2bl, ['pressureSmudge']);
+      put('prsfeel', Math.round((b.hardness === undefined ? 1 : b.hardness) * 100), ['hardness']);
+      put('szmin', szmin, ['minSizeRatio']);
+      put('dpmin', Math.round((b.minOpacityRatio === undefined ? 0 : b.minOpacityRatio) * 100), ['minOpacityRatio']);
+      put('dpmax', 0, [], 'always');
+      put('quality', 4, [], 'always');
+      put('blend', Math.round((b.smudgeAmount === undefined ? 0 : b.smudgeAmount) * 100), ['smudgeAmount']);
+      put('water', Math.round((b.wetEdgesAmount === undefined ? 0 : b.wetEdgesAmount) * 100), ['wetEdgesAmount']);
+      put('stretch', stretch, ['colorStretch']);
+      put('bfval', bfval, ['flowPct']);
+      put('txval', Math.max(0, Math.min(100, Math.round((b.textureDepth === undefined ? 1 : b.textureDepth) * 100))), ['textureDepth']);
       if (b.textureScale !== undefined && Number.isFinite(Number(b.textureScale))) {
-        out.push('texscl=' + Math.max(1, Math.min(1000, Math.round(Number(b.textureScale) * 100))));
+        put('texscl', Math.max(1, Math.min(1000, Math.round(Number(b.textureScale) * 100))), ['textureScale']);
       } else if (rawTool.texscl !== undefined) {
-        out.push('texscl=' + rawTool.texscl);
+        put('texscl', rawTool.texscl, ['textureScale']);
       }
       if (b.textureInverted !== undefined) {
-        out.push('texinvf=' + (b.textureInverted ? 1 : 0));
+        put('texinvf', (b.textureInverted ? 1 : 0), ['textureInverted']);
       } else if (rawTool.texinvf !== undefined) {
-        out.push('texinvf=' + rawTool.texinvf);
+        put('texinvf', rawTool.texinvf, ['textureInverted']);
       }
-      out.push('brfnam=' + (b.sai2ShapeName || ''));
-      out.push('texnam=' + (b.sai2TextureName || ''));
-      out.push('smooth=' + Math.round((b.smoothingStrength === undefined ? 0 : b.smoothingStrength) * 100));
-      out.push('edgehdns=' + Math.round((b.hardness === undefined ? 1 : b.hardness) * 100));
-      out.push('f_keepopac=' + keepopac);
+      put('brfnam', (b.sai2ShapeName || ''), ['sai2ShapeName']);
+      put('texnam', (b.sai2TextureName || ''), ['sai2TextureName']);
+      put('smooth', Math.round((b.smoothingStrength === undefined ? 0 : b.smoothingStrength) * 100), ['smoothingStrength']);
+      put('edgehdns', Math.round((b.hardness === undefined ? 1 : b.hardness) * 100), ['hardness']);
+      put('f_keepopac', keepopac, ['keepOpacity']);
       out.push('');
     });
     return util.utf8Encode(out.join(NL));

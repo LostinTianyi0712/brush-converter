@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 /* Huawei 天生会画 / GoPaint .gobrush writer.
    Built by CLONING a real export so record order, resource names, dimensions and the property
    block are exactly what the app writes. Only PNG payloads, uuid, name and brush parameters change. */
@@ -174,9 +174,10 @@
     return Math.max(1, Math.min(100, Math.round(Math.sqrt(tile / GOPAINT_TILE_K))));
   }
 
-  function setPropField(bytes, propName, value, fieldTag) {
-    // Native editor exports store the current value in 0x18. 0x15 is
-    // attribute metadata; changing it leaves the imported slider unchanged.
+  /* 在属性块记录流里按 0x11 名字改 0x18 当前值。
+     0x15 是属性元数据（上下限），改它界面上的滑块不动——第128轮结论。
+     返回 {bytes, hit}；hit=false 表示模板里没有这条属性（写侧只能追加，见 applyPropPlan）。 */
+  function writePropValue(bytes, propName, value, fieldTag) {
     const FT = fieldTag === undefined ? 0x18 : fieldTag;
     let p = 0;
     while (p + 6 <= bytes.length) {
@@ -189,8 +190,7 @@
         const tt = bytes[q];
         const ll = bytes[q + 2] | (bytes[q + 3] << 8) | (bytes[q + 4] << 16) | (bytes[q + 5] << 24);
         if (tt === 0x11) {
-          nm = '';
-          for (let k = 0; k < ll; k++) nm += String.fromCharCode(bytes[q + 6 + k]);
+          try { nm = util.utf8Decode(bytes.subarray(q + 6, q + 6 + ll)); } catch (e) { nm = ''; }
         } else if (tt === FT && ll === 4) {
           vp = q + 6;
         }
@@ -201,11 +201,177 @@
         bytes[vp + 1] = (value >>> 8) & 0xff;
         bytes[vp + 2] = (value >>> 16) & 0xff;
         bytes[vp + 3] = (value >>> 24) & 0xff;
-        return bytes;
+        return { bytes: bytes, hit: true };
       }
       p = re;
     }
-    return bytes;
+    return { bytes: bytes, hit: false };
+  }
+  function setPropField(bytes, propName, value, fieldTag) {
+    return writePropValue(bytes, propName, value, fieldTag).bytes;
+  }
+
+  /* ---------- 属性回写闭环（第282轮 GoPaint 修复） ----------
+     写侧的属性块整块是真实导出「调色刀」的 base64 模板：119 条属性 + 23 个参数 tag，
+     原本只有 11 个属性 + 7 个 tag 会被改写，其余一律写模板常量。后果是原生样本只要动了
+     任何一样东西（**连改名也算**）就整块重建，22~34/119 个属性被换成调色刀的值，手信还
+     整组掉 11 个 hover*（模板里没有这一组）。
+     这里按 BRU 第232轮定下的纪律补一路「只透传未知、不覆盖已知」：
+       · PROP_DEPS 里列出的属性是写侧有专门映射的 → 用户动了才按映射写，没动就照抄源值；
+       · 其余属性写侧没有意见 → 一律照抄源值（源里没有这条才留模板默认）；
+       · 源里有、模板里没有的（手信 hover* 11 项）→ 连源记录的元数据追加到属性块末尾。
+     「动没动」用 gobrush.js 解析时留下的 gopaintPropBase 快照逐字段比，不用全量快照覆盖
+     已知字段（第227轮那种做法一次红了 21 项）。 */
+  const TAPER_DEPS = ['taperOn', 'taperSize', 'taperOpacity', 'taperStartLength', 'taperEndLength'];
+  const PROP_DEPS = {
+    strokeSpacing: ['spacingPct'],
+    propertiesMaxSize: ['sizePx', 'minSizeRatio', 'gopaintMaxSizePct'],
+    propertiesMinSize: ['sizePx', 'minSizeRatio', 'gopaintMaxSizePct'],
+    propertiesMaxAlpha: ['opacity'],
+    propertiesMinAlpha: ['opacity', 'minOpacityRatio'],
+    renderingFlow: ['flowPct'],
+    grainDepth: ['hasTexture', 'textureDepth'],
+    grainScale: ['gopaintGrainScale'],
+    shapeScatter: ['scatterOn', 'scatterPct'],
+    strokeJitter: ['jitterPct'],
+    strokeFallOff: ['falloffPct'],
+    /* ── 第2步：三段「恒写常量」改成有源就用源值 ─────────────────────────── */
+    pencilPressureSize: ['pressureSize'],
+    pencilPressureAlpha: ['pressureOpacity'],
+    pencilPressureFlow: ['pressureOpacity'],
+    taperPressureHead: TAPER_DEPS,
+    taperPressureTail: TAPER_DEPS,
+    taperPressureSize: TAPER_DEPS,
+    taperPressureAlpha: TAPER_DEPS,
+    taperPressurePressure: TAPER_DEPS,
+    shapeRotation: ['angle'],
+    shapeFixRollAngle: ['angle'],
+    /* ── 第3步：混色 / 湿边（量纲待真机标定，见 SMUDGE_ANCHOR 注释） ─────── */
+    propertiesSmudge: ['smudgeOn', 'smudgeAmount'],
+    wetMixDilution: ['wetEdgesOn', 'wetEdgesAmount'],
+    renderingWetEdges: ['wetEdgesOn', 'wetEdgesAmount'],
+    renderingBurntEdges: ['burntEdgesAmount']
+  };
+  /* 混色「关」的锚点：原生 5 支独立样本（楷书×4 + 调色刀）都是 75，手信是 86。
+     没有真机标定前，只把「有混色的笔刷」按 0..1 强度从锚点推到 100，关掉时写回锚点——
+     宁可少改，也不把 199 支不混色的笔刷一起推到 0（方向未标定，见 report 第3步）。 */
+  const SMUDGE_ANCHOR = 75;
+  /* 压力曲线的当前值不在 0x18（是 0x20 的 JSON），单独走 setPressureCurve，不进属性计划。 */
+  function isCurveProp(name) { return name === 'apply_preference_settings_pressure' || /_PressureCurve$/.test(name); }
+
+  function nativePropSource(brush) {
+    return (brush && brush.source === 'gopaint' && brush.gopaintProps && brush.gopaintPropBase) ? brush : null;
+  }
+  function samePropValue(a, b) {
+    if (a === b) return true;
+    if (a === undefined || b === undefined || a === null || b === null) return false;
+    if (typeof a === 'number' && typeof b === 'number') return a === b || (isNaN(a) && isNaN(b));
+    try { return JSON.stringify(a) === JSON.stringify(b); } catch (e) { return false; }
+  }
+
+  /* 生成「属性 → 当前值」计划。values 是写侧显式映射算出来的值（可能缺项），
+     flags 是「调用方从外部指定过这一项」（opts 里的覆盖参数），用来强制按映射写。 */
+  function buildPropPlan(brush, values, flags) {
+    const src = nativePropSource(brush);
+    const raw = src ? src.gopaintProps : null;
+    const base = src ? src.gopaintPropBase : null;
+    const plan = {};
+    for (const name of Object.keys(values)) {
+      const deps = PROP_DEPS[name] || [];
+      let touched = !base;
+      if (base) {
+        for (const k of deps) if (!samePropValue(base[k], brush[k])) { touched = true; break; }
+        if (!touched && flags && flags[name]) touched = true;
+      }
+      if (touched && values[name] !== undefined) plan[name] = values[name];
+      else if (raw && Object.prototype.hasOwnProperty.call(raw, name)) plan[name] = raw[name];
+      else if (values[name] !== undefined) plan[name] = values[name];
+    }
+    if (raw) {
+      for (const name of Object.keys(raw)) {
+        if (name in plan || isCurveProp(name)) continue;
+        if (Object.prototype.hasOwnProperty.call(values, name)) continue;
+        plan[name] = raw[name];
+      }
+    }
+    return plan;
+  }
+
+  function subRecords(inner) {
+    const out = [];
+    let q = 0;
+    while (q + 6 <= inner.length) {
+      const tag = inner[q], flag = inner[q + 1];
+      const len = inner[q + 2] | (inner[q + 3] << 8) | (inner[q + 4] << 16) | (inner[q + 5] << 24);
+      if (q + 6 + len > inner.length) return null;
+      out.push({ tag: tag, flag: flag, payload: inner.subarray(q + 6, q + 6 + len) });
+      q += 6 + len;
+    }
+    return out;
+  }
+  /* 在源属性块里按名字找一条属性的子记录表（0x11..0x21） */
+  function findPropSubRecords(block, name) {
+    let p = 0;
+    while (p + 6 <= block.length) {
+      const tag = block[p];
+      const len = block[p + 2] | (block[p + 3] << 8) | (block[p + 4] << 16) | (block[p + 5] << 24);
+      const end = p + 6 + len;
+      if (tag !== 0x10 || block[p + 1] !== 0xc0 || end > block.length) return null;
+      const subs = subRecords(block.subarray(p + 6, end));
+      if (!subs) return null;
+      let nm = '';
+      for (const s of subs) if (s.tag === 0x11) { try { nm = util.utf8Decode(s.payload); } catch (e) { nm = ''; } }
+      if (nm === name) return subs;
+      p = end;
+    }
+    return null;
+  }
+  /* 用源记录（含 0x12 中文名 / 0x13 控件类型 / 0x14 组 / 0x15 上下限）拼一条新记录，只换 0x18 */
+  function propRecordWithValue(subs, value) {
+    const out = [];
+    let placed = false;
+    for (const s of subs) {
+      if (s.tag === 0x18 && s.payload.length === 4) { out.push(rec(s.tag, s.flag, s32(value))); placed = true; continue; }
+      if (!placed && s.tag === 0x21) { out.push(rec(0x18, 0xc0, s32(value))); placed = true; }
+      out.push(rec(s.tag, s.flag, s.payload));
+    }
+    if (!placed) out.push(rec(0x18, 0xc0, s32(value)));
+    return concat(out.map(recordBytes));
+  }
+
+  function applyPropPlan(propBytes, plan, rawBlock) {
+    if (!plan) return propBytes;
+    let out = propBytes;
+    const miss = [];
+    for (const name of Object.keys(plan)) {
+      const v = plan[name];
+      if (v === undefined || v === null) continue;
+      const res = writePropValue(out, name, v);
+      out = res.bytes;
+      if (!res.hit) miss.push(name);
+    }
+    if (!miss.length || !rawBlock) return out;
+    const extra = [];
+    for (const name of miss) {
+      const subs = findPropSubRecords(rawBlock, name);
+      if (!subs) continue;
+      extra.push(recordBytes(rec(0x10, 0xc0, propRecordWithValue(subs, plan[name]))));
+    }
+    return extra.length ? concat([out].concat(extra)) : out;
+  }
+
+  /* 参数块 tag 回写：写侧只有 uuid(1) / 名字(2) / 尺寸(5,6,7) / 不透明度(8) 有映射。
+     原来尺寸一律写 t5 的滑块位置，会把原生「t5=12 / t6=t7=34」写成 12/12/12（第18项审计）。
+     现在尺寸没动就照抄源 tag，动了才三个一起按映射写；其余 tag（3/32/33/35…）原样照抄。 */
+  function paramPayload(p, uuid, name, size, opacity, EXTRA) {
+    const rawTag = EXTRA && EXTRA.paramRaw ? EXTRA.paramRaw[p.tag] : undefined;
+    const keepRaw = rawTag && rawTag.length !== undefined && rawTag.length > 0;
+    if (p.tag === 1) return util.utf8Encode(uuid);
+    if (p.tag === 2) return util.utf8Encode(name);
+    if (p.tag === 5 || p.tag === 6 || p.tag === 7) return (keepRaw && !EXTRA.sizeTouched) ? rawTag : s32(size);
+    if (p.tag === 8) return (keepRaw && !EXTRA.opacityTouched) ? rawTag : s32(opacity);
+    if (p.tag === 9) return keepRaw ? rawTag : s32(100);
+    return keepRaw ? rawTag : b64ToBytes(p.payload);
   }
 
   let EXTRA = null;
@@ -279,47 +445,20 @@
     }
     const params = [];
     for (const p of T.paramTemplate) {
-      let payload = b64ToBytes(p.payload);
-      if (p.tag === 1) payload = util.utf8Encode(uuid);
-      else if (p.tag === 2) payload = util.utf8Encode(name);
-      else if (p.tag === 5) payload = s32(size);
-      else if (p.tag === 6 || p.tag === 7) payload = s32(size);
-      else if (p.tag === 8) payload = s32(opacity);
-      else if (p.tag === 9) payload = s32(100);
-      params.push(recordBytes(rec(p.tag, 0xb0, payload)));
+      params.push(recordBytes(rec(p.tag, 0xb0, paramPayload(p, uuid, name, size, opacity, EXTRA))));
     }
     const paramBlock = recordBytes(rec(0, 0xb0, concat(params)));
     let propBytes = patchUuid(b64ToBytes(T.propPayload), T.templateUuid, uuid);
-    if (EXTRA && EXTRA.pressureCurve) {
+    if (EXTRA && EXTRA.pressureCurve && !EXTRA.skipPressureCurve) {
       propBytes = setPressureCurve(propBytes, EXTRA.pressureCurve, false);
       // A global response curve is not a hue/grain/etc. parameter curve.
       // Keep each template default unless that parameter has an explicit curve.
       if (EXTRA.pressureCurves) propBytes = setPressureCurve(propBytes, EXTRA.pressureCurve, true, EXTRA.pressureCurves);
     }
-    setPropField(propBytes, 'strokeSpacing', spacing);
-    const maxSizePct = EXTRA.maxSizePct;
-    setPropField(propBytes, 'propertiesMaxSize', maxSizePct);
-    // 按原笔刷输出：最小不透明度/流量/纹理深度都用源笔刷的真实值
-    const minAlphaRatio = (EXTRA && EXTRA.minOpacityRatio !== undefined) ? Math.max(0, Math.min(1, EXTRA.minOpacityRatio)) : 1;
-    const flow = (EXTRA && EXTRA.flowPct !== undefined) ? Math.round(EXTRA.flowPct * 100) : 100;
-    setPropField(propBytes, 'propertiesMinSize', EXTRA.minSizePct);
-    setPropField(propBytes, 'propertiesMaxAlpha', opacity);
-    setPropField(propBytes, 'propertiesMinAlpha', Math.max(0, Math.round(opacity * minAlphaRatio)));
-    setPropField(propBytes, 'renderingFlow', Math.max(0, Math.min(100, flow)));
-    const depth = EXTRA && EXTRA.hasTexture
-      ? Math.round((EXTRA.textureDepth === undefined ? 0.5 : EXTRA.textureDepth) * 100) : 0;
-    setPropField(propBytes, 'grainDepth', Math.max(0, Math.min(100, depth)));
-    // 第206轮 R204-01：grainScale 不再固定继承模板 25（undefined = 没有可换算的纹理，保持模板值）
-    if (EXTRA && EXTRA.grainScale !== undefined) setPropField(propBytes, 'grainScale', EXTRA.grainScale);
-    const scatter = (EXTRA && EXTRA.scatter !== undefined && EXTRA.scatter !== null)
-      ? Math.max(0, Math.min(100, Math.round(EXTRA.scatter)))
-      : 0;
-    setPropField(propBytes, 'shapeScatter', scatter);
-    setPropField(propBytes, 'strokeJitter', Math.max(0, Math.min(200, Math.round(EXTRA.jitterPct || 0))));
-    setPropField(propBytes, 'strokeFallOff', Math.max(0, Math.min(100, Math.round(EXTRA.falloffPct || 0))));
-    if (EXTRA && EXTRA.prop18) {
-      for (const k of Object.keys(EXTRA.prop18)) setPropField(propBytes, k, EXTRA.prop18[k]);
-    }
+    // 属性：显式映射过的按映射写，其余照抄源值（源属性块里有、模板里没有的追加到末尾）。
+    // prop18 是调用方的显式逃生口，优先级最高，和计划一起走同一遍（顺带获得「追加新属性」能力）。
+    const plan = EXTRA.propPlan ? Object.assign({}, EXTRA.propPlan, EXTRA.prop18 || {}) : (EXTRA.prop18 || null);
+    propBytes = applyPropPlan(propBytes, plan, EXTRA.propRawBlock);
     const propBlock = recordBytes(rec(0, 0xc0, propBytes));
     const tail = concat([recordBytes(rec(0, 0xd0, concat(res))), paramBlock, propBlock, new Uint8Array([0xff, 0xff])]);
     const head = [];
@@ -331,6 +470,9 @@
   function makeGobrush(brush, opts) {
     opts = opts || {};
     EXTRA = Object.assign({}, opts);
+    // 调用方显式传进来的覆盖项（下面会往 EXTRA 里补源值，所以先留一份原样快照）：
+    // 这些键一旦出现，就说明「这一项是用户改的」，不能再照抄源属性。
+    const USER = Object.assign({}, opts);
     if (EXTRA.maxSizePct === undefined && brush.source === 'gopaint') EXTRA.maxSizePct = brush.gopaintMaxSizePct;
     if (EXTRA.scatter === undefined) EXTRA.scatter = brush.scatterOn === false ? 0 : (brush.scatterPct === undefined ? 0 : brush.scatterPct);
     // 抖动：原生来源沿用自身值；其它来源把「散播」按同一百分比映射过来（GoPaint 的抖动也是位置抖动，量纲未标定，先按 1:1）
@@ -405,6 +547,105 @@
     const shapeBytes = png.encode(tip.w, tip.h, tip.rgba), grainBytes = grainPng(grain);
     const snapshot = renderSnapshot(tip, false, brush);
     const snapshotLight = renderSnapshot(tip, true, brush);
+
+    /* ── 属性回写计划（第282轮）─────────────────────────────────────────────
+       只有下面这张表里的属性是写侧「有专门映射」的：它们按映射算出一个值候选，
+       但**只有当用户真的动了对应字段（或调用方显式传了覆盖项）时才写这个候选**，
+       否则照抄源属性块里的值。表外的 100 多条属性一律照抄源值。
+       这张表同时也是「哪些属性不许被源值覆盖」的白名单——两个方向都钉死。 */
+    const minAlphaRatio = (EXTRA.minOpacityRatio !== undefined) ? Math.max(0, Math.min(1, EXTRA.minOpacityRatio)) : 1;
+    const flow = (EXTRA.flowPct !== undefined) ? Math.round(EXTRA.flowPct * 100) : 100;
+    const depth = EXTRA.hasTexture
+      ? Math.round((EXTRA.textureDepth === undefined ? 0.5 : EXTRA.textureDepth) * 100) : 0;
+    const scatter = (EXTRA.scatter !== undefined && EXTRA.scatter !== null)
+      ? Math.max(0, Math.min(100, Math.round(EXTRA.scatter))) : 0;
+    const clamp01 = function (v, def) {
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : def;
+    };
+    const pctOf = function (v, def) { return Math.round(clamp01(v, def) * 100); };
+    /* 朝向：角度已经由 withTipRGBA(..., {transform:true}) → bakeTipTransform 烘进 shape PNG 了，
+       所以这里不能再写 shapeRotationAngle / shapeCompression（会二次旋转 / 二次压缩）。
+       能做且必须做的是把「跟随笔迹方向」关掉：原生 5 支独立样本里，4 支楷书（固定 55.9°，
+       shapeRotationAngle=976037，shapeFixRollAngle=1）的 shapeRotation 全是 0，而 angle=0 的
+       调色刀/手信是 100 —— 这条相关性是原生数据本身给出来的，不是猜的。 */
+    const angleNorm = brush.angle === undefined ? undefined : (((Number(brush.angle) || 0) % 360) + 360) % 360;
+    const taperAny = [brush.taperOn, brush.taperSize, brush.taperOpacity, brush.taperStartLength, brush.taperEndLength]
+      .some(function (v) { return v !== undefined; });
+    const taperOn = !!brush.taperOn;
+    const taperHead = brush.taperStartLength !== undefined ? brush.taperStartLength : brush.taperSize;
+    const taperTail = brush.taperEndLength !== undefined ? brush.taperEndLength : brush.taperSize;
+    const smudgeKnown = brush.smudgeOn !== undefined;
+    const explicitProps = {
+      strokeSpacing: spacing,
+      propertiesMaxSize: EXTRA.maxSizePct,
+      propertiesMinSize: EXTRA.minSizePct,
+      propertiesMaxAlpha: opacity,
+      propertiesMinAlpha: Math.max(0, Math.round(opacity * minAlphaRatio)),
+      renderingFlow: Math.max(0, Math.min(100, flow)),
+      grainDepth: Math.max(0, Math.min(100, depth)),
+      grainScale: EXTRA.grainScale,
+      shapeScatter: scatter,
+      strokeJitter: Math.max(0, Math.min(200, Math.round(EXTRA.jitterPct || 0))),
+      strokeFallOff: Math.max(0, Math.min(100, Math.round(EXTRA.falloffPct || 0))),
+      /* 第2步：压感组。源没有这个概念（undefined）就不写，留源值/模板值。 */
+      pencilPressureSize: brush.pressureSize === undefined ? undefined : (brush.pressureSize ? 100 : 0),
+      pencilPressureAlpha: brush.pressureOpacity === undefined ? undefined : (brush.pressureOpacity ? 100 : 0),
+      // 压感不透明度同时决定「压感→流量」：原生楷书是纯尺寸压感（alpha=0 ⇒ flow=0），
+      // 调色刀是尺寸+流量（alpha=0 但 flow=100）——两者不能同时靠 alpha 推，见 report 第2步卡点。
+      pencilPressureFlow: brush.pressureOpacity === undefined ? undefined : (brush.pressureOpacity ? 100 : 0),
+      /* 第2步：锥度六件套。taperPressureTip 没有可反推的语义（原生 7 / 51 / 100 三种），不接。 */
+      taperPressureHead: taperAny ? (taperOn ? pctOf(taperHead, 1) : 0) : undefined,
+      taperPressureTail: taperAny ? (taperOn ? pctOf(taperTail, 1) : 0) : undefined,
+      taperPressureSize: taperAny ? (taperOn ? pctOf(brush.taperSize, 1) : 0) : undefined,
+      taperPressureAlpha: taperAny ? (taperOn ? pctOf(brush.taperOpacity, 1) : 0) : undefined,
+      taperPressurePressure: taperAny ? (taperOn ? 100 : 0) : undefined,
+      /* 第2步：朝向组（角度已烘图，只关「跟随方向」） */
+      shapeRotation: angleNorm === undefined ? undefined : (angleNorm === 0 ? 100 : 0),
+      shapeFixRollAngle: angleNorm === undefined ? undefined : (angleNorm === 0 ? 0 : 1),
+      /* 第3步：混色 / 湿边。锚点见 SMUDGE_ANCHOR；湿边只在「确实有湿边」时写，
+         关着的时候不写（100 到底是「关」还是「最强」没有真机标定，别把 199 支笔刷推歪）。 */
+      propertiesSmudge: smudgeKnown
+        ? (brush.smudgeOn ? Math.round(SMUDGE_ANCHOR + (100 - SMUDGE_ANCHOR) * clamp01(brush.smudgeAmount, 0.5)) : SMUDGE_ANCHOR)
+        : undefined,
+      wetMixDilution: brush.wetEdgesOn && brush.wetEdgesAmount !== undefined ? pctOf(brush.wetEdgesAmount, 0.4) : undefined,
+      renderingWetEdges: brush.wetEdgesOn && brush.wetEdgesAmount !== undefined ? pctOf(brush.wetEdgesAmount, 0.4) : undefined,
+      renderingBurntEdges: Number(brush.burntEdgesAmount) > 0 ? pctOf(brush.burntEdgesAmount, 0) : undefined
+    };
+    const sizeFlag = (USER.sizeScale !== undefined && Number(USER.sizeScale) !== 1) ||
+      USER.maxSizePct !== undefined || USER.minSizeRatio !== undefined ||
+      (USER.canvasDpi !== undefined && Number(USER.canvasDpi) !== 300);
+    const propFlags = {
+      strokeSpacing: USER.spacingOverride > 0,
+      propertiesMaxSize: sizeFlag,
+      propertiesMinSize: sizeFlag,
+      propertiesMaxAlpha: USER.opacity !== undefined,
+      propertiesMinAlpha: USER.opacity !== undefined,
+      renderingFlow: USER.flowPct !== undefined,
+      grainDepth: USER.textureDepth !== undefined || USER.grainMode !== undefined,
+      grainScale: USER.grainScale !== undefined,
+      shapeScatter: USER.scatter !== undefined,
+      strokeJitter: USER.jitterPct !== undefined,
+      strokeFallOff: USER.falloffPct !== undefined
+    };
+    EXTRA.propPlan = buildPropPlan(brush, explicitProps, propFlags);
+    EXTRA.propRawBlock = (brush && brush.gopaintPropBlock) || null;
+    EXTRA.paramRaw = (brush && brush.gopaintParams) || null;
+    /* 尺寸/不透明度这两组 tag 也一样：源没动就照抄源 tag（原生 t5=12 / t6=t7=34 三者可不等），
+       动了才三个一起按映射写。 */
+    (function () {
+      const base = nativePropSource(brush) ? brush.gopaintPropBase : null;
+      EXTRA.sizeTouched = !base || sizeFlag ||
+        !samePropValue(base.sizePx, brush.sizePx) ||
+        !samePropValue(base.minSizeRatio, brush.minSizeRatio) ||
+        !samePropValue(base.gopaintMaxSizePct, brush.gopaintMaxSizePct);
+      EXTRA.opacityTouched = !base || USER.opacity !== undefined || !samePropValue(base.opacity, brush.opacity);
+    })();
+    /* 原生样本本来没有压力曲线（模板「调色刀」也没有）时不要凭空塞一条默认直线，
+       否则「源没有 → 输出有」也是一处失真。其它来源维持原状（写默认直线）。 */
+    EXTRA.skipPressureCurve = !!(nativePropSource(brush) && USER.pressureCurve === undefined &&
+      USER.pressureCurves === undefined && !brush.gopaintPressureCurve);
+
     const info = buildInfo(uuid, name, size, spacing, opacity, tip, grain, shapeBytes, grainBytes);
     const files = [
       { name: 'info.json', data: util.utf8Encode(T.infoJson) },

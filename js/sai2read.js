@@ -134,8 +134,47 @@
     return out;
   }
 
+  /* 逐键保存原文。写侧「回声」需要源文本本身：`+180`、`96:50`、`0`、`01` 这些
+     一旦被数值化再格式化就回不去了（第248轮 ini→ini 审计里 +180 变 -180、
+     96:50 变 96:100 都是这个原因）。 */
+  function parseIniRawText(text) {
+    const out = {};
+    for (const line of String(text).replace(/^\uFEFF/, '').split(/\r?\n/)) {
+      const t = line.trim();
+      if (!t || t.charAt(0) === ';' || t.charAt(0) === '[') continue;
+      const eq = t.indexOf('=');
+      if (eq < 0) continue;
+      out[t.slice(0, eq).trim()] = t.slice(eq + 1).trim();
+    }
+    return out;
+  }
+
+  /* 解析那一刻的参数快照。写侧靠它区分「用户改了这个参数」和「源里本来就是这样」：
+     只有快照里对不上的键，才允许被写侧算出来的值覆盖；其余一律回写源文本。
+     与 BRU 的 _rawMeta patch 表同一思路（只补差，不整块重建）。 */
+  const SNAPSHOT_KEYS = [
+    'angle', 'angleJitterDeg', 'bruRotationMode', 'dynamicsControlAngle', 'tiltAngleDyn', 'source',
+    'sizePx', 'sizeJitterPct', 'spacingPct', 'sai2Scaling', 'roundness', 'roundnessJitterPct',
+    'scatterOn', 'scatterPct', 'scatterCount', 'countJitterPct', 'scatterBothAxes',
+    'colorDynamicsOn', 'colorJitterFgBg', 'jitterSecondary', 'jitterStrokeSecondary',
+    'colorJitterHue', 'colorJitterSat', 'colorJitterVal', 'colorPerTip',
+    'dynamicsJitterStrokeHue', 'dynamicsJitterStrokeSaturation', 'dynamicsJitterStrokeLightness',
+    'opacity', 'hardness', 'flowPct', 'minSizeRatio', 'minOpacityRatio',
+    'pressureSize', 'pressureOpacity', 'pressureSmudge', 'keepOpacity',
+    'smudgeAmount', 'wetEdgesAmount', 'colorStretch', 'smoothingStrength',
+    'textureDepth', 'textureScale', 'textureInverted', 'name', 'sai2ShapeName', 'sai2TextureName'
+  ];
+
+  function snapshotAttrs(brush) {
+    const snap = {};
+    for (const k of SNAPSHOT_KEYS) snap[k] = brush[k];
+    return snap;
+  }
+
   function parseBrushIni(bytes, fileName) {
-    const p = parseIniParams(decodeText(bytes));
+    const text = decodeText(bytes);
+    const p = parseIniParams(text);
+    const iniText = parseIniRawText(text);
     const density = p.Opacity === undefined ? (p.Density === undefined ? 100 : p.Density) : p.Opacity;
     /* Density 只按它自己取 flow；没有 Density 时不再把 Opacity 复制成流量
        （官方 [Parameters] 里没有 Density/Opacity，二者都是本项目内部约定） */
@@ -156,9 +195,8 @@
     /* 官方注释：Scaling 0～200，缺省 100；0 是合法值，不能用 || 100 兜底 */
     const scalingVal = p.Scaling === undefined || String(p.Scaling).trim() === '' || !isFinite(Number(p.Scaling))
       ? undefined : Math.max(0, Math.min(200, Number(p.Scaling)));
-    return {
-      brushes: [{
-        name: base,
+    const brush = {
+      name: base,
         tip: null,
         sizePx: p.ShapeSize === undefined ? 100 : Math.max(1, Math.min(5000, p.ShapeSize)),
         spacingPct: p.Spacing === undefined ? 25 : Math.max(0, Math.min(1000, p.Spacing)),
@@ -193,8 +231,16 @@
         sai2Scaling: scalingVal,
         source: 'sai2',
         _sai2SourceOpacity: Math.max(0, Math.min(1, density / 100)),
-        _sai2ini: p
-      }],
+        _sai2ini: p,
+        _sai2iniText: iniText
+    };
+    /* 与素材包路径（finish）对齐：裸 INI 也要记下「源尺寸 / 源圆度」，
+       否则写侧的 nativeRatio、AbsoluteSize 两个守卫在 ini 路径上永远不生效。 */
+    brush._sai2SourceSize = brush.sizePx;
+    brush._sai2SourceRoundness = brush.roundness;
+    brush._sai2SourceAttrs = snapshotAttrs(brush);
+    return {
+      brushes: [brush],
       warnings: ['SAI2 笔刷 ini 只含笔形参数，笔尖图需从素材包（blotmap/brshape/brushtex）里配套使用']
     };
   }
@@ -221,27 +267,34 @@
     const hasSections = /^\s*\[[^\]\r\n]+\]/m.test(text);
     const lines = text.split(String.fromCharCode(10));
     const records = [];
+    const recordTexts = [];
     let cur = {};
+    let curText = {};
     let started = false;
     const flush = function () {
-      if (started && Object.keys(cur).length) records.push(cur);
+      if (started && Object.keys(cur).length) { records.push(cur); recordTexts.push(curText); }
       cur = {};
+      curText = {};
       started = false;
     };
     for (const raw of lines) {
       const t = raw.trim();
       if (!t) { if (!hasSections) flush(); continue; }
       if (t.charAt(0) === ';' || t.charAt(0) === '#') continue;
-      if (t.charAt(0) === '[') { flush(); started = true; cur.__section = t.slice(1, -1); continue; }
+      if (t.charAt(0) === '[') { flush(); started = true; cur.__section = t.slice(1, -1); curText.__section = t.slice(1, -1); continue; }
       const eq = t.indexOf('=');
       if (eq < 0) continue;
       started = true;
-      cur[t.slice(0, eq).trim()] = t.slice(eq + 1).trim();
+      const key = t.slice(0, eq).trim();
+      const value = t.slice(eq + 1).trim();
+      cur[key] = value;
+      curText[key] = value;
     }
     flush();
     const brushes = [];
     let idx = 0;
-    for (const r of records) {
+    for (let ri = 0; ri < records.length; ri++) {
+      const r = records[ri];
       if (r.name === undefined && r.brsize === undefined) continue;
       idx++;
       const size = Math.max(1, Math.min(5000, Number(r.brsize) || Number(r.brsizesc) || 30));
@@ -256,7 +309,7 @@
         ? Math.max(0, Math.min(1, Number(r.txval) / 100)) : undefined;
       const stretch = r.stretch !== undefined && String(r.stretch).trim() !== '' && isFinite(Number(r.stretch))
         ? Math.max(0, Math.min(1, Number(r.stretch) / 100)) : undefined;
-      brushes.push({
+      const brush = {
         name: r.name || ('SAI2 ' + idx),
         tip: null,
         sizePx: Math.round(size),
@@ -282,9 +335,16 @@
         textureScale: texscl,
         textureInverted: texinvf,
         textureDepth: txval,
+        /* 形状/纹理文件名：过去只留在 _sai2tool 里，写侧看不到 → 单独一支 toolnrm
+           往返一次 brfnam/texnam 就变空。素材包路径会被 makeSai2Files 用新主干名覆盖。 */
+        sai2ShapeName: r.brfnam !== undefined ? r.brfnam : undefined,
+        sai2TextureName: r.texnam !== undefined ? r.texnam : undefined,
         source: 'sai2',
-        _sai2tool: r
-      });
+        _sai2tool: r,
+        _sai2ToolText: recordTexts[ri] || null
+      };
+      brush._sai2ToolAttrs = snapshotAttrs(brush);
+      brushes.push(brush);
     }
     return { brushes: brushes, warnings: brushes.length ? [] : ['toolnrm 里没有读到笔刷条目'] };
   }
@@ -362,6 +422,10 @@
         for (const field of Object.keys(fields)) if (fields[field].some(k=>record[k]!==undefined && String(record[k]).trim()!=='')) brush[field]=meta[field];
         if (!iniEntry && record.bfval !== undefined && String(record.bfval).trim() !== '') brush.flowPct = meta.flowPct;
         brush._sai2tool = record;
+        /* 工具记录的回声基线跟着 meta 一起接管：写侧只有看到「解析时的快照」才知道
+           哪些 toolnrm 键是源里原样、哪些是本工具改过的。 */
+        brush._sai2ToolText = meta._sai2ToolText;
+        brush._sai2ToolAttrs = meta._sai2ToolAttrs;
         attachTexture(brush, record, prefix);
       }
       brush._sai2SourceSize = brush.sizePx;

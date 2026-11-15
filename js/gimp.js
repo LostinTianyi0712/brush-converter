@@ -51,6 +51,11 @@
     return !!h;
   }
 
+  /* 【第out轮】bpp=4 的 GIMP 笔刷是「彩色笔刷」（RGBA，落笔自带颜色），
+     旧实现一律只取 alpha 通道压成灰度蒙版，等于把彩色笔刷静默降级成单色笔尖。
+     GIMP 2.10 `gimpbrush-load.c` 对 bpp==4 走 gimp_brush_load_RGBA：四个通道全部保留。
+     这里把原始 RGBA 原样交给上层（tip.rgba），灰度蒙版仍可用（tipToRGBA 会取 alpha），
+     写回时由 writeGbr/writeGih 依据 pixelsOf 还原 bpp，不再假造 bpp=1。 */
   function toTip(bytes, h, warnings) {
     const count = h.width * h.height;
     const need = count * h.bpp;
@@ -59,10 +64,12 @@
       return null;
     }
     const src = bytes.subarray(h.dataStart, h.dataStart + need);
+    if (h.bpp === 4) {
+      return { w: h.width, h: h.height, bpp: 4, rgba: new Uint8Array(src) };
+    }
     const gray = new Uint8Array(count);
     if (h.bpp === 1) gray.set(src);
     else if (h.bpp === 2) { for (let i = 0; i < count; i++) gray[i] = src[i * 2]; }
-    else if (h.bpp === 4) { for (let i = 0; i < count; i++) gray[i] = src[i * 4 + 3]; }
     return { w: h.width, h: h.height, bpp: 1, data: gray };
   }
 
@@ -114,12 +121,23 @@
     if (!count || count > 1000) throw new Error('GIMP .gih 笔刷数量异常');
     let pos = z + 1;
     const brushes = [];
+    let cellW = 0, cellH = 0;
     for (let i = 0; i < count; i++) {
       const h = readHeader(bytes, pos);
       if (!h) { warnings.push('第 ' + (i + 1) + ' 个 GIH 笔刷头损坏，已停止'); break; }
       const tip = toTip(bytes, h, warnings);
-      const name = h.name || (pipeName || (fileName || '').replace(/\.[^.]+$/, '')) + '-' + (i + 1);
-      brushes.push(brushOf(h, tip, name));
+      const fallback = (pipeName || (fileName || '').replace(/\.[^.]+$/, '')) + '-' + (i + 1);
+      const name = h.name || fallback;
+      const cell = brushOf(h, tip, name);
+      /* 写回时要还原 cell 头的版本：v1 头没有 magic/spacing，长度也不同 */
+      cell._cellVersion = h.version;
+      /* cell 名可能是空串（GIMP 导出的 pipe 常见）：空名 + NUL 就是 headerSize=29。
+         旧写端用「管道名-序号」补出一个名字，头立刻从 29 变成 29+长度，
+         整条 pipe 的字节全部偏移。这里记住原始名，只有用户真的改过名字才用新名。 */
+      cell._cellName = h.name;
+      cell._nameAuto = fallback;
+      if (i === 0) { cellW = h.width; cellH = h.height; }
+      brushes.push(cell);
       pos = h.dataStart + h.width * h.height * h.bpp;
     }
     if (!brushes.length) warnings.push('GIH 中没有可用笔刷');
@@ -127,7 +145,10 @@
        偏移副本，GIMP 里仍然是**一支**笔刷（每次落笔随机挑一个 cell）。
        上层据此区分「N 个 cell」与「N 支笔刷」——否则散布笔刷会被误当成多支。 */
     const scatterPipe = /sel0:random/i.test(line2) && count > 1;
-    const rawGroup = {bytes:bytes,count:brushes.length,name:pipeName};
+    /* 头部参数表随管道一起保存：写回时要按源 token 原样还原
+       （sel0/step/dim/cols/rows/placement/未知项），不再一律套常量模板。 */
+    const params = parsePipeParams(line2);
+    const rawGroup = { bytes: bytes, count: brushes.length, name: pipeName, line2: line2, params: params, cellW: cellW, cellH: cellH };
     brushes.forEach(function (b, index) {
       b._rawFile = bytes; b._rawKind = 'gih';
       b._rawGroup = rawGroup; b._rawGroupIndex = index;
@@ -143,29 +164,71 @@
     return out;
   }
 
-  function buildGbr(brush) {
-    let tip = brush.tip;
-    if (!tip || !tip.data) {
-      if (!tip || !tip.rgba) throw new Error('该笔刷没有笔尖图像，无法写入 GBR');
-      const n = tip.w * tip.h;
-      const gray = new Uint8Array(n);
-      for (let i = 0; i < n; i++) gray[i] = tip.rgba[i * 4 + 3];
-      tip = { w: tip.w, h: tip.h, data: gray };
+  /* 笔尖像素的「原样形态」：彩色笔刷走 RGBA(bpp4)，其余走 8-bit 灰度(bpp1)。
+     旧写端一律 be32(1)，把彩色笔刷写成灰度蒙版 —— 这是「写侧恒用常量」的典型：
+     读侧明明还有 rgba，写侧硬编码 bpp=1，往返一次颜色就没了。 */
+  function pixelsOf(brush) {
+    const tip = brush && brush.tip;
+    if (!tip) throw new Error('该笔刷没有笔尖图像');
+    if (tip.data && tip.w > 0 && tip.h > 0) return { w: tip.w, h: tip.h, bpp: 1, data: tip.data };
+    if (tip.rgba && tip.w > 0 && tip.h > 0) {
+      /* 【第252轮】灰度蒙版转成 RGBA 后 RGB 恒 255，不该写成 bpp4——那会把体积×4，
+         也会把「灰度笔刷」变成 GIMP 的「彩色笔刷」（落笔自带颜色）。只有真彩色才走 bpp4。 */
+      /* 只有**源本身就是彩色 GBR/GIH**（_rawGbrBpp===4）才保留 RGBA；其余一律按笔尖蒙版写灰度——
+         这是项目既有约定（GIMP 里落笔用前景色而不是笔刷自带颜色），不能按像素是否带色自动升级。 */
+      const keepColor = brush._rawGbrBpp === 4;
+      if (!keepColor) {
+        const n = tip.w * tip.h, gray = new Uint8Array(n);
+        for (let i = 0; i < n; i++) gray[i] = tip.rgba[i * 4 + 3];
+        return { w: tip.w, h: tip.h, bpp: 1, data: gray };
+      }
+      return { w: tip.w, h: tip.h, bpp: 4, data: tip.rgba };
     }
-    const w = tip.w, h = tip.h;
-    if (tip.data.length !== w * h) throw new Error('笔尖数据尺寸不符');
-    const name = cstr(Array.from(brush.name || 'brush').slice(0, 120).join(''));
-    const spacing = Math.max(1, Math.min(1000, Math.round(brush.spacingPct === undefined ? 10 : brush.spacingPct)));
-    const headerSize = BASE + name.length;
+    throw new Error('该笔刷没有笔尖图像');
+  }
+
+  /* RGBA 是否真的带了颜色。灰度蒙版转成 RGBA 后 RGB 恒为 255（见 maskRgbaFromTip/
+     pngTipPng），只有原生彩色笔刷才会出现非纯白 RGB。用这条判据决定写 bpp4 还是 bpp1，
+     避免把普通灰度笔刷的体积×4。 */
+  function rgbaHasColor(rgba) {
+    for (let i = 0; i < rgba.length; i += 4) {
+      if (rgba[i] !== 255 || rgba[i + 1] !== 255 || rgba[i + 2] !== 255) return true;
+    }
+    return false;
+  }
+
+  function buildGbrPixels(name, w, h, spacing, bpp, data, version) {
+    /* 空名是合法的（GIMP 导出的 pipe cell 常常只有 NUL）：不能把 '' 兜底成 'brush'，
+       否则 headerSize 从 29 变成 34，后面每个 cell 的偏移全部错位。 */
+    const nm = (name === undefined || name === null) ? 'brush' : String(name);
+    const nameBytes = cstr(Array.from(nm).slice(0, 120).join(''));
+    /* 旧版（version 1）GBR 头只有 header_size/version/w/h/bpp 五个 u32 + 名字，
+       没有 magic 和 spacing。GIMP 2.10 仍然直接读 v1，Krita 自带的若干 pipe
+       （moo-bubbler / vegetal_stylised / RGBA anim …）就是 v1 cell。
+       旧写端恒写 v2，往返一次头就从 20+N 变成 28+N，字节不再一致。 */
+    if (version === 1) {
+      const headerSize1 = 20 + nameBytes.length;
+      const head1 = util.concat([be32(headerSize1), be32(1), be32(w), be32(h), be32(bpp)]);
+      return util.concat([head1, nameBytes, data]);
+    }
+    const headerSize = BASE + nameBytes.length;
     const head = util.concat([
       be32(headerSize),
       be32(2), // version
       be32(w), be32(h),
-      be32(1), // 8-bit gray
+      be32(bpp),
       be32(MAGIC),
       be32(spacing)
     ]);
-    return util.concat([head, name, tip.data]);
+    return util.concat([head, nameBytes, data]);
+  }
+
+  function buildGbr(brush) {
+    const px = pixelsOf(brush);
+    const w = px.w, h = px.h, bpp = px.bpp, data = px.data;
+    if (data.length !== w * h * bpp) throw new Error('笔尖数据尺寸不符');
+    const spacing = Math.max(1, Math.min(1000, Math.round(brush.spacingPct === undefined ? 10 : brush.spacingPct)));
+    return buildGbrPixels(brush.name || 'brush', w, h, spacing, bpp, data);
   }
 
   function writeGbr(brush) { return buildGbr(brush); }
@@ -181,60 +244,142 @@
     return { w: tip.w, h: tip.h, data: gray };
   }
 
-  function padGray(t, nw, nh) {
+  function padGray(t, nw, nh, bpp) {
+    const k = bpp || 1;
     if (t.w === nw && t.h === nh) return t.data;
-    const out = new Uint8Array(nw * nh);
+    const out = new Uint8Array(nw * nh * k);
     const left = Math.floor((nw - t.w) / 2), top = Math.floor((nh - t.h) / 2);
     for (let y = 0; y < t.h; y++) {
-      out.set(t.data.subarray(y * t.w, (y + 1) * t.w), (top + y) * nw + left);
+      out.set(t.data.subarray(y * t.w * k, (y + 1) * t.w * k), ((top + y) * nw + left) * k);
     }
     return out;
   }
 
   function buildGbrGray(name, w, h, spacing, gray) {
-    const nameBytes = cstr(Array.from(name || 'brush').slice(0, 120).join(''));
-    const headerSize = BASE + nameBytes.length;
-    const head = util.concat([
-      be32(headerSize),
-      be32(2),
-      be32(w), be32(h),
-      be32(1),
-      be32(MAGIC),
-      be32(spacing)
-    ]);
-    return util.concat([head, nameBytes, gray]);
+    return buildGbrPixels(name, w, h, spacing, 1, gray);
   }
 
-  /* GIMP image pipe (.gih): two text header lines, then one GBR per cell.
-     Header line 2 is the documented attribute list, e.g.
-       "2 ncells:2 cellwidth:532 cellheight:400 step:100 dim:1 cols:1 rows:1 placement:constant rank0:2 sel0:incremental"
+  /* ---- pipe 头部（line 2）参数表 ----
+     真实 GIMP 导出的 line 2 形如：
+       "5 ncells:5 cellwidth:200 cellheight:195 step:0 dim:1 cols:1 rows:1 placement:constant rank0:5 sel0:random"
+     旧写端把这一整行**重算**成常量模板：sel0 一律 incremental、step 换成 cell 的 spacing、
+     dim/cols/rows/placement 补成默认、未知 token 全丢。于是：
+       · sel0:random 的散布管道 → 写成 incremental（GIMP 里从「随机挑 cell」变成「依次轮换」）；
+       · step:0（管道踏步，0=不指定）→ 被写成 20，间距被静默改掉；
+       · 多维 pipe（cols/rows）被压平。
+     现在把源头部按 token 原样带到写侧，只改「确实变了」的那几项。 */
+  function parsePipeParams(line2) {
+    const tokens = [];
+    const map = Object.create(null);
+    for (const part of String(line2 || '').trim().split(/\s+/)) {
+      if (!part) continue;
+      const i = part.indexOf(':');
+      if (i < 0) { tokens.push({ key: null, value: part }); continue; }
+      const key = part.slice(0, i), value = part.slice(i + 1);
+      tokens.push({ key: key, value: value });
+      if (!(key in map)) map[key] = value;
+    }
+    return { tokens: tokens, map: map };
+  }
 
-     【第189轮】`sel0` 的取值受 GIMP 2.10 `app/core/gimpbrushpipe.c:gimp_brush_pipe_select_brush`
-     约束：只有 incremental / angular / velocity / random / pressure / xtilt / ytilt 有效，
-     其余字符串一律降级成 constant（constant 意味着永远是第 0 个 cell）。
-     参数名是 `sel%d`（`gimp_pixpipe_params_parse` 用 strncmp("sel") + atoi(下标)），
-     不是 2003 年那版文档里的 `selection:`。
-     opts.sel 留出 random 的入口：散布笔刷要把同一个笔尖的多个偏移副本当一个 pipe 的 cell，
-     靠 random 在落笔时随机挑一个——这是 GIMP 表达散布的唯一机制（它没有 ABR 那种 jitter 参数）。 */
+  function pipeHeaderLine(n, w, h, spacing, sel, src, sameLayout) {
+    /* 源头部只在「整组的每个 cell 都来自同一个 pipe 且数量未变」时才可比对；
+       writeGih 的调用方（convert.makeGih / makeGihFiles / scatterCells）会传不同粒度，
+       这里自己再校验一遍，避免把 4 个 cell 的头部套到 1 个 cell 的文件上。 */
+    const usable = src && src.tokens && src.tokens.length;
+    if (!usable) {
+      return n + ' ncells:' + n + ' cellwidth:' + w + ' cellheight:' + h +
+        ' step:' + spacing + ' dim:1 cols:1 rows:1 placement:constant rank0:' + n + ' sel0:' + sel;
+    }
+    const out = [];
+    for (const tok of src.tokens) {
+      if (!tok.key) { out.push(String(n)); continue; }       /* 首段裸数字 = cell 数 */
+      let v = tok.value;
+      switch (tok.key) {
+        case 'ncells': v = String(n); break;
+        /* cell 画布没变就不要重算：GIMP 的 cellwidth/cellheight 是声明值，
+           真实尺寸以每个 cell 自己的 GBR 头为准。原生文件里两者可以不一致
+           （A_herbs.gih 声明 168×514、实际 cell 128×256），重算等于改掉源声明。 */
+        case 'cellwidth': if (!sameLayout) v = String(w); break;
+        case 'cellheight': if (!sameLayout) v = String(h); break;
+        case 'step': v = String(spacing); break;
+        case 'sel0': v = String(sel); break;
+        default:
+          if (/^rank\d+$/.test(tok.key)) {
+            /* rank0 是第 0 维的 cell 数：1 维 pipe 时等于 cell 数。
+               多维 pipe（存在 rank1..）在 cell 数不变时原样保留，变了就压成 1 维。 */
+            if (!sameLayout) {
+              if (tok.key === 'rank0') v = String(n);
+              else continue;                                  /* 多维维度作废 */
+            }
+          } else if ((tok.key === 'cols' || tok.key === 'rows') && !sameLayout) {
+            v = '1';
+          }
+          break;
+      }
+      out.push(tok.key + ':' + v);
+    }
+    /* 源里没有的项一律不补：v1 风格的短头部（只有 ncells/dim/rank0/sel0）本身就是合法的，
+       补上 cellwidth/cellheight/step 会让头部与原文件不再一致。只兜底 ncells。 */
+    if (!src.map.ncells) out.unshift('ncells:' + n);
+    return out.join(' ');
+  }
+
   function writeGih(brushes, pipeName, opts) {
     if (!brushes || !brushes.length) throw new Error('没有可写入 GIH 的笔刷');
-    const tips = brushes.map(grayOf);
+    const px = brushes.map(pixelsOf);
     let w = 1, h = 1;
-    for (const t of tips) { w = Math.max(w, t.w); h = Math.max(h, t.h); }
+    for (const t of px) { w = Math.max(w, t.w); h = Math.max(h, t.h); }
     const n = brushes.length;
     const spacing = Math.max(1, Math.min(1000, Math.round(brushes[0].spacingPct === undefined ? 10 : brushes[0].spacingPct)));
-    const sel = (opts && typeof opts.sel === 'string') ? opts.sel : 'incremental';
+    /* 整组同源的 pipe 头部：每个 cell 都来自同一个 _rawGroup、下标对齐、数量不变才算「同源」 */
+    const g0 = brushes[0] && brushes[0]._rawGroup;
+    let srcParams = null;
+    if (g0 && g0.params && g0.count === n && brushes.every(function (b, i) {
+      return b && b._rawGroup === g0 && b._rawGroupIndex === i;
+    })) srcParams = g0.params;
+    const sameLayout = !!srcParams && Number(g0.cellW) === w && Number(g0.cellH) === h;
+    const srcSel = srcParams && srcParams.map.sel0 && /^(incremental|angular|velocity|random|pressure|xtilt|ytilt)$/.test(srcParams.map.sel0)
+      ? srcParams.map.sel0 : null;
+    const sel = (opts && typeof opts.sel === 'string') ? opts.sel : (srcSel || 'incremental');
+    /* step（管道踏步）与 cell 的 spacing 是两个字段：源里 step:0 表示不指定，
+       旧实现用 cell spacing 覆盖它等于改掉了笔刷间距。 */
+    const step = (opts && opts.step !== undefined) ? opts.step
+      : (srcParams && srcParams.map.step !== undefined ? srcParams.map.step : spacing);
+    /* bpp：所有 cell 都带真实颜色才写 RGBA(4)，否则仍写 8-bit 灰度(1)。
+       灰阶来源转出来的 rgba 的 RGB 恒为 255（见 rgbaHasColor），不会误判。 */
+    const allRgba = px.every(function (t) { return t.bpp === 4; });
+    const keepColor = allRgba && px.some(function (t) { return rgbaHasColor(t.data); });
+    const bpp = keepColor ? 4 : 1;
+    /* cell 头的版本：整组同源自 v1 pipe 时写回 v1（否则头长度会从 20+N 变 28+N） */
+    const srcVer = g0 && brushes.every(function (b) { return b && b._cellVersion === 1; }) ? 1 : 2;
+    const cellVersion = (srcParams && srcVer === 1) ? 1 : 2;
     const LF = new Uint8Array([0x0a]);
     const line1 = util.utf8Encode(String(pipeName || 'brushconv'));
-    const line2 = util.utf8Encode(
-      n + ' ncells:' + n + ' cellwidth:' + w + ' cellheight:' + h +
-      ' step:' + spacing + ' dim:1 cols:1 rows:1 placement:constant rank0:' + n + ' sel0:' + sel
-    );
+    const line2 = util.utf8Encode(pipeHeaderLine(n, w, h, step, sel, srcParams, sameLayout));
     const parts = [line1, LF, line2, LF];
     for (let i = 0; i < n; i++) {
-      const data = padGray(tips[i], w, h);
+      const t = px[i];
+      let data;
+      if (bpp === 4) {
+        data = t.bpp === 4 ? padGray(t, w, h, 4) : (function () {          /* 灰阶 cell 补成 RGBA */
+          const g = padGray(t, w, h, 1), out2 = new Uint8Array(w * h * 4);
+          for (let k = 0; k < w * h; k++) {
+            out2[k * 4] = 255; out2[k * 4 + 1] = 255; out2[k * 4 + 2] = 255; out2[k * 4 + 3] = g[k];
+          }
+          return out2;
+        })();
+      } else {
+        data = t.bpp === 4 ? (function () {                                /* 彩色 cell 降成 alpha 蒙版 */
+          const g0b = new Uint8Array(t.w * t.h);
+          for (let k = 0; k < t.w * t.h; k++) g0b[k] = t.data[k * 4 + 3];
+          return padGray({ w: t.w, h: t.h, data: g0b }, w, h, 1);
+        })() : padGray(t, w, h, 1);
+      }
       const cellSpacing = Math.max(1, Math.min(1000, Math.round(brushes[i].spacingPct === undefined ? 10 : brushes[i].spacingPct)));
-      parts.push(buildGbrGray(brushes[i].name, w, h, cellSpacing, data));
+      const cellName = (brushes[i]._cellName !== undefined && brushes[i]._nameAuto !== undefined &&
+        brushes[i].name === brushes[i]._nameAuto) ? brushes[i]._cellName : brushes[i].name;
+      parts.push(buildGbrPixels(cellName, w, h, cellSpacing, bpp, data, cellVersion));
     }
     return util.concat(parts);
   }

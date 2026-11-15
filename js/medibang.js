@@ -212,6 +212,11 @@
     return {
       brushes: [{
         name: baseName,
+        /* 【minor-fix】源文档 XML 原样留一份：写侧过去用固定骨架重建，
+           dpi / checkerBG / bgColor / CreateTime / UpdateTime / ICCProfiles /
+           Animation，以及 Layer 上的 name / color / halftoneType / halftoneLine
+           全部被写死（preset_neon 实测 12/41 失真、3 项掉槽）。 */
+        _rawMdpXml: xml,
         tip: toTip(tight),
         sizePx: Math.max(tight.w, tight.h),
         spacingPct: 25,
@@ -229,6 +234,42 @@
   }
 
   /* ---------- write ---------- */
+  /* 在源 XML 上只改「必须改」的属性：画布尺寸（笔尖尺寸变了）、
+     thumb/layer 的 bin 名（我们重新生成的 PAC 段名）与 Layer 的 type（写的是 32bpp RGBA）。
+     其余属性、其余子元素（CreateTime/UpdateTime/ICCProfiles/Animation/半调设置）原样保留。 */
+  function patchXml(srcXml, width, height, layerBin, thumbBin) {
+    let xml = String(srcXml);
+    const setAttr = function (tagText, name, value) {
+      const re = new RegExp('(\\s' + name + '=")[^"]*(")');
+      if (re.test(tagText)) return tagText.replace(re, function (m, a, b) { return a + value + b; });
+      return tagText.replace(/\s*\/?>$/, function (m) { return ' ' + name + '="' + value + '"' + m; });
+    };
+    xml = xml.replace(/<Mdiapp\b[^>]*>/, function (tag) {
+      let t = tag;
+      t = setAttr(t, 'width', width);
+      t = setAttr(t, 'height', height);
+      return t;
+    });
+    xml = xml.replace(/<Thumb\b[^>]*\/?>/, function (tag) {
+      let t = setAttr(tag, 'width', 256);
+      t = setAttr(t, 'height', 256);
+      t = setAttr(t, 'bin', thumbBin);
+      return t;
+    });
+    let firstLayer = true;
+    xml = xml.replace(/<Layer\b[^>]*\/?>/g, function (tag) {
+      if (!firstLayer) return tag;
+      firstLayer = false;
+      let t = tag;
+      t = setAttr(t, 'width', width);
+      t = setAttr(t, 'height', height);
+      t = setAttr(t, 'type', '32bpp');
+      t = setAttr(t, 'bin', layerBin);
+      return t;
+    });
+    return xml;
+  }
+
   function buildXml(width, height, layerBin, thumbBin) {
     return '<?xml version="1.0" encoding="UTF-8" ?>\n'
       + '<Mdiapp width="' + width + '" height="' + height + '" dpi="350" checkerBG="true" bgColorR="255" bgColorG="255" bgColorB="255">\n'
@@ -323,7 +364,9 @@
     // thumbnail: 256x256 resized copy
     const tw = 256, th = 256;
     const thumbRgba = png.resize(rgba, w, h, tw, th);
-    const xml = buildXml(w, h, layerBin, thumbBin);
+    const xml = (brush._rawMdpXml && typeof brush._rawMdpXml === 'string')
+      ? patchXml(brush._rawMdpXml, w, h, layerBin, thumbBin)
+      : buildXml(w, h, layerBin, thumbBin);
     const pac = util.concat([
       pacSection(thumbBin, encodePlain(thumbRgba)),
       pacSection(layerBin, encodeTiled(rgba, w, h, tileSize))
@@ -338,7 +381,7 @@
     return util.concat([head, xmlBytes, pac]);
   }
 
-  const api = { isMdp, parseMdp, writeMdp };
+  const api = { isMdp, parseMdp, writeMdp, patchXml };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { medibang: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

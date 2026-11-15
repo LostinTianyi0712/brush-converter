@@ -1,4 +1,4 @@
-﻿/* Huawei 天生会画 / GoPaint brush files — reverse-engineered from real exports:
+/* Huawei 天生会画 / GoPaint brush files — reverse-engineered from real exports:
 
    .gobrush  = ZIP:
        info.json                  {"version":"3.2.9"}
@@ -64,6 +64,148 @@
     try { return util.utf8Decode(payload).replace(/\u0000+$/, ''); } catch (e) { return ''; }
   }
 
+  /* 属性块 / 参数块的载荷（外层 [tag 0][flag 0xC0|0xB0][u32 len] 之后的记录流）。
+     属性块的记录头是 [tag 0x10][flag 0xC0][u32 len]，gobrushWrite.setPropField 直接在
+     这段记录流上按 0x11 名字找 0x18 当前值——所以这一段必须原样交给写侧。
+
+     ⚠ 必须先按外层记录流走（pos=10 起、按 flag 0xd0/0xb0/0xc0 逐条跳），不能用字节扫描：
+     资源块里塞着几百 KB 的 PNG，里面出现 00 C0 的概率极高，扫到就是一段假属性块
+     （「草书-2-副」那类 1.3 MB 样本会被切前 75 条，读侧写侧一起错位）。 */
+  function recordWalkPayload(info, flag) {
+    let pos = 10;
+    while (pos + 6 <= info.length) {
+      const tag = info[pos], f = info[pos + 1], len = le32(info, pos + 2), end = pos + 6 + len;
+      if (end > info.length || [0xb0, 0xc0, 0xd0].indexOf(f) < 0) break;
+      if (tag === 0 && f === flag) return info.subarray(pos + 6, end);
+      pos = end;
+    }
+    return null;
+  }
+  function countPropRecords(block) {
+    let p = 0, n = 0;
+    while (p + 6 <= block.length) {
+      const tag = block[p];
+      if (tag !== 0x10 || block[p + 1] !== 0xc0) break;
+      const len = le32(block, p + 2), end = p + 6 + len;
+      if (end > block.length) break;
+      const body = block.subarray(p + 6, end);
+      let q = 0, hasName = false, hasValue = false;
+      while (q + 6 <= body.length) {
+        const t2 = body[q], l2 = le32(body, q + 2);
+        if (q + 6 + l2 > body.length) break;
+        if (t2 === 0x11 && l2 > 0) hasName = true;
+        else if (t2 === 0x18 && l2 === 4) hasValue = true;
+        q += 6 + l2;
+      }
+      if (hasName && hasValue) n++;
+      p = end;
+    }
+    return n;
+  }
+  function propBlockPayload(info) {
+    const direct = recordWalkPayload(info, 0xc0);
+    if (direct) return direct;
+    // 老样本没有规范外层记录流时才退回字节扫描，且必须扫出一段真的能解出属性记录的块
+    const limit = Math.min(info.length - 6, 4 * 1024 * 1024);
+    for (let i = 0; i < limit; i++) {
+      if (info[i] !== 0x00 || info[i + 1] !== 0xc0) continue;
+      const len = le32(info, i + 2);
+      if (!len || len > 1024 * 1024 || i + 6 + len > info.length) continue;
+      const block = info.subarray(i + 6, i + 6 + len);
+      if (countPropRecords(block) > 0) return block;
+    }
+    return null;
+  }
+  function countParamTags(block) {
+    let p = 0, n = 0;
+    while (p + 6 <= block.length) {
+      if (block[p + 1] !== 0xb0) break;
+      const end = p + 6 + le32(block, p + 2);
+      if (end > block.length) break;
+      n++;
+      p = end;
+    }
+    return n;
+  }
+  function paramBlockPayload(info) {
+    const direct = recordWalkPayload(info, 0xb0);
+    if (direct) return direct;
+    const limit = Math.min(info.length - 6, 2 * 1024 * 1024);
+    for (let i = 0; i < limit; i++) {
+      if (info[i] !== 0x00 || info[i + 1] !== 0xb0) continue;
+      const len = le32(info, i + 2);
+      if (!len || len > 4096 || i + 6 + len > info.length) continue;
+      const block = info.subarray(i + 6, i + 6 + len);
+      if (countParamTags(block) >= 3) return block;
+    }
+    return null;
+  }
+
+  /* 属性块全量快照。每条属性记录是自描述的——
+       [0x11] key（程序用的英文名） [0x12] 中文显示名 [0x13] 控件类型 [0x14] 属性组
+       [0x15] 上限 [0x16] 下限 [0x17] 疑似默认值 [0x18] 当前值 [0x19] 附加负载
+       [0x20] 压力曲线 JSON [0x21] 记录结束
+     返回 {values, meta, curves, block}：
+       values = {key: 0x18 当前值}；meta = {key: {type, group, min, max}}；
+       curves = {key: 0x20 JSON 文本}；block = 原始记录流（写侧追加记录时要用）。
+     写侧只能透传它没有专门映射的属性，缺了这份快照整块 119 条都会被模板值覆盖。 */
+  function textAt(buf, start, end) {
+    try { return util.utf8Decode(buf.subarray(start, end)); } catch (e) { return ''; }
+  }
+  function extractProps(info) {
+    const block = propBlockPayload(info);
+    const out = { values: {}, meta: {}, curves: {}, block: block };
+    if (!block) return out;
+    let p = 0;
+    while (p + 6 <= block.length) {
+      const tag = block[p];
+      if (block[p + 1] !== 0xc0) break;
+      const len = le32(block, p + 2), end = p + 6 + len;
+      if (end > block.length) break;
+      if (tag === 0x10) {
+        const body = block.subarray(p + 6, end);
+        let q = 0, name = '', type = '', group = '', max = null, min = null, value = null, curve = null;
+        while (q + 6 <= body.length) {
+          const t2 = body[q], l2 = le32(body, q + 2), at = q + 6, to = q + 6 + l2;
+          if (to > body.length) break;
+          if (t2 === 0x11) name = textAt(body, at, to);
+          else if (t2 === 0x13) type = textAt(body, at, to);
+          else if (t2 === 0x14) group = textAt(body, at, to);
+          else if (t2 === 0x15 && l2 === 4) max = le32(body, at) | 0;
+          else if (t2 === 0x16 && l2 === 4) min = le32(body, at) | 0;
+          else if (t2 === 0x18 && l2 === 4) value = le32(body, at);
+          else if (t2 === 0x20 && l2 > 1) curve = textAt(body, at, to);
+          q = to;
+        }
+        if (name && value !== null) {
+          out.values[name] = value;
+          out.meta[name] = { type: type, group: group, min: min, max: max };
+          if (curve) out.curves[name] = curve;
+        }
+      }
+      p = end;
+    }
+    return out;
+  }
+
+  /* 参数块原始 tag 表（tag → payload）。写侧只有 uuid / 名字 / 尺寸 / 不透明度几个 tag 有映射，
+     其余（t3 app 名、t32、t33 时间戳、t35…）原生样本各不相同，留着给写侧照抄源值。 */
+  function extractParamTags(info) {
+    const block = paramBlockPayload(info);
+    const out = {};
+    if (!block) return out;
+    let p = 0;
+    while (p + 6 <= block.length) {
+      const tag = block[p];
+      if (block[p + 1] !== 0xb0) break;
+      const len = le32(block, p + 2), end = p + 6 + len;
+      if (end > block.length) break;
+      out[tag] = block.subarray(p + 6, end);
+      p = end;
+    }
+    return out;
+  }
+
   /* brush name lives in the flag 0xB0 parameter block, sub-record tag 2 */
   function nameFromInfo(info) {
     info = infoBlock(info, 0xb0);
@@ -87,40 +229,8 @@
          strokeSpacing -> spacing %, propertiesMaxAlpha -> opacity %,
          propertiesMaxSize -> size, shapeScatter -> scatter */
   function extractPropValues(info) {
-    info = infoBlock(info, 0xc0);
-    const out = {};
-    const le = function (b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; };
-    const limit = Math.min(info.length - 6, 4 * 1024 * 1024);
-    for (let i = 0; i < limit; i++) {
-      if (info[i] !== 0x00 || info[i + 1] !== 0xC0) continue;
-      const len = le(info, i + 2);
-      if (!len || len > 1024 * 1024 || i + 6 + len > info.length) continue;
-      let p = i + 6, end = i + 6 + len;
-      while (p + 6 <= end) {
-        const tag = info[p];
-        if (info[p + 1] !== 0xC0) break;
-        const l = le(info, p + 2);
-        if (p + 6 + l > end) break;
-        if (tag === 0x10) {
-          const body = info.subarray(p + 6, p + 6 + l);
-          let q = 0, nm = '', v18 = null;
-          while (q + 6 <= body.length) {
-            const t2 = body[q], l2 = le(body, q + 2);
-            if (q + 6 + l2 > body.length) break;
-            if (t2 === 0x11) {
-              try { nm = util.utf8Decode(body.subarray(q + 6, q + 6 + l2)); } catch (e) { nm = ''; }
-            } else if (t2 === 0x18 && l2 === 4) {
-              v18 = le(body, q + 6);
-            }
-            q += 6 + l2;
-          }
-          if (nm && v18 !== null) out[nm] = v18;
-        }
-        p += 6 + l;
-      }
-      if (Object.keys(out).length) break;
-    }
-    return out;
+    // 与 extractProps 同一套解析（见上）；保留这个薄包装给 extractParams 用。
+    return extractProps(info).values;
   }
 
   function extractParams(info) {
@@ -128,26 +238,23 @@
     info = infoBlock(info, 0xb0);
     const out = { size: 0, spacing: 0, opacity: undefined, flow: undefined, scatter: 0 };
     const le = function (b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; };
-    const limit = Math.min(info.length - 6, 2 * 1024 * 1024);
-    for (let i = 0; i < limit; i++) {
-      if (info[i] !== 0x00 || info[i + 1] !== 0xB0) continue;
-      const len = le(info, i + 2);
-      if (!len || len > 4096 || i + 6 + len > info.length) continue;
-      let p = i + 6, end = i + 6 + len;
+    const block = paramBlockPayload(fullInfo);
+    if (block) {
+      let p = 0, end = block.length;
       const vals = {};
       while (p + 6 <= end) {
-        const t = info[p], f = info[p + 1];
+        const t = block[p], f = block[p + 1];
         if (f !== 0xB0) break;
-        const l = le(info, p + 2);
+        const l = le(block, p + 2);
         if (p + 6 + l > end) break;
-        if (l === 4) vals[t] = le(info, p + 6);
+        if (l === 4) vals[t] = le(block, p + 6);
         p += 6 + l;
       }
-      if (!Object.keys(vals).length) continue;
-      out.size = vals[5] || vals[6] || 0;
-      out.opacity = vals[8];
-      out.flow = vals[9];
-      break;
+      if (Object.keys(vals).length) {
+        out.size = vals[5] || vals[6] || 0;
+        out.opacity = vals[8];
+        out.flow = vals[9];
+      }
     }
     const props = extractPropValues(fullInfo);
     if (props.strokeSpacing !== undefined) out.spacing = props.strokeSpacing;
@@ -219,22 +326,39 @@
     const warnings = [];
     const entries = zip.read(bytes);
     let shape = null, grain = null, snapshot = null, infoFile = null, brushUuid = '';
+    let shapeUuid = '', grainUuid = '';
+    const infoFiles = [];
     for (const e of entries) {
       if (e.dir) continue;
       const data = e.data();
-      if (/^shape_.*\.png$/i.test(e.name)) shape = decodePng(data);
-      else if (/^grain_.*\.png$/i.test(e.name)) grain = decodePng(data, false);
-      else if (/^snapshot_light_.*\.png$/i.test(e.name)) snapshot = snapshot || decodePng(data);
+      if (/^shape_.*\.png$/i.test(e.name)) {
+        shape = decodePng(data);
+        shapeUuid = e.name.replace(/^shape_/i, '').replace(/\.png$/i, '');
+      } else if (/^grain_.*\.png$/i.test(e.name)) {
+        grain = decodePng(data, false);
+        grainUuid = e.name.replace(/^grain_/i, '').replace(/\.png$/i, '');
+      } else if (/^snapshot_light_.*\.png$/i.test(e.name)) snapshot = snapshot || decodePng(data);
       else if (/^snapshot_.*\.png$/i.test(e.name)) snapshot = snapshot || decodePng(data);
       else if (/^brush_.*\.info$/i.test(e.name)) {
-        infoFile = data;
-        brushUuid = e.name.replace(/^brush_/, '').replace(/\.info$/i, '');
+        infoFiles.push({ uuid: e.name.replace(/^brush_/, '').replace(/\.info$/i, ''), data: data });
       }
     }
+    /* 双笔刷的 .gobrush 里有两条 brush_*.info：主笔刷一条、副笔刷「<名>-副」一条，
+       而 shape/grain 资源只属于主笔刷。以前是「后出现的覆盖前面的」——读出来的是副笔刷的
+       属性块（75 条，主笔刷 119 条），连笔刷名都变成「-副」。
+       现在按 shape（其次 grain）的 uuid 配对，配不上才退回第一条。 */
+    const picked = infoFiles.filter(function (x) { return x.uuid === shapeUuid; })[0] ||
+      infoFiles.filter(function (x) { return x.uuid === grainUuid; })[0] ||
+      infoFiles[0] || null;
+    if (picked) { infoFile = picked.data; brushUuid = picked.uuid; }
     let name = infoFile ? nameFromInfo(infoFile) : '';
     if (!name) name = (fileName || 'gobrush').replace(/\.[^.]+$/, '');
     const params = infoFile ? extractParams(infoFile) : { size: 0, spacing: 0 };
     const pressureCurves = infoFile ? extractPressureCurves(infoFile) : {global:null,parameters:{}};
+    /* 属性/参数块的原始快照：写侧只能「透传它没有专门映射的属性」，没有这份快照就只能
+       整块用模板（真实导出「调色刀」）的值覆盖掉源笔刷（原生样本 22~34/119 项被改）。 */
+    const props = infoFile ? extractProps(infoFile) : { values: {}, meta: {}, curves: {}, block: null };
+    const paramTags = infoFile ? extractParamTags(infoFile) : {};
     if (!shape) warnings.push('该 .gobrush 没有 shape PNG，转换时会生成程序化笔尖');
     warnings.push('天生会画尺寸按300dpi真机近似标定换算为像素（尺寸百分比会取整）；其他DPI、画布缩放和真实压感笔迹仍待核对，可用「整体尺寸倍数」微调');
     // Keep source pixels; logical brush diameter is independent of resolution.
@@ -249,46 +373,82 @@
       ? (minSizePct + (maxSizePct - minSizePct) * params.size / 100) * 2.3 : 100;
     let spacingPct = params.spacing >= 1 && params.spacing <= 1000 ? params.spacing : 25;
     let opacity = params.opacity === undefined ? 1 : Math.max(0, Math.min(1, params.opacity / 100));
-    return {
-      brush: {
-        name: name,
-        gopaintUuid: brushUuid,
-        tip: tip,
-        grain: grain,
+    const brush = {
+      name: name,
+      gopaintUuid: brushUuid,
+      tip: tip,
+      grain: grain,
+      sizePx: sizePx,
+      gopaintMaxSizePct: params.maxSizePct,
+      spacingPct: spacingPct,
+      opacity: opacity,
+      hardness: 1,
+      angle: 0,
+      roundness: 100,
+      pressure: false,
+      pressureSize: false,
+      minSizeRatio: (params.minSizeRatio !== undefined ? params.minSizeRatio : 1),
+      minOpacityRatio: (params.minOpacityRatio !== undefined ? params.minOpacityRatio : 1),
+      flowPct: (params.flowPct !== undefined ? params.flowPct : 1),
+      scatterOn: (params.scatter || 0) > 0,
+      scatterPct: params.scatter || 0,
+      jitterPct: params.jitter === undefined ? 0 : params.jitter,
+      falloffPct: params.falloff === undefined ? 0 : params.falloff,
+      scatterCount: 1,
+      scatterBothAxes: true,
+      gopaintPressureCurve: pressureCurves.global || undefined,
+      gopaintPressureCurves: pressureCurves.parameters,
+      hasTexture: (params.textureDepth || 0) > 0,
+      textureDepth: params.textureDepth || 0,
+      gopaintGrainScale: params.grainScale,
+      /* 第206轮 R204-01（作者：Claude）：天生会画纹理整张平铺的画布尺寸与 grain 图分辨率无关（32/64/128 px 三张
+         同周期），只由 grainScale 决定：MatePad Pro 12.2 实测平铺边长 ≈ 0.576 × grainScale² 像素
+         （5/25/50 → 周期 7/180/720 px，图内 2 个周期）。通用模型的 textureScale = 平铺画布像素 / 纹理像素宽
+         （PS、画世界口径），据此反推；仅在有 grain 图与 grainScale 时给出。 */
+      textureScale: (grain && grain.w > 0 && params.grainScale > 0)
+        ? Math.round(GOPAINT_TILE_K * params.grainScale * params.grainScale / grain.w * 10000) / 10000 : undefined,
+      /* 属性块全量（119 条自描述记录）。写侧 gobrushWrite 用它做「只透传未知、不覆盖已知」：
+         gopaintProps   = {属性 key: 0x18 当前值}
+         gopaintPropMeta= {属性 key: {type, group, min, max}}
+         gopaintPropBlock = 原始记录流（模板里没有的属性要追加记录时用）
+         gopaintParams  = {参数 tag: payload}
+         gopaintPropBase= 写侧显式映射依赖的那几个字段在「刚解析完」时的值——写的时候拿它和
+                          当前值比，就知道用户到底动没动这一项（不动就照抄源值，动了才按映射写）。 */
+      gopaintProps: props.values,
+      gopaintPropMeta: props.meta,
+      gopaintPropCurves: props.curves,
+      gopaintPropBlock: props.block || undefined,
+      gopaintParams: paramTags,
+      gopaintPropBase: {
         sizePx: sizePx,
         gopaintMaxSizePct: params.maxSizePct,
-        spacingPct: spacingPct,
-        opacity: opacity,
-        hardness: 1,
-        angle: 0,
-        roundness: 100,
-        pressure: false,
-        pressureSize: false,
         minSizeRatio: (params.minSizeRatio !== undefined ? params.minSizeRatio : 1),
         minOpacityRatio: (params.minOpacityRatio !== undefined ? params.minOpacityRatio : 1),
+        spacingPct: spacingPct,
+        opacity: opacity,
         flowPct: (params.flowPct !== undefined ? params.flowPct : 1),
         scatterOn: (params.scatter || 0) > 0,
         scatterPct: params.scatter || 0,
         jitterPct: params.jitter === undefined ? 0 : params.jitter,
         falloffPct: params.falloff === undefined ? 0 : params.falloff,
-        scatterCount: 1,
-        scatterBothAxes: true,
-        gopaintPressureCurve: pressureCurves.global || undefined,
-        gopaintPressureCurves: pressureCurves.parameters,
         hasTexture: (params.textureDepth || 0) > 0,
         textureDepth: params.textureDepth || 0,
         gopaintGrainScale: params.grainScale,
-        /* 第206轮 R204-01（作者：Claude）：天生会画纹理整张平铺的画布尺寸与 grain 图分辨率无关（32/64/128 px 三张
-           同周期），只由 grainScale 决定：MatePad Pro 12.2 实测平铺边长 ≈ 0.576 × grainScale² 像素
-           （5/25/50 → 周期 7/180/720 px，图内 2 个周期）。通用模型的 textureScale = 平铺画布像素 / 纹理像素宽
-           （PS、画世界口径），据此反推；仅在有 grain 图与 grainScale 时给出。 */
-        textureScale: (grain && grain.w > 0 && params.grainScale > 0)
-          ? Math.round(GOPAINT_TILE_K * params.grainScale * params.grainScale / grain.w * 10000) / 10000 : undefined,
-        source: 'gopaint'
+        pressureCurve: pressureCurves.global ? JSON.stringify(pressureCurves.global) : null
       },
-      snapshot: snapshot,
-      warnings: warnings
+      source: 'gopaint'
     };
+    /* 第2/3 步接线（压感组 / 锥度组 / 朝向组 / 混色湿边组）依赖的通用模型字段：
+       一律照抄「刚解析完」的值——原生解析出来是常量（pressureSize=false、angle=0、
+       roundness=100，taperOn / taperSize / smudgeOn / wetEdgesOn 这些根本没有），
+       所以照抄 = 没动过；之后谁真改了这些字段（用户调面板 / 从别的格式转进来），
+       写侧就按映射写。 */
+    ['pressure', 'pressureSize', 'pressureOpacity', 'angle', 'roundness',
+      'taperOn', 'taperSize', 'taperOpacity', 'taperStartLength', 'taperEndLength',
+      'smudgeOn', 'smudgeAmount', 'smudgeSize', 'smudgeOpacity',
+      'wetEdgesOn', 'wetEdgesAmount', 'burntEdgesAmount', 'smoothingStrength'
+    ].forEach(function (k) { brush.gopaintPropBase[k] = brush[k]; });
+    return { brush: brush, snapshot: snapshot, warnings: warnings };
   }
 
   function parse(bytes, fileName, depth) {
@@ -373,7 +533,7 @@
     return { brushes: brushes, warnings: warnings, snapshot: snapshot, groupName: groupName };
   }
 
-  const api = { isGobrush, isGobrushSet, parse };
+  const api = { isGobrush, isGobrushSet, parse, extractProps, extractParamTags };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { gobrush: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

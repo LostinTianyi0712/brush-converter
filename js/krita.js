@@ -300,6 +300,15 @@
       brushes: [{
         _rawXml: rawXml,
         _rawKppName: (fileName || 'brush.kpp'),
+        /* 解析出来的开关原值：写回时用来判断「这个布尔是源里本来就有的，还是用户改的」。
+           PressureSize/PressureOpacity 在 Krita 里可以由 *UseCurve + *Sensor 曲线表达，
+           源文件常常没有这两个 param；凭空补一条会让「源有/写有」清单失真。 */
+        _rawParsedFlags: {
+          pressureSize: !!sizeDyn,
+          pressureOpacity: !!opDyn,
+          scatterOn: scatterPctVal > 0.01 || scatterCountVal > 1,
+          eraser: !!(params.EraserMode && /^(true|1)$/i.test(params.EraserMode.text.trim()))
+        },
         name: (nameAttr ? decodeXmlEntities(nameAttr[1]) : (fileName || '').replace(/\.[^.]+$/, '')) || 'krita brush',
         tip: tip,
         sizePx: sizePx,
@@ -402,8 +411,167 @@
   function esc(s) { return String(s == null ? '' : s).replace(/[<>&"]/g, ' ').slice(0, 80); }
   function num(v, d) { return (isFinite(v) ? v : d).toFixed(3); }
 
+  /* ---------------- 原生 XML 保真写回 ----------------
+     背景（第out轮审计）：`.kpp` 有两个写端——
+       · writeBundle：有 `_rawXml` 时从源 XML 出发，只 setParam 已知字段，未知 <param> 原样保留；
+       · writeKpp（单文件编码器）：**完全无视 `_rawXml`**，用 27 个模板参数重新拼一份 XML。
+     实测 6 个原生 KPP（197/196/128/50… 个 param）经 writeKpp 往返：1053 → 150，丢 946 项。
+     这正是「写侧换新模板把源值砸掉」那一类：读侧明明把整份 XML 存在 `_rawXml` 里，
+     写侧却当成没有。下面把 bundle 那条保真链搬过来，只改「已知的笔形/控制字段」，
+     其余 <param>（含 Krita 私有的曲线、传感器、MaskingBrush 复合块）逐字节保留。 */
+
+  /* 数值等价就保留原文：源里写 diameter="50"，不要改成 "50.000"（字节会变）。 */
+  function nearNum(cur, want) {
+    if (!isFinite(cur) || !isFinite(want)) return false;
+    return Math.abs(cur - want) <= Math.abs(want) * 1e-6 + 1e-6;
+  }
+  function trimNum(v) { return String(Number(Number(v).toFixed(6))); }
+  function patchAttrNum(tagHtml, attr, want) {
+    if (!isFinite(want)) return tagHtml;
+    const re = new RegExp('(\\b' + attr + '=")([0-9.eE+-]+)(")');
+    return tagHtml.replace(re, function (m, a, n, c) {
+      if (nearNum(Number(n), want)) return m;
+      return a + trimNum(want) + c;
+    });
+  }
+  function paramOf(xml, name) {
+    const esc2 = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const m = new RegExp('<param\\b[^>]*name="' + esc2 + '"[^>]*>[\\s\\S]*?</param>').exec(xml);
+    return m ? m[0] : null;
+  }
+  function paramText(param) {
+    if (!param) return null;
+    return String(param).replace(/^[\s\S]*?>/, '').replace(/<\/param>$/, '')
+      .replace(/<!\[CDATA\[|\]\]>/g, '').replace(/<[^>]+>/g, ' ').trim();
+  }
+  /* 只改数值、保持原文格式；值没变就不动字节 */
+  function setParamNum(xml, name, want, digits) {
+    if (!isFinite(want)) return xml;
+    const p = paramOf(xml, name);
+    if (p) {
+      const cur = Number(paramText(p));
+      if (nearNum(cur, want)) return xml;
+    }
+    return setParam(xml, name, Number(want).toFixed(digits === undefined ? 3 : digits));
+  }
+  function setParamBool(xml, name, want) {
+    const p = paramOf(xml, name);
+    const text = want ? 'true' : 'false';
+    if (p && paramText(p).toLowerCase() === text) return xml;
+    return setParam(xml, name, text);
+  }
+  /* 「源里没有这个 param」时不凭空造字段（第out轮审计：凭空补 Scatter/Enabled=false、
+     PressureOpacity=false… 会让「源有/写有」清单失真，也可能覆盖目标软件的默认语义）。
+     只有值确实偏离默认（=用户真的打开了这个功能）才补一条。 */
+  function upsertNum(xml, name, want, dflt, digits) {
+    if (!isFinite(want)) return xml;
+    if (paramOf(xml, name)) return setParamNum(xml, name, want, digits);
+    if (nearNum(want, dflt)) return xml;
+    return setParam(xml, name, Number(want).toFixed(digits === undefined ? 3 : digits));
+  }
+  function upsertBool(xml, name, want, dflt, wasWant) {
+    if (paramOf(xml, name)) return setParamBool(xml, name, want);
+    /* 「源里没有该 param，且值就是解析出来的原值」⇒ 这个开关本来由曲线/传感器参数表达，
+       补一条多余的布尔只会让「源有/写有」清单失真。只有用户真的改了它（want≠wasWant）才补。 */
+    if (wasWant !== undefined ? !!wasWant === !!want : !!dflt === !!want) return xml;
+    return setParam(xml, name, want ? 'true' : 'false');
+  }
+
+  /* Krita 4/5 有两套并行开关：旧的 PressureSize/PressureOpacity 与新的
+     SizeUseCurve/OpacityUseCurve(+*Sensor 曲线)。真实 preset 里两者偶尔互相矛盾
+     （Krita 5 以曲线为准，旧布尔是迁移残留）。这种情况下不要动它的曲线开关——
+     写侧只该表达「用户改了压感」，不该替 Krita 决定哪一套是真的。 */
+  function curvePairConsistent(xml, flagName, curveName) {
+    const curve = paramOf(xml, curveName);
+    if (!curve) return true;                       /* 源里没有曲线开关：按 need 写 */
+    const flag = paramOf(xml, flagName);
+    if (!flag) return false;                       /* 只有曲线：曲线是唯一真源，别动 */
+    const a = (paramText(flag) || '').toLowerCase() === 'true';
+    const b = (paramText(curve) || '').toLowerCase() === 'true';
+    return a === b;
+  }
+
+  /* 从源 XML 出发做最小改写。只动这些：名字 / auto_brush 的几何 / 压力与不透明度等标量。
+     资源型笔形（png_brush / gbr_brush，靠 filename 引用外部资源）不重算几何——
+     `.kpp` 单文件里没有地方放那份资源，改了 scale/diameter 反而和资源对不上。 */
+  function rawPresetXml(brush) {
+    const raw = String(brush._rawXml || '');
+    if (!/<Preset\b/.test(raw)) return null;
+    let xml = raw;
+    if (brush.name) {
+      xml = xml.replace(/(<Preset\b[^>]*?)(\bname=")([^"]*)(")/, function (m, head, a, _old, c) {
+        return head + a + xmlEsc(brush.name) + c;
+      });
+    }
+    const defParam = paramOf(xml, 'brush_definition');
+    if (defParam) {
+      const defBody = paramText(defParam);
+      const bodyStart = defParam.indexOf('?>');
+      const isResource = /\btype="(png_brush|gbr_brush)"/.test(defBody) && !/<MaskGenerator\b/.test(defBody);
+      if (!isResource) {
+        const diameter = Math.max(1, Math.min(5000, brush.sizePx || 40));
+        let ratio = brush.roundness === undefined ? 1 : brush.roundness / 100;
+        ratio = Math.max(0.05, Math.min(1, ratio));
+        const hardness = Math.max(0, Math.min(1, brush.hardness === undefined ? 1 : brush.hardness));
+        const angleRad = (isFinite(brush.angle) ? brush.angle : 0) * Math.PI / 180;
+        const spacing = Math.max(0.001, Math.min(5, (brush.spacingPct === undefined ? 10 : brush.spacingPct) / 100));
+        let inner = defParam;
+        inner = inner.replace(/<(?:Brush|MaskGenerator)\b[^>]*>/g, function (tag) {
+          let t = tag;
+          if (/<MaskGenerator\b/.test(t)) t = patchAttrNum(t, 'diameter', diameter);
+          t = patchAttrNum(t, 'hfade', hardness);
+          t = patchAttrNum(t, 'vfade', hardness);
+          t = patchAttrNum(t, 'ratio', ratio);
+          t = patchAttrNum(t, 'angle', angleRad);
+          t = patchAttrNum(t, 'spacing', spacing);
+          return t;
+        });
+        if (inner !== defParam) {
+          xml = xml.replace(defParam, function () { return inner; });
+        }
+      }
+    }
+    const opacity = Math.max(0, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity));
+    const flow = Math.max(0, Math.min(1, brush.flowPct === undefined ? 1 : brush.flowPct));
+    const smudge = Math.max(0, Math.min(1, brush.smudgeOn ? (brush.smudgeAmount === undefined ? 0.3 : brush.smudgeAmount) : 0));
+    xml = upsertNum(xml, 'OpacityValue', opacity, 1, 3);
+    xml = upsertNum(xml, 'FlowValue', flow, 1, 3);
+    xml = upsertNum(xml, 'ColorRateValue', smudge, 0, 3);
+    const pressureSize = brush.pressureSize === undefined ? !!brush.pressure : !!brush.pressureSize;
+    const pressureOpacity = !!brush.pressureOpacity;
+    const was = brush._rawParsedFlags || {};
+    const minSize = pressureSize ? Math.max(0.01, Math.min(1, brush.minSizeRatio === undefined ? 0.2 : brush.minSizeRatio)) : 1;
+    xml = upsertBool(xml, 'PressureSize', pressureSize, false, was.pressureSize);
+    if (curvePairConsistent(xml, 'PressureSize', 'SizeUseCurve')) xml = upsertBool(xml, 'SizeUseCurve', pressureSize, false, was.pressureSize);
+    xml = upsertNum(xml, 'SizeValue', minSize, 1, 3);
+    xml = upsertBool(xml, 'PressureOpacity', pressureOpacity, false, was.pressureOpacity);
+    if (curvePairConsistent(xml, 'PressureOpacity', 'OpacityUseCurve')) xml = upsertBool(xml, 'OpacityUseCurve', pressureOpacity, false, was.pressureOpacity);
+    if (brush.eraser !== undefined) xml = upsertBool(xml, 'EraserMode', !!brush.eraser, false, was.eraser);
+    if (brush.scatterOn !== undefined) {
+      if (brush.scatterOn) {
+        xml = upsertNum(xml, 'ScatterValue', Math.max(0, Math.min(10, (brush.scatterPct || 0) / 100)), 0, 3);
+        xml = upsertBool(xml, 'Scatter/Enabled', true, false, was.scatterOn);
+        xml = upsertBool(xml, 'Scatter/X', true, true);
+        xml = upsertBool(xml, 'Scatter/Y', brush.scatterBothAxes !== false, true);
+        if ((brush.scatterCount || 1) > 1) xml = setParam(xml, 'Scatter/Count', String(Math.round(brush.scatterCount)));
+      } else {
+        xml = upsertBool(xml, 'Scatter/Enabled', false, false, was.scatterOn);
+      }
+    }
+    return xml;
+  }
+
   /* Krita 5 preset writer: modern schema, circle/ellipse mask from brush params. */
   function writeKpp(brush) {
+    /* 保真优先：源就是 .kpp 时从它的 XML 出发（只改已知字段），否则才用模板重建。
+       判据与 writeBundle 一致：_rawXml 存在且没有明确要求重建。 */
+    const rawXml = brush && brush._rawXml && brush.fidelity !== false && brush.forceRebuild !== true
+      ? rawPresetXml(brush) : null;
+    if (rawXml) {
+      let tip = brush.tip || null;
+      const preview = png.encode(PREVIEW, PREVIEW, makePreview(tip));
+      return png.injectText(preview, { version: '2.2', preset: asciiEntities(rawXml) });
+    }
     const name = esc(brush.name || 'brush');
     const diameter = Math.max(1, Math.min(4000, brush.sizePx || 40));
     const spacing = Math.max(0.01, Math.min(5, (brush.spacingPct === undefined ? 10 : brush.spacingPct) / 100));
