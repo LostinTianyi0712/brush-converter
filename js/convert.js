@@ -1305,7 +1305,9 @@
     if (!isFinite(sizePx) || sizePx <= 0) sizePx = Math.max(4, Math.max(w, h));
     /* 【第229轮】不再把尺寸 round 到 2 位：源 BRU 的 f8 是 float32（70.12000274658203），
        round 之后往返变成 70，59 支笔刷各偏 0.005~0.12px。f32 原样存得住，交给编码器取整。 */
-    sizePx = Math.max(1, Math.min(3000, sizePx));
+    /* 【第251轮】上限从 3000 提到 5000：珠宝装饰套里有 4003 / 3952 / 3648 px 的大笔刷，
+       3000 的上限把它们直接截断（写侧 f8 是 float32，本来就存得下）。与 buildMetadata 的 5000 对齐。 */
+    sizePx = Math.max(1, Math.min(5000, sizePx));
     let spacingPct = opts.spacingOverride > 0 ? opts.spacingOverride : (brush.spacingPct === undefined ? 10 : brush.spacingPct);
     /* 【第186轮】Procreate 的 spacing 最小可调值是 1%，存成 0 表示「自动间距」而不是
        「无限密」。以前一律钳到 BRU 下限 0.1%，画世界按 dab 逐个盖印，256px 笔尖

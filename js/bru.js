@@ -300,6 +300,14 @@
       if (b.taperOn || b._bruTaperFields || Math.abs(taperSizeV - 1) > 1e-6) parts.push(u8arr(fF32(77, taperSizeV)));
       if (b.taperOn || b._bruTaperFields || Math.abs(taperOpacityV - 1) > 1e-6) parts.push(u8arr(fF32(78, taperOpacityV)));
     }
+    /* 【第251轮】f122 双笔混合模式：源里有非零值就独立写出——它有可能是「单笔但设了混合模式」
+       （珠宝装饰套「有色亮片04」「渐变亮片05」就是这样，dualOn 为空但 f122=7）。
+       以前这行被放在「有副笔」的分支里，单笔永远写不出去，回程就变 0/normal。 */
+    {
+      const dv122 = (typeof b.bruDualBlendMode === 'number' && isFinite(b.bruDualBlendMode))
+        ? b.bruDualBlendMode : dualBlendValue(b.dualBlendMode, b.bruDualBlendMode);
+      if (dv122) parts.push(u8arr(fVarint(122, dv122)));
+    }
     if (b.wetEdgesOn) {
       parts.push(u8arr(fVarint(100, 1)));
       const strength = Math.max(0, Math.min(1, 1 - (b.wetEdgesAmount === undefined ? 0.4 : b.wetEdgesAmount)));
@@ -363,8 +371,6 @@
         // 真实双笔刷文件里还有 f87 / f158，一并写入（经验值，来自样本）
         /* 【第230轮】BRU 源带着数字枚举（f122 原值）时直接用，别再经名字表绕一圈：
            Procreate 侧的 dualBlendMode 是它自己的下标，绕过去会把 12=linearHeight 写成 0。 */
-        parts.push(u8arr(fVarint(122, (typeof b.bruDualBlendMode === 'number' && isFinite(b.bruDualBlendMode))
-          ? b.bruDualBlendMode : dualBlendValue(b.dualBlendMode, b.bruDualBlendMode))));
         /* 【第232轮·field-matrix】源里带 f87（实测 −1 的 10 字节 varint）时原样写回，
            替代经验常数 9629115——双笔源里有 f87 的 13 支此前全部 VALUE 失真。 */
         parts.push(u8arr(b._bruF87Raw || fVarint(87, 9629115)));

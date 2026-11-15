@@ -403,7 +403,9 @@
       textureScale: texScaleV > 0 ? texScaleV : 1,
       textureBrightness: texBrightV * 100,
       textureContrast: texContrastV * 100,
-      spacingJitterPct: Math.max(0, Math.min(100, nv('plotSpacingJitter') * 100)),
+      /* 【第251轮】上限从 100 放宽到 200：BRU 的 f18 允许更大值（珠宝「气氛点缀03」=157%），
+         以前被钳到 100 就丢了一截。 */
+      spacingJitterPct: Math.max(0, Math.min(200, nv('plotSpacingJitter') * 100)),
       falloffPct: Math.max(0, Math.min(100, nv('dynamicsFalloff') * 100)),
       smoothingStrength: smoothingV,
       colorDynamicsOn: hueDyn > 0.001 || satDyn > 0.001 || briDyn > 0.001 || fgBgDyn > 0.001,
@@ -510,7 +512,9 @@
       if (Number.isFinite(ex.hollowColor)) brush.hollowColor = ex.hollowColor;
       if (typeof ex.legacyDirection === 'boolean') brush.bruLegacyDirection = ex.legacyDirection;
       if (typeof ex.oldTexId === 'string') brush.oldTexId = ex.oldTexId;
-      if (typeof ex.tipFromBuiltin === 'string') brush._tipFromBuiltin = ex.tipFromBuiltin;   // 只补被归档清零的那一侧
+      if (typeof ex.tipFromBuiltin === 'string') brush._tipFromBuiltin = ex.tipFromBuiltin;
+      if (Number.isFinite(ex.renderCount)) brush.renderCount = ex.renderCount;
+      if (typeof ex.colorDynamicsOn === 'boolean') brush.colorDynamicsOn = ex.colorDynamicsOn;   // 只补被归档清零的那一侧
       if (Number.isFinite(ex.angle)) brush.angle = ex.angle;
       if (typeof ex.taperFields === 'boolean') brush._bruTaperFields = ex.taperFields;
     }
@@ -990,7 +994,8 @@
       shapeFlipXJitter: !!brush.flipXJitter,
       shapeFlipYJitter: !!brush.flipYJitter,
       plotJitter: Math.max(0, Math.min(10, (brush.scatterOn ? (brush.scatterPct || 0) : 0) / 10)),
-      plotSpacingJitter: Math.max(0, Math.min(1, (brush.spacingJitterPct || 0) / 100)),
+      /* 【第251轮】与读回侧同步放宽到 2：BRU f18 允许 >100%，以前写进 archive 就被钳到 1。 */
+      plotSpacingJitter: Math.max(0, Math.min(2, (brush.spacingJitterPct || 0) / 100)),
       plotSmoothing: Math.max(0, Math.min(1, brush.smoothingStrength === undefined ? 0 : brush.smoothingStrength)),
       dynamicsFalloff: Math.max(0, Math.min(1, (brush.falloffPct || 0) / 100)),
       grainDepthMinimum: Math.max(0, Math.min(1, brush.grainDepthMinimum === undefined ? 0 : brush.grainDepthMinimum)),
@@ -1161,7 +1166,14 @@
         protoVer: brush.bruProtoVer, hollowColor: brush.hollowColor, legacyDirection: brush.bruLegacyDirection,
         /* 【第238轮】f7 笔尖 id：App 的内置笔尖查找按源 id 来，重编码 Shape 的 md5 它认不出，
            查不到就回退实心方块（verify235 plain 组真机实锤）。源名与「是否内置名」必须一起带过去。 */
-        oldTexId: brush.oldTexId, tipFromBuiltin: brush._tipFromBuiltin
+        oldTexId: brush.oldTexId, tipFromBuiltin: brush._tipFromBuiltin,
+        /* 【第251轮】f97 渲染数量：brushset 没有承载位，回程取默认 1。
+           App 里 2 = 同一笔分两次落墨（更柔、更有层次），1 = 一次全量落墨（更实更深）。
+           珠宝装饰套 31/79 支是 2，丢了就会被看成「转换后颜色偏深」。 */
+        renderCount: brush.renderCount,
+        /* 【第251轮】颜色动态开关：源里 colorDyn=true 但 hue/sat/val 全 0 的笔刷（「金属亮片04」）
+           在回程会被 `hueDyn > 0.001 || …` 反推成 false，必须把开关本身带过去。 */
+        colorDynamicsOn: brush.colorDynamicsOn
       });
     }
     /* 【第228轮】烘焙回退（`bruIndependentTexture` 对自定义纹理返回 null）之后 hasTexture 已变 false，
