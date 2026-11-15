@@ -217,6 +217,8 @@
            Animation，以及 Layer 上的 name / color / halftoneType / halftoneLine
            全部被写死（preset_neon 实测 12/41 失真、3 项掉槽）。 */
         _rawMdpXml: xml,
+        /* 【第265轮】原始 zip 字节：写侧在「未改动」时直接回吐，避免重新编码 layerBin/thumbBin */
+        _rawMdp: bytes,
         tip: toTip(tight),
         sizePx: Math.max(tight.w, tight.h),
         spacingPct: 25,
@@ -228,7 +230,11 @@
         pressureSize: false,
         minSizeRatio: 1,
         source: 'medibang'
-      }],
+      }].map(function (b) {
+        /* 【第265轮】原样透传判据：解析完立刻记一份指纹，makeMdp 用它判断「有没有被改过」 */
+        b._rawBrushState = util.brushFingerprint(b);
+        return b;
+      }),
       warnings: warnings
     };
   }

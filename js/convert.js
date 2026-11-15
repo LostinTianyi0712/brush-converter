@@ -3058,6 +3058,22 @@
   /** One brush -> MediBang .mdp material (stamp document). */
   function makeMdp(brushList, opts) {
     const list = Array.isArray(brushList) ? brushList : [brushList];
+    /* 【第265轮】原样透传：单支 + 源就是 .mdp + 没有任何字段被改过 + 没强制重建，
+       直接把原始字节吐回去。以前每支都会重建 zip（layerBin/thumbBin 重新编码），
+       217 支内置样本原样往返时字节全变（内容等价但文件不同）。 */
+    if (list.length === 1) {
+      const one = list[0];
+      if (one && one._rawMdp && one._rawMdp.length && !opts.forceRebuild) {
+        /* 用本题材自己的基线做判据：parse 后立刻记一次指纹，之后逐字段比对。
+           不挂 rawBrushUnchanged 是因为它要求的 _rawBrushState 在 parseFile 的多段后处理之后
+           会变（tip 补位等），用它会导致永远判成"改过"。 */
+        const fp0 = util.brushFingerprint(one);
+        if (one._rawMdpBase === undefined) one._rawMdpBase = fp0;
+        if (one._rawMdpBase === fp0) {
+          return { bytes: new Uint8Array(one._rawMdp), count: 1, passthrough: true, warnings: [] };
+        }
+      }
+    }
     const chunks = [];
     /* 第189轮：同名笔刷过去会产出两个同名 .mdp，批量保存时后者覆盖前者（只剩一支）。
        与 makeTipPngPack / makeGihFiles 同一口径：NFC 归一 + 大小写折叠去重，
