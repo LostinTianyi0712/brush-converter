@@ -1100,7 +1100,8 @@
       ? textureGray(brush.textureInverted ? Object.assign({}, brush, { textureInverted:false }) : brush)
       : null;
     if (brush._nativeTexFromBru) {
-      if (process.env.BCU_DEBUG) console.log('[BiT]', JSON.stringify({name: brush.name, dualOn: !!brush.dualOn, dualTip: !!brush.dualTip, nDual: !!brush._nativeDualFromBru, ref: brush.bruDualRefUuid, texId: brush.texAssetId, gB: !!brush._grainFromBuiltin, fp: brush._grainFromBuiltinFp, hasTex: brush.hasTexture, src: brush.source}));
+      /* 【第248轮】浏览器端没有 process：原来直接读 process.env 会让整个转换抛「process is not defined」。 */
+      if (typeof process !== 'undefined' && process.env && process.env.BCU_DEBUG) console.log('[BiT]', JSON.stringify({name: brush.name, dualOn: !!brush.dualOn, dualTip: !!brush.dualTip, nDual: !!brush._nativeDualFromBru, ref: brush.bruDualRefUuid, texId: brush.texAssetId, gB: !!brush._grainFromBuiltin, fp: brush._grainFromBuiltinFp, hasTex: brush.hasTexture, src: brush.source}));
       if (!plainForNative) return null;
       /* 双笔守卫：内嵌副笔尖的双笔（还行型）必须烘焙——224 轮实测双笔 + 自定义纹理层不出墨。
          注意只看 dualOn&&dualTip：链接型双笔（迟早/扁头描边：dualOn 但副笔尖是跨包引用，
