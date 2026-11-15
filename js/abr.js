@@ -488,7 +488,7 @@
         dynamicsFadeSteps: (function () {
           const steps = {};
           const vars = {size:szVr,opacity:opVr,angle:angleVr,roundness:roundVr,
-            tilt:tiltVr,scatter:scatterVr,count:countVr,flow:flowVr};
+            tilt:tiltVr,scatter:scatterVr,count:countVr,flow:flowVr,color:clVr};   /* 第261轮：clVr 的 fStp 也要进表 */
           Object.keys(vars).forEach(function (key) {
             const value = desc.getItem(vars[key], 'fStp');
             if (typeof value === 'number') steps[key] = value;
@@ -535,6 +535,9 @@
         sizeJitterPct: jitterOf(szVr),
         tiltJitterPct: jitterOf(tiltVr),
         roundnessJitterPct: jitterOf(roundVr),
+        /* 第261轮·标定钩子：clVr（颜色动态描述符）原始对象原样挂载，供离线标定
+           jitter 标量 ↔ 曲线控制点的映射关系；只加字段不改任何现有行为。 */
+        _rawClvr: clVr || undefined,
         source: 'abr'
       };
     }
@@ -1447,7 +1450,7 @@
       if (it.mixDynamics) presetItems.push(_descItem('mxVr', 'Objc', brv(0, it.mixDynamics, 0)));
       if (it.colorDynamicsOn) {
         const prc = function (v) { return Math.round(Math.max(0, Math.min(100, (v || 0) * 100))); };
-        presetItems.push(_descItem('clVr', 'Objc', brv(0, prc(it.colorJitterFgBg), 0)));
+        presetItems.push(_descItem('clVr', 'Objc', brv(0, prc(it.colorJitterFgBg), 0, 'color')));
         presetItems.push(_descItem('H   ', 'UntF', _descUntF('#Prc', prc(it.colorJitterHue))));
         presetItems.push(_descItem('Strt', 'UntF', _descUntF('#Prc', prc(it.colorJitterSat))));
         presetItems.push(_descItem('Brgh', 'UntF', _descUntF('#Prc', prc(it.colorJitterVal))));
