@@ -1956,6 +1956,9 @@
         mixDynamics: brush.mixDynamics,
         colorDynamicsOn: !!brush.colorDynamicsOn,
         colorJitterFgBg: brush.colorJitterFgBg,
+        /* 第262轮：颜色动态控制源/最小值透传（abr.js 写侧 clVr 的 bVTy/Mnm 回填用） */
+        dynamicsControlColor: brush.dynamicsControlColor,
+        colorMinRatio: brush.colorMinRatio,
         colorPerTip: brush.colorPerTip,
         colorJitterHue: brush.colorJitterHue,
         colorJitterSat: brush.colorJitterSat,

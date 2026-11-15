@@ -538,6 +538,15 @@
         /* 第261轮·标定钩子：clVr（颜色动态描述符）原始对象原样挂载，供离线标定
            jitter 标量 ↔ 曲线控制点的映射关系；只加字段不改任何现有行为。 */
         _rawClvr: clVr || undefined,
+        /* 第262轮：颜色动态控制源与最小值标量（写侧 clVr 回填用）。
+           bVTy 走 readControl（数字或归一 null，enum 字符串防串型由写侧 ctlNum 兜底）；
+           Mnm 键按描述符原样带尾空格（'Mnm '），兼容无空格变体。 */
+        dynamicsControlColor: readControl(clVr, 'Color'),
+        colorMinRatio: (function () {
+          const raw = desc.getItem(clVr, 'Mnm ') !== undefined ? desc.getItem(clVr, 'Mnm ') : desc.getItem(clVr, 'Mnm');
+          const m = desc.unitValue(raw);
+          return m === undefined ? undefined : Math.max(0, Math.min(1, m / 100));
+        })(),
         source: 'abr'
       };
     }
@@ -1450,7 +1459,7 @@
       if (it.mixDynamics) presetItems.push(_descItem('mxVr', 'Objc', brv(0, it.mixDynamics, 0)));
       if (it.colorDynamicsOn) {
         const prc = function (v) { return Math.round(Math.max(0, Math.min(100, (v || 0) * 100))); };
-        presetItems.push(_descItem('clVr', 'Objc', brv(0, prc(it.colorJitterFgBg), 0, 'color')));
+        presetItems.push(_descItem('clVr', 'Objc', brv(ctlNum(it.dynamicsControlColor), prc(it.colorJitterFgBg), Math.round((it.colorMinRatio === undefined ? 0 : it.colorMinRatio) * 100), 'color')));
         presetItems.push(_descItem('H   ', 'UntF', _descUntF('#Prc', prc(it.colorJitterHue))));
         presetItems.push(_descItem('Strt', 'UntF', _descUntF('#Prc', prc(it.colorJitterSat))));
         presetItems.push(_descItem('Brgh', 'UntF', _descUntF('#Prc', prc(it.colorJitterVal))));
