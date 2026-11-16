@@ -774,6 +774,12 @@
       const mixOn = !!o[103];                                         // 混色开关（f103）
       const mixStrengthRaw = num(o[104], 1);                          // 混色强度（反向）
       const taperOn = !!o[74];                                        // 锥度开关（f74）
+      /* 【第279轮】f75/f76 = 起笔 / 收笔锥度长度（实测刻度 0~8，8 对应 UI 最大档）。
+         以前两个号不在已知字段里，靠 `_rawUnknown` 原样带过去——值不丢，但没有语义，
+         跨格式（Procreate/ABR）就完全没有通道可走。现在解析成语义字段，BRU 往返照旧逐字节，
+         跨格式处再按目标能力决定要不要报警。 */
+      const taperStartLength = o[75] === undefined ? undefined : num(o[75], 0);
+      const taperEndLength = o[76] === undefined ? undefined : num(o[76], 0);
       const taperSize = num(o[77], 1);                                // 锥度尺寸强度（f77）
       /* 【第230轮】源里到底有没有 f77/f78：有就必须原样写出（哪怕 f74 关着），
          没有就不要凭空补默认值，否则 183 支会被写成显式值。 */
@@ -964,6 +970,8 @@
         // 字段，交由 Procreate 默认值；同格式写出仍优先用 smudgeOn/smudgeAmount。
         dynamicsMix: mixOn ? Math.max(0, Math.min(1, 1 - mixStrengthRaw)) : undefined,
         taperOn: taperOn,
+        taperStartLength: taperStartLength,
+        taperEndLength: taperEndLength,
         taperSize: taperSize,
         _bruTaperFields: bruTaperFields,
         taperOpacity: taperOpacity,

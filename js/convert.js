@@ -1579,6 +1579,11 @@
       textureContrast: match && match.custom && !brush._nativeTexFromBru ? Math.max(0, Math.min(200, 100 + (brush.textureContrast || 0))) : bruTexContrast(brush),
       textureDepth: effectiveTextureDepth,
       taperOn: brush.taperOn,
+      /* 【第279轮】锥度起笔/收笔长度（f75/f76）**不进写侧**：BRU→BRU 由 `_rawUnknown` 原样透传
+         已经逐字节保留；改成语义写回会引入两个新问题——① 与 Procreate 的长度单位不同
+         （BRU 0~8 vs Procreate 0~1），② 跨格式回来后 Procreate 的默认值 0.2/0.3 会被当成
+         「源里有值」写进 BRU（roundtrip_baseline 的 taperStartLengthPresence 180/180 红）。
+         所以只读出来用于「跨格式提示」，不参与写出。 */
       /* 【第232轮】源 BRU 显式带 f77/f78 的标记必须传下去：bru.js 的写侧靠它决定
          「锥度开关关着也要把尺寸/透明度写出来」。少了这个键，轻舟「色块平铺」f77=0.36 往返成 1。 */
       _bruTaperFields: brush._bruTaperFields === true,
@@ -3965,7 +3970,11 @@ Write-Host 'restart MediBang Paint Pro'
       ['平滑', 'smoothingStrength', function (v) { return Math.round(v * 100) + '%'; }],
       ['毛刷笔尖', 'bristle', function (v) { return v.shapeName === 'flatPoint' ? '平点形（扁凿近似）' : (v.shapeName === 'roundDull' ? '圆钝形' : ('形状' + v.shape)); }],
       ['侵蚀/喷枪笔尖', 'dTips', function (v) { return (v.kind === 'erodible' ? '侵蚀·' : '喷枪·') + (v.shapeName || v.shape); }],
-      ['双笔刷', 'dualOn', function () { return '开'; }]
+      ['双笔刷', 'dualOn', function () { return '开'; }],
+      /* 【第279轮】锥度起笔/收笔长度：BRU 原生有（f75/f76，0~8 刻度），Procreate/ABR 的单位与语义
+         不同（0~1，且默认值 0.2/0.3），本轮不做换算映射；但**不能静默丢**，进报告里明说。 */
+      ['锥度起笔长度', 'taperStartLength', function (v) { return String(Math.round(v * 100) / 100); }],
+      ['锥度收笔长度', 'taperEndLength', function (v) { return String(Math.round(v * 100) / 100); }]
     ];
     const support = {
       sut: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','纹理深度','双笔刷'],
@@ -4188,7 +4197,11 @@ Write-Host 'restart MediBang Paint Pro'
       ['平滑', 'smoothingStrength', function (v) { return Math.round(v * 100) + '%'; }],
       ['毛刷笔尖', 'bristle', function (v) { return v.shapeName === 'flatPoint' ? '平点形（扁凿近似）' : (v.shapeName === 'roundDull' ? '圆钝形' : ('形状' + v.shape)); }],
       ['侵蚀/喷枪笔尖', 'dTips', function (v) { return (v.kind === 'erodible' ? '侵蚀·' : '喷枪·') + (v.shapeName || v.shape); }],
-      ['双笔刷', 'dualOn', function () { return '开'; }]
+      ['双笔刷', 'dualOn', function () { return '开'; }],
+      /* 【第279轮】锥度起笔/收笔长度：BRU 原生有（f75/f76，0~8 刻度），Procreate/ABR 的单位与语义
+         不同（0~1，且默认值 0.2/0.3），本轮不做换算映射；但**不能静默丢**，进报告里明说。 */
+      ['锥度起笔长度', 'taperStartLength', function (v) { return String(Math.round(v * 100) / 100); }],
+      ['锥度收笔长度', 'taperEndLength', function (v) { return String(Math.round(v * 100) / 100); }]
     ];
     const support = {
       sut: ['尺寸','间距','角度','圆度','不透明度','流量','硬度','纹理','双笔刷'],
