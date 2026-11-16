@@ -1991,10 +1991,23 @@
             } else {
               let packList = list;
               let pairNote = false;
-              if (opts.bruEmbed === false && opts.dualPair !== false && BC.convert.buildBruDualPairBrushes) {
+              /* 【第275轮】非 BRU 源（Procreate/PS）的双笔刷**默认**拆成「主笔 + 辅助条目」：
+                 它们的副笔是「与主笔混合」，直接内嵌到画世界会重影（第181轮真机）；
+                 拆开用的是画世界自己的原生双笔结构（主笔 f119 + f121 指向副笔），不重影。
+                 BRU 原生双笔不受影响，仍走内嵌。 */
+              const autoPair = opts.dualPair !== false && BC.convert.dualNeedsPair &&
+                list.some(function (b) { return BC.convert.dualNeedsPair(b); });
+              if ((opts.bruEmbed === false || autoPair) && opts.dualPair !== false && BC.convert.buildBruDualPairBrushes) {
+                /* 【第275轮修正（WorkBuddy 复核 P1）】以前只要 autoPair 为真，这段就把**所有** dualOn 的
+                   笔刷都拆开——连 BRU 原生双笔（f119+f121 本来就自洽）也一起拆，混包里凭空多出条目。
+                   现在逐支判定：只有「非 BRU 源」才拆；只有用户显式选「主笔+辅助条目」(bruEmbed=false)
+                   时才拆全部。 */
+                const splitAllDual = opts.bruEmbed === false;
                 packList = [];
                 for (const b of list) {
-                  if (b.dualOn && b.dualTip) {
+                  const shouldSplit = b && b.dualOn && b.dualTip &&
+                    (splitAllDual || (BC.convert.dualNeedsPair && BC.convert.dualNeedsPair(b)));
+                  if (shouldSplit) {
                     const pair = BC.convert.buildBruDualPairBrushes(b);
                     if (pair) { packList.push(pair.primary, pair.secondary); pairNote = true; continue; }
                   }
@@ -2047,6 +2060,16 @@
           try {
             if (fmt === 'texture_png') { emitTexturePng(b, folder + base); continue; }
             const co = commonOpts(rec);
+            /* 【第275轮】逐支模式同样默认拆 pair（非 BRU 双笔），再考虑内嵌 */
+            if (fmt === 'bru' && opts.dualPair !== false && BC.convert.dualNeedsPair &&
+                BC.convert.dualNeedsPair(b) && BC.convert.makeBruDualPair) {
+              const autoPair = BC.convert.makeBruDualPair(b, co);
+              if (autoPair) {
+                outFiles.push({ name: uniqueFile(folder + base, '.bru'), data: autoPair.bytes });
+                warnings.push('Procreate/PS 双笔刷已输出为主笔 + 「' + base + '_副笔尖」辅助条目（画世界原生双笔：各落一次，不重影）；请选主笔使用，别删辅助条目');
+                continue;
+              }
+            }
             if (fmt === 'bru' && opts.bruEmbed !== false && b.dualTip && BC.convert.makeBru) {
               const made = BC.convert.makeBru(b, Object.assign({}, co, { embedSubTip: true }));
               outFiles.push({ name: uniqueFile(folder + base, '.bru'), data: made.bytes });
@@ -2631,7 +2654,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.134';
+const APP_VERSION = '2.8.135';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;
