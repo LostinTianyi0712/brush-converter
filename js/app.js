@@ -1308,7 +1308,14 @@
     for (let i = 0; i < state.files.length; i++) {
       const rec = state.files[i];
       if (!rec || !Array.isArray(rec.brushes)) continue;
-      const count = BC.convert.restoreHsjTips(rec, opts);
+      /* 【第272轮】Procreate 内置素材（bundledShapePath / bundledGrainPath）也要回补：
+         用户常见顺序是「先导笔刷包、后导/下载素材库」，解析那一刻库还没到位，
+         笔刷被定型成无笔尖/无纹理，之后再导库不会自动回头补。 */
+      let count = BC.convert.restoreHsjTips(rec, opts);
+      if (shapeRes && BC.convert.restoreProcreateBundled) {
+        const n2 = BC.convert.restoreProcreateBundled(rec, { shapeResources: shapeRes });
+        if (n2 > 0) count += n2;
+      }
       if (count > 0) {
         fixed += count;
         rec.brushes.forEach(function (b) {
@@ -1699,6 +1706,14 @@
     const failed = [];
     const warnings = [];
     // 源文件没有 shape（笔尖/形状）图的笔刷：转出时需要明确提示（用户反馈：以前只阴在解析日志里）
+    try {
+      /* 库已经在手时，导出前再补挂一次：解析时机不该决定导出效果 */
+      if (state.shapeLib && BC.convert.restoreProcreateBundled) {
+        for (const rec of records) {
+          if (rec && Array.isArray(rec.brushes)) BC.convert.restoreProcreateBundled(rec, { shapeResources: state.shapeLib });
+        }
+      }
+    } catch (e) { /* 补挂失败不影响转换 */ }
     try {
       const auditList = [];
       for (const rec of records) for (const b of (rec.brushes || [])) auditList.push(b);
@@ -2591,7 +2606,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.131';
+const APP_VERSION = '2.8.132';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;

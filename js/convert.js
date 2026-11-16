@@ -541,6 +541,20 @@
     return count;
   }
 
+  /* 【第272轮】Procreate 内置素材的事后补挂（restoreHsjTips 的同族）：
+     用户的常见顺序是「先导笔刷包、再导/下载素材库」。解析那一刻库还没到位，
+     `bundledShapePath`/`bundledGrainPath` 解析不出图，笔刷被定型成无笔尖/无纹理；
+     之后再导库不会自动回头补 —— 表现就是「导入了图库，转出来还是实色」。
+     这里在库可用时统一回补一次，返回补到的项数。 */
+  function restoreProcreateBundled(result, opts) {
+    if (!result || !result.brushes || !procreate || typeof procreate.attachBundledAssets !== 'function') return 0;
+    const resMap = opts && opts.shapeResources && typeof opts.shapeResources.get === 'function' ? opts.shapeResources : null;
+    if (!resMap) return 0;
+    let count = 0;
+    for (const b of result.brushes) count += procreate.attachBundledAssets(b, resMap);
+    return count;
+  }
+
   function parseFile(name, bytes, opts) {
     const kind = detect(name, bytes);
     if (!kind) throw new Error('无法识别的文件格式（支持 .bru/.abr/.tpl/.brush/.brushset/.gobrush/.gobrushes/.sut/.mtd/.kpp/.gbr/.gih/.myb/.prbr/.mdp/.brushcategory/.brushlibrary，或包含笔刷的 ZIP）');
@@ -3997,10 +4011,25 @@ Write-Host 'restart MediBang Paint Pro'
        · noTipRef   源里**引用了**内置笔尖图（oldTexId/ptN），但这次没取到像素 → 导入素材库能解决
        · paramOnly  源里**根本没有引用任何图**（纯参数化画出来的笔尖）→ 任何图库都补不了，
                     转出后按参数生成圆/椭圆笔尖。这种情况不该报「缺图库」，用户会以为导库没生效。 */
-    const out = { noTip: [], noTipRef: [], paramOnly: [], noTipOther: [], procedural: [], grainOnly: [], bruTexOnly: [], bruTexMissing: [], procreateNoTip: 0 };
+    const out = { noTip: [], noTipRef: [], paramOnly: [], noTipOther: [], procedural: [], grainOnly: [], bruTexOnly: [], bruTexMissing: [], procreateBundledMissing: [], procreateNoTip: 0 };
     for (const b of (brushList || [])) {
       if (!b || b.enabled === false) continue;
+      /* 【第272轮】Procreate 的 shape/grain 常常是「引用 App 内置素材库」（bundledShapePath /
+         bundledGrainPath），笔刷包里不带图。没导素材库时这些引用解析不出像素，纹理就全丢——
+         这是**可修**的，必须提示去导库（以前完全静默，用户只能看到「转出来是实色」）。 */
+      let procreatePending = false;
+      if (b.source === 'procreate') {
+        const wantShape = b.bundledShapePath && b.bundledShapePath !== '$null';
+        const wantGrain = b.bundledGrainPath && b.bundledGrainPath !== '$null';
+        if ((wantShape && !b.tip) || (wantGrain && !(b._grainRgba && b._grainRgba.w))) {
+          out.procreateBundledMissing.push(b.name);
+          procreatePending = true;
+        }
+      }
       const hasTip = !!b.tip; // A secondary image cannot replace the missing primary.
+      /* 已归到「等素材库」的 Procreate 笔刷不再重复报「没有笔尖图」：
+         它们不是没有图，是图在 App 内置库里、这次没取到。两条一起提示只会互相打脸。 */
+      if (procreatePending && !hasTip) continue;
       if (!hasTip) {
         /* 【第198轮】画世界官方「小方块/网点」类：文件里没有笔尖图，图案全靠内置纹理 ptN。
            这不是「缺笔尖」——单独归类，下载纹理库后应提示已补上，而不是继续报缺图。 */
@@ -4032,7 +4061,7 @@ Write-Host 'restart MediBang Paint Pro'
          · 只有纹理图没有形状图 → 不提示（导出照常，差异由转换报告覆盖）
        真正要保留的是「图案来自内置纹理但库里没有」——那一步会转成实心圆，必须提示。 */
     const msgs = [];
-    const list = Object.assign({ noTip: [], noTipRef: [], paramOnly: [], noTipOther: [], procedural: [], grainOnly: [], bruTexOnly: [], bruTexMissing: [], procreateNoTip: 0 }, audit || {});
+    const list = Object.assign({ noTip: [], noTipRef: [], paramOnly: [], noTipOther: [], procedural: [], grainOnly: [], bruTexOnly: [], bruTexMissing: [], procreateBundledMissing: [], procreateNoTip: 0 }, audit || {});
     function names(arr, n) {
       const head = arr.slice(0, n).join('、');
       return arr.length > n ? head + ' 等' : head;
@@ -4044,6 +4073,10 @@ Write-Host 'restart MediBang Paint Pro'
     if (list.bruTexMissing.length) {
       msgs.push(list.bruTexMissing.length + ' 支画世界内置笔刷的图案来自内置纹理，但纹理库里没找到：' + names(list.bruTexMissing, 3) +
         '；请在「高级设置 → 素材库」下载画世界纹理库后重新导入，否则只能转出实心圆笔尖');
+    }
+    if (list.procreateBundledMissing.length) {
+      msgs.push(list.procreateBundledMissing.length + ' 支 Procreate 笔刷的笔尖/纹理引用的是 App 内置素材（包里不带图）：' + names(list.procreateBundledMissing, 3) +
+        '；到「高级设置 → 素材库」导入 Procreate 笔尖图库后重新导入这套笔刷，否则形状/颗粒会丢、画出来是实色');
     }
     /* 画世界的参数化笔尖（源里没有图、也没有引用）只归类不提示：补不了，说了也没用。
        其它来源（abr/prbr…）真的没有笔尖图属于异常，仍要提一句「会按参数生成」。 */
@@ -4404,7 +4437,7 @@ Write-Host 'restart MediBang Paint Pro'
     });
   }
 
-  const api = { detect, parseFile, restoreHsjTips, builtinTipKey, expandArchive, synthTip, makeBru, makeBruPack, makeBruDualPair, buildBruDualPairBrushes, makeAbrPack, makeTplPack, makeUdongmanPack, makeUdongmanSutPack, makeUdongmanMtdPack, parseMtd, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, mergePatternFiles, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, tipSourceAudit, tipSourceHint, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makeGihFiles, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Files, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
+  const api = { detect, parseFile, restoreHsjTips, restoreProcreateBundled, builtinTipKey, expandArchive, synthTip, makeBru, makeBruPack, makeBruDualPair, buildBruDualPairBrushes, makeAbrPack, makeTplPack, makeUdongmanPack, makeUdongmanSutPack, makeUdongmanMtdPack, parseMtd, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, mergePatternFiles, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, tipSourceAudit, tipSourceHint, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makeGihFiles, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Files, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
   /* 写出口统一过一遍数值卫生（见 sanitizeBrushNumbers）。包装不改变函数签名：
      数组入口逐支处理，单支入口直接处理，字节/字符串入口原样放行。
      只有真的钳制过才替换参数并附加 warnings，合法样本走原路径零影响。 */

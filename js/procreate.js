@@ -179,6 +179,46 @@
     return null;
   }
 
+  /* 【第272轮】事后补挂内置素材。
+     适用于「先导入笔刷、后导入/下载素材库」的顺序：解析那一刻 shapeResources 还没到位，
+     bundledShapePath / bundledGrainPath 解析不出像素，笔刷就被定型成「无笔尖 / 无纹理」，
+     之后再导库也不会回头补 —— 用户看到的就是「导入了图库仍然没有纹理」。
+     这里按同一套 lookupLibraryImage 规则重试一遍，成功就把 tip / _grainRgba / hasTexture 补上。
+     返回补到的项数（0 表示库里确实没有这些图）。 */
+  function attachBundledAssets(brush, shapeResources) {
+    if (!brush || brush.source !== 'procreate' || !shapeResources) return 0;
+    let fixed = 0;
+    const shapePath = typeof brush.bundledShapePath === 'string' ? brush.bundledShapePath : '';
+    if (!brush.tip && shapePath && shapePath !== '$null' &&
+        !/(^|[\\/])(?:\.\.|QuickLook|Signature)([\\/]|$)|(^|[\\/])Grain\.png$/i.test(shapePath)) {
+      const image = lookupLibraryImage(shapePath, shapeResources);
+      if (image) {
+        const raw = sourceShapePng(image.w, image.h, image.rgba);
+        const tip = decodeShape({ name: 'Shape.png', data: function () { return raw; } }, brush.shapeInverted === true);
+        if (tip) {
+          brush.tip = tip;
+          brush.tipSource = 'library';
+          brush.shapeFromLibrary = true;
+          brush.resolvedShapePath = shapePath;
+          fixed++;
+        }
+      }
+    }
+    const grainPath = typeof brush.bundledGrainPath === 'string' ? brush.bundledGrainPath : '';
+    if (!brush._grainRgba && grainPath && grainPath !== '$null') {
+      const image = lookupLibraryImage(grainPath, shapeResources);
+      if (image) {
+        brush._grainRgba = { w: image.w, h: image.h, rgba: image.rgba };
+        brush.grainFromLibrary = true;
+        fixed++;
+      }
+    }
+    /* hasTexture 原本是解析时按「有 grain 图 && depth>0」算的，补挂之后必须按同一口径重算，
+       否则 makeBru 的纹理分支进不去，颗粒照样丢。 */
+    if (brush._grainRgba && brush._grainRgba.w > 0 && Number(brush.textureDepth) > 0) brush.hasTexture = true;
+    return fixed;
+  }
+
   function readBrushFolder(entries, prefix, shapeResources, entryByName, folderEntries, initialPixelHashes) {
     // Only share fingerprints while initializing this brush and its sub-brush.
     // Export must hash again to detect in-place pixel edits.
@@ -1472,7 +1512,7 @@
     return s;
   }
 
-  const api = { isProcreate, parse, parseAsync, writeBrush, writeBrushset, buildArchive, shapePng, thumbPng, unchanged, secondaryBrush: secondaryBrush };
+  const api = { isProcreate, parse, parseAsync, writeBrush, writeBrushset, buildArchive, shapePng, thumbPng, unchanged, secondaryBrush: secondaryBrush, attachBundledAssets };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { procreate: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);
