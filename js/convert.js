@@ -703,7 +703,16 @@
       /* 【第266轮】整包透传：记下原始字节与序号，makeAbrPack 在「原封不动」时直接回吐 */
       if (result && result.brushes && result.brushes.length) {
         const pack = { bytes: new Uint8Array(bytes), count: result.brushes.length };
-        result.brushes.forEach(function (b, i) { b._rawAbrPack = pack; b._rawAbrIndex = i; });
+        result.brushes.forEach(function (b, i) {
+          b._rawAbrPack = pack;
+          b._rawAbrIndex = i;
+          /* 【第270轮】基线必须在这里（解析收尾处）就记下。
+             以前只在 makeAbrPack 里「首次遇到时懒初始化」，而那时拿到的是**已经被用户改过**
+             的指纹 —— 于是「打开 .abr → 改尺寸 → 导出」判定成「没动过」，直接回吐原始字节，
+             用户的修改被整段吞掉（实测 control.abr 第0支 10px 改 15px，导出后回读还是 10px、
+             输出与源文件逐字节相同）。基线放在 parseFile 收尾处，才能反映「用户动没动」。 */
+          b._rawAbrBase = util.brushFingerprint(b);
+        });
       }
     }
     if (kind === 'sut' && result.brushes.length) {
@@ -1838,9 +1847,10 @@
           brushList.every(function (b, i) { return b && b._rawAbrPack === pack && b._rawAbrIndex === i; })) {
         let clean = true;
         for (const b of brushList) {
-          const fp = util.brushFingerprint(b);
-          if (b._rawAbrBase === undefined) b._rawAbrBase = fp;
-          if (b._rawAbrBase !== fp) { clean = false; break; }
+          /* 基线在 parseFile 收尾时记（见那里的注释）。这里是「比对」不是「初始化」：
+             没有基线就说明不是同一次解析出来的对象，一律走重建，绝不能懒初始化——
+             那会把「用户改过的当前值」当成原始值，导出等于什么都没改。 */
+          if (b._rawAbrBase === undefined || b._rawAbrBase !== util.brushFingerprint(b)) { clean = false; break; }
         }
         if (clean) return { bytes: new Uint8Array(pack.bytes), count: pack.count, passthrough: true };
       }
