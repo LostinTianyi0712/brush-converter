@@ -1968,6 +1968,10 @@
         scatterOn:['useScatter'],scatterPct:['scatterDynamics.jitter'],scatterCount:['Cnt ','useScatter'],scatterBothAxes:['bothAxes'],
         countJitterPct:['countDynamics.jitter','useScatter'],flowJitterPct:['prVr.jitter','usePaintDynamics'],
         colorDynamicsOn:['useColorDynamics'],colorJitterFgBg:['clVr.jitter'],colorPerTip:['colorDynamicsPerTip'],colorJitterHue:['H   '],colorJitterSat:['Strt'],colorJitterVal:['Brgh'],
+        /* 【第277轮】clVr 的「控制源 / 最小值」以前没进补丁表：改了它们，keepRaw 路径不会重写
+           clVr.bVTy / clVr.Mnm，导出后回读变回 null/undefined（实测 control.abr：设 5 / 0.42 → 回读 null）。
+           同第270轮 ABR 基线那类「改了等于没改」，只是这次发生在属性子字段上。 */
+        dynamicsControlColor:['clVr.bVTy'],colorMinRatio:['clVr.Mnm '],
         noise:['Nose'],buildUp:['Rpt '],wetEdgesOn:['Wtdg'],poseOn:['useBrushPose']});
       if(keepRaw && source._rawPreset)Object.keys(mapping).forEach(k=>{if(brush[k]!==before[k])mapping[k].forEach(p=>paths.add(p));});
       if(tipChanged)paths.add('Brsh.sampledData');
