@@ -327,6 +327,8 @@
         opacity: opacity,
         flowPct: flowPct,
         hardness: hardness,
+        /* 【第267轮】vfade 是「垂直羽化」，与 hfade 独立：以前写侧强制用 hardness 覆盖它，椭圆笔尖会变正圆 */
+        maskVFade: (bd && bd.vfade !== null && bd.vfade !== undefined && isFinite(parseFloat(bd.vfade))) ? parseFloat(bd.vfade) : undefined,
         angle: angle,
         roundness: roundnessPct,
         hasTexture: textureOn,
@@ -531,7 +533,7 @@
           let t = tag;
           if (/<MaskGenerator\b/.test(t)) t = patchAttrNum(t, 'diameter', diameter);
           t = patchAttrNum(t, 'hfade', hardness);
-          t = patchAttrNum(t, 'vfade', hardness);
+          t = patchAttrNum(t, 'vfade', brush.maskVFade === undefined ? hardness : brush.maskVFade);
           t = patchAttrNum(t, 'ratio', ratio);
           t = patchAttrNum(t, 'angle', angleRad);
           t = patchAttrNum(t, 'spacing', spacing);
