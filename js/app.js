@@ -1690,7 +1690,7 @@
     if (!records.length || !totalBrushes) { toast('没有可转换的笔刷'); return; }
     state.converting = true;
     if (!force) state.cancelRequested = false;
-    if (typeof btnCancel !== 'undefined' && btnCancel) { btnCancel.style.display = ''; btnCancel.disabled = false; }
+    if (typeof btnCancel !== 'undefined' && btnCancel) { btnCancel.style.display = ''; btnCancel.disabled = false; btnCancel.textContent = '取消'; }
     if (typeof needsHsjBuiltinTip === 'function' && typeof restoreHsjShapes === 'function') {
       for (const rec of records) {
         if (rec && rec.brushes && rec.brushes.some(needsHsjBuiltinTip)) {
@@ -1873,6 +1873,14 @@
         const sourceName = rec.baseName || rec.name.replace(/\.[^.]+$/, '') || '笔刷集';
         const base = BC.convert.sanitizeName(opts.prefix + sourceName, 0, true);
         for (const fmt of targets) {
+          /* 【第273轮】每个目标格式开始前让出一次线程并检查取消。
+             整包写出（.bru/.abr/.brushset）是一次同步重活，这段以前没有任何让出点：
+             用户点「取消」必须等整包算完才轮得到事件循环，表现就是按钮没反应。 */
+          if (state.cancelRequested) {
+            if (warnings.indexOf('已取消：已转换的部分仍会打包') < 0) warnings.push('已取消：已转换的部分仍会打包');
+            break;
+          }
+          await sleep(0);
           try {
             if (fmt === 'brushset') {
               // 组名必须用包名（文件名），否则会回落到 brushList[0].name，
@@ -1881,6 +1889,8 @@
               outFiles.push({ name: uniqueFile(base, '.brushset'), data: made.bytes });
             } else if (fmt === 'brush' || fmt === 'gbr' || fmt === 'myb') {
               for (const b of list) {
+                if (state.cancelRequested) break;
+                await sleep(0);
                 const co = commonOpts(rec);
                 const made = fmt === 'brush'
                   ? BC.convert.makeProcreateBrush(b, co)
@@ -2008,6 +2018,9 @@
       }
       // per-brush mode
       for (let i = 0; i < list.length; i++) {
+        /* 【第273轮】逐支检查取消：非打包路径也要能被「取消」打断（整包路径见上面的 fmt 循环） */
+        if (state.cancelRequested) break;
+        await sleep(0);
         const b = list[i];
         setProgress((doneCount + 0.5) / totalBrushes, '正在转换 ' + (doneCount + 1) + '/' + totalBrushes + '：' + (b.name || ''));
         const brushTag = (b.name || '').trim();
@@ -2239,7 +2252,7 @@
     const sink = [];
     state.converting = true;
     state.cancelRequested = false;
-    if (typeof btnCancel !== 'undefined' && btnCancel) { btnCancel.style.display = ''; btnCancel.disabled = false; }
+    if (typeof btnCancel !== 'undefined' && btnCancel) { btnCancel.style.display = ''; btnCancel.disabled = false; btnCancel.textContent = '取消'; }
     render();
     try {
       for (let i = 0; i < chunks.length; i++) {
@@ -2606,7 +2619,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.132';
+const APP_VERSION = '2.8.133';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;
@@ -2796,7 +2809,15 @@ const UPDATE_ENABLED = false;
     });
   })();
   var btnCancel = $('#btnCancel');
-  if (btnCancel) btnCancel.addEventListener('click', function () { state.cancelRequested = true; btnCancel.disabled = true; });
+  if (btnCancel) btnCancel.addEventListener('click', function () {
+    /* 【第273轮】以前点了只置一个内部标志：按钮文字不变、也没有任何反馈，
+       遇上「单文件整包」这种一次算几十秒的活，用户看到的就是「按了没反应」。
+       现在立刻把按钮改成「取消中…」，并说明会在哪一步停。 */
+    state.cancelRequested = true;
+    btnCancel.disabled = true;
+    btnCancel.textContent = '取消中…';
+    toast('正在取消：当前这一步算完就停，已转换的部分仍会打包', 5000);
+  });
   document.addEventListener('change', function (ev) {
     const t = ev.target;
     if (t && (t.tagName === 'SELECT' || t.tagName === 'INPUT')) {
