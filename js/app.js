@@ -2004,7 +2004,19 @@
               const made = BC.convert.makeBruPack(packList, Object.assign({}, commonOpts(rec), { dualBake: pairNote ? false : opts.dualBake, embedSubTip: opts.bruEmbed !== false }));
               outFiles.push({ name: uniqueFile(base, '.bru'), data: made.bytes });
               if (pairNote) warnings.push('画世界双笔刷：主笔旁的「原笔刷名_副笔尖」是关联辅助笔尖，请选择主笔使用；辅助条目并非重复笔刷，删除会影响双笔效果');
-              else if (opts.bruEmbed !== false && list.some(function (b) { return b.dualOn && b.dualTip; })) warnings.push('画世界双笔刷已内嵌副笔尖，不额外增加辅助笔刷条目；整包文件仍可包含多支主笔刷。');
+              else if (opts.bruEmbed !== false && list.some(function (b) { return b.dualOn && b.dualTip; })) {
+                /* 【第274轮】这句以前对所有双笔刷都说「已内嵌副笔尖」，但非 BRU 源（Procreate/ABR）
+                   走的是**烘焙**：第181轮真机实测，把 Procreate 副笔直接内嵌成画世界双笔会「重影」
+                   （Procreate 副笔是与主笔混合，画世界双笔是各落一次），所以非 BRU 源一律烘进笔尖 + 关 f119。
+                   提示必须说实话，否则用户以为拿到了原生双笔。 */
+                const proDual = list.filter(function (b) { return b.dualOn && b.dualTip && b.source !== 'bru'; }).length;
+                if (proDual) {
+                  warnings.push('画世界：' + proDual + ' 支双笔刷的副笔按「与主笔混合」烘进了笔尖（画世界双笔是各落一次，直接内嵌会重影）；' +
+                    '要画世界原生双笔，把「双笔刷写法」改成「主笔+辅助条目」');
+                } else {
+                  warnings.push('画世界双笔刷已内嵌副笔尖，不额外增加辅助笔刷条目；整包文件仍可包含多支主笔刷。');
+                }
+              }
             }
           } catch (e) {
             list.forEach(b => failed.push((b.name || '未命名') + '（.' + fmt + '）：' + e.message));
@@ -2619,7 +2631,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.133';
+const APP_VERSION = '2.8.134';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;

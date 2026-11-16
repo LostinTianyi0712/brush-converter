@@ -1204,9 +1204,46 @@
     return png.encode(t.w, t.h, rgba);
   }
 
+  /* 【第274轮】极小 + 二值 alpha 的笔尖按**最近邻**放大。
+     Procreate 预设里有些笔尖是「Blank」这类 8×8 纯白方块（例如吹石「大号方块」），
+     Procreate 放大时是硬边方块；我们原样把 8×8 交给目标软件，它用双线性/双三次放大，
+     四角被磨圆、整体发虚 —— 用户看到的就是「方形笔尖变成圆的了」。
+     只处理「边长 ≤32 且 alpha 只有 0/255」的图：这类图本来就没有软边信息，
+     最近邻放大不引入任何损失；柔边笔尖（有中间灰度）一律不动。 */
+  function expandTinyBinaryTip(brush, opts) {
+    const t = brush && brush.tip;
+    if (!t || !t.rgba || !(t.w > 0) || !(t.h > 0)) return brush;
+    if (t.w > 32 || t.h > 32) return brush;
+    /* 只处理正方形硬笔尖（Procreate 的 Blank/方头预设就是 8×8 方形）。
+       窄长笔尖（3×1 之类）放大后采样点会变，属于另一类，不在这里顺手改。 */
+    if (t.w !== t.h) return brush;
+    let binary = true;
+    for (let i = 3; i < t.rgba.length; i += 4) {
+      const a = t.rgba[i];
+      if (a !== 0 && a !== 255) { binary = false; break; }
+    }
+    if (!binary) return brush;
+    const want = Math.max(64, Math.min(256, Math.round((brush.sizePx || 64) * 2)));
+    if (want <= Math.max(t.w, t.h)) return brush;
+    const scale = want / Math.max(t.w, t.h);
+    const nw = Math.max(1, Math.round(t.w * scale)), nh = Math.max(1, Math.round(t.h * scale));
+    const out = new Uint8Array(nw * nh * 4);
+    for (let y = 0; y < nh; y++) {
+      const sy = Math.min(t.h - 1, Math.floor(y * t.h / nh));
+      for (let x = 0; x < nw; x++) {
+        const sx = Math.min(t.w - 1, Math.floor(x * t.w / nw));
+        const so = (sy * t.w + sx) * 4, o = (y * nw + x) * 4;
+        out[o] = t.rgba[so]; out[o + 1] = t.rgba[so + 1]; out[o + 2] = t.rgba[so + 2]; out[o + 3] = t.rgba[so + 3];
+      }
+    }
+    return Object.assign({}, brush, { tip: { w: nw, h: nh, rgba: out }, _tipNearestExpanded: true });
+  }
+
   function makeBru(brush, opts) {
     opts = opts || {};
     brush = angleControlAliases(brush);
+    /* 非 BRU 源才放大：BRU 原生往返要逐字节一致，动它的笔尖等于破坏透传。 */
+    if (brush && brush.source !== 'bru' && opts.fidelity !== false) brush = expandTinyBinaryTip(brush, opts);
     /* 【第236轮·清理】这里原本写着第227轮的「全字段快照还原」方案——那段代码当年实测红 21 项，
        已回滚删除，注释却留了下来，容易让人以为存在「一次兜住所有字段」的路。
        现在的保真策略是两条腿：① 逐字段 Extra（brushConvBruExtra / brushConvBruTex / brushConvBruPressure）；
