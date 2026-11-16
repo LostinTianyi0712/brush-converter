@@ -1267,7 +1267,17 @@
        是为了避开原生 Procreate 副笔的重影（真机实测），原生档案没有这个标记，行为不变。 */
 
     if (brush && brush.dualTip && (opts.embedSubTip || brush._nativeDualFromBru)) {
-
+      /* 【第276轮】BRU 源的双笔刷**不要**走内嵌重建：它自己的 f121 链接已经是画世界原生的
+         「主笔→副笔条目」结构，重建会把链接换成新 UUID，整包回读后 13 支里只剩 1 支还挂着双笔
+         （R275-02 的实测：`makeBruPack(楠.bru 全量, {embedSubTip:true})` → dualOn 13→1；
+         而 `embedSubTip:false` 走原路径 → 13→13）。非 BRU 源没有原生链接，才需要内嵌。 */
+      /* 只跳过「**启用中 + 带原生链接 + 链接目标确实在这个包里**」的情况；
+         `f119=0`（画世界关了双笔但缓存副图）、`forceEmbedSubTip`、单支导出（目标不在包里）
+         都必须继续内嵌，否则副笔图会丢（bru_embedded_test / bru_embedded_ui_test 锁着）。 */
+      if (brush.source === 'bru' && brush.bruDualRefUuid && brush.bruDualEnabled !== false &&
+          !opts.forceEmbedSubTip && opts._linkTargetPresent === true) {
+        return makeBru(brush, Object.assign({}, opts, { embedSubTip: false }));
+      }
       return makeBruEmbedded(brush, Object.assign({}, opts, { forceEmbedSubTip: brush._nativeDualFromBru ? true : opts.forceEmbedSubTip }));
 
     }
@@ -1669,8 +1679,17 @@
        .bru 的笔刷同一条路（_rawMeta 字段级保留未改参数），只关掉整文件透传。单支合包上面已原样返回。 */
     // The pack writer uses a zero image length for native procedural nibs.
     const packOpts = Object.assign({}, opts, { _noFilePassthrough: true, _packMember: brushList.length > 1 });
+    /* f121 的 field2 是「包 ID」，解析侧靠 pkgId / uuid 去匹配副笔。先把包内可用标识收齐，
+       逐支判断它引用的副笔在不在本包，再决定「保留原生链接」还是「内嵌副笔图」。 */
+    const presentIds = new Set();
+    brushList.forEach(function (b) {
+      if (!b) return;
+      if (b.pkgId) presentIds.add(b.pkgId);
+      if (b.bruUuid) presentIds.add(b.bruUuid);
+    });
     brushList.forEach(function (brush, i) {
-      const made = makeBru(brush, packOpts);
+      const linkPresent = !!(brush && brush.bruDualRefUuid && presentIds.has(brush.bruDualRefUuid));
+      const made = makeBru(brush, Object.assign({}, packOpts, { _linkTargetPresent: linkPresent }));
       let base = sanitizeName(brush.name, i);
       let name = base, k = 2;
       while (used.has(name.toLowerCase())) { name = base + ' (' + k + ')'; k++; }
