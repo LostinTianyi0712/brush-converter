@@ -154,7 +154,18 @@
     /* textureDepth 不在这里兜底：NaN 由烘焙路径自己回退（round107 用例
        「非有限纹理深度回退默认值而不清空笔尖」验证过），写成 0 反而会改变
        烘焙后的笔尖 alpha。 */
-    ['textureScale', 1, 0.01, 100],
+    /* 【第269轮】textureScale 上限 100 是给 PS/Procreate 那种「平铺缩放百分比」的，
+       但天生会画的 textureScale 是**从 grainScale 反推**出来的（第206轮实测
+       tile ≈ 0.576 × grainScale²，再除以纹理像素宽），原生笔刷里 116/180/214 都是合法值。
+       钳它的后果不是「数字变一点」：sanitizeBrushNumbers 会返回克隆对象，指纹随之变化，
+       `rawBrushUnchanged` 立刻失效 —— 整包透传被跳过，变成整份重建，330KB 原生载荷全丢。
+       实测证据：20 支的 `书法练习_*.gobrushes` 未改参数导出时 25.9MB → 14.6MB。 */
+    ['textureScale', 1, 0.01, 100, function (brush) {
+      /* 只放过「天生会画派生出来的有限值」（grainScale 上限 100 → 反推上限约 720px/纹理宽）：
+         NaN / 越界值仍然回到通用钳制，别把保护一起丢掉。 */
+      return !!(brush && brush.source === 'gopaint' && brush.gopaintGrainScale !== undefined &&
+        Number.isFinite(brush.textureScale) && brush.textureScale > 0 && brush.textureScale <= 1000);
+    }],
     ['textureRotate', 0, -360, 360],
     ['smoothingStrength', 0, 0, 1],
     ['dualDiameter', 30, 0.1, 5000],
@@ -199,6 +210,10 @@
     const patch = {};
     const sizeDefault = tipFallbackSize(brush);
     for (const rule of GUARD_RULES) {
+      /* rule[4]：可选跳过判据。原生来源自己定义取值范围的字段（如天生会画的
+         textureScale 由 grainScale 反推）不能被通用上限钳——钳了会改指纹，
+         进而让「未改动就透传」失效，整包被迫重建（见 GUARD_RULES 里那条注释）。 */
+      if (typeof rule[4] === 'function' && rule[4](brush)) continue;
       const def = rule[1] === null ? sizeDefault : rule[1];
       const v = guardValue(brush, rule[0], def, rule[2], rule[3], notes);
       if (v !== null) patch[rule[0]] = v;
@@ -4283,6 +4298,20 @@ Write-Host 'restart MediBang Paint Pro'
     if (brush._rawGobrush && brush._rawGobrush.length && rawBrushUnchanged(brush, opts) && opts.noTextureBake !== true) {
       return { bytes: new Uint8Array(brush._rawGobrush), fileName:fileName, uuid:brush.gopaintUuid, count: 1, passthrough: true };
     }
+    /* 【第269轮】改过参数的原生 .gobrush 会走重建：容器里那 330KB 原生块（资源记录里的
+       高分辨率 shape/grain 与 brush_<uuid>.info 的原始载荷）不进重建流程，输出只剩
+       我们合成的几十 KB；UUID 也会换新（App 里等于多出一支新笔刷）。
+       这不是「猜」出来的——`_probe/fmt-audit.js` 的 patch 路径（真实样本
+       `楷书_202610192140_29210.gobrush`，只把尺寸乘 1.15）量到：
+       brush_<uuid>.info 352794B → 19711B、shape 703B → 206B、
+       propertiesMinSize.max 306 → 1600、uuid 变。
+       现状没法在原文件上原位改写（`.info` 里的参数/属性块重建逻辑仍走模板），
+       所以至少要**明说**，不能让用户以为只是「改了个尺寸」。 */
+    const rebuildingNative = !!(brush._rawGobrush && brush._rawGobrush.length);
+    const nativeWarnings = rebuildingNative ? ['天生会画：改过参数的原生 .gobrush 会整份重建——' +
+      '容器内原始资源（brush_*.info 原始载荷、高分辨率 shape/grain）不保留，' +
+      '笔刷上限/滑块范围按默认重算，UUID 会换新（App 里会多一支）；' +
+      '只想保原样请不改参数直接导出，或用「原样导出」'] : null;
     let b2 = withTipRGBA(brush, Object.assign({}, opts, { maxTipSize: opts.maxTipSize || 2048 }), { transform: true });
     const texture = opts.noTextureBake === true ? null : textureGray(b2);
     if (texture && (!b2.grain || b2.textureInverted)) {
@@ -4292,7 +4321,10 @@ Write-Host 'restart MediBang Paint Pro'
     }
     b2 = Object.assign({}, b2, { hasTexture: !!brush.hasTexture && opts.noTextureBake !== true && (!!texture || opts.grainMode === 'tip') });
     const made = gobrushWrite.makeGobrush(b2, opts || {});
-    return { bytes: made.bytes, fileName:fileName, uuid:made.uuid, count: 1 };
+    const out = { bytes: made.bytes, fileName:fileName, uuid:made.uuid, count: 1 };
+    if (nativeWarnings) out.warnings = nativeWarnings.concat(made.warnings || []);
+    else if (made.warnings && made.warnings.length) out.warnings = made.warnings;
+    return out;
   }
 
   /** 整个笔刷集 -> 单个 .gobrushes 文件（GoPaint 原生笔刷组） */
@@ -4309,7 +4341,17 @@ Write-Host 'restart MediBang Paint Pro'
     }
     const made = gobrushWrite.makeGobrushes(brushList, Object.assign({}, opts, {groupName:groupName}),
       function (b) { return makeGoPaintBrush(b, opts); });
-    return { bytes: made.bytes, fileName:fileName, count: made.count };
+    const out = { bytes: made.bytes, fileName:fileName, count: made.count };
+    /* 组内只要有一支是「改过的原生笔刷」，整包就带着同一句告警上去（别只埋在单支里） */
+    const childWarnings = [];
+    for (const b of (brushList || [])) {
+      if (b && b._rawGobrush && b._rawGobrush.length && !rawBrushUnchanged(b, opts)) {
+        childWarnings.push('天生会画：整包里有改过的原生笔刷，重建会丢掉它们各自的 brush_*.info 原始载荷与高分辨率 shape/grain，UUID 也会换新');
+        break;
+      }
+    }
+    if (childWarnings.length) out.warnings = childWarnings;
+    return out;
   }
 
   /** 整个笔刷集 -> 多个 .gobrush 文件（GoPaint 原生格式） */
