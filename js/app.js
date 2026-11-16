@@ -263,12 +263,19 @@
     // 没有笔尖（shape）图的笔刷在预检里也要说清楚：转出后是参数生成的圆形/椭圆笔尖。
     try {
       const audit = BC.convert.tipSourceAudit ? BC.convert.tipSourceAudit(brushes) : null;
-      if (audit && (audit.noTip.length || audit.grainOnly.length || (audit.bruTexMissing || []).length) && el.style.display !== 'none') {
+      /* 【第271轮】预检只提「需要用户动手」的项：
+         · 引用了素材库笔尖却没取到 → 去导图库
+         · 画世界内置纹理没载入 → 去下纹理库
+         · 画世界参数化笔尖（源里没有图、也没引用）→ **不提**，任何图库都补不了，
+           以前那句「N 支没有笔尖图、会用参数生成笔尖」只会让人以为图库没生效 */
+      const needLib = (audit && (audit.noTipRef || []).length) || 0;
+      const texMissing = (audit && (audit.bruTexMissing || []).length) || 0;
+      const otherNoTip = (audit && (audit.noTipOther || []).length) || 0;
+      if (audit && (needLib || texMissing || otherNoTip) && el.style.display !== 'none') {
         const parts = [];
-        if (audit.noTip.length) parts.push(audit.noTip.length + ' 支没有笔尖(shape)图、会用参数生成笔尖');
-        if (audit.grainOnly.length) parts.push(audit.grainOnly.length + ' 支只有纹理(grain)图当笔尖');
-        // 第198轮：画世界「小方块/网点」类靠内置纹理出图案，纹理库没载入时会变实心圆
-        if ((audit.bruTexMissing || []).length) parts.push(audit.bruTexMissing.length + ' 支画世界内置纹理未载入（需下载纹理库）');
+        if (needLib) parts.push(needLib + ' 支的笔尖图没从素材库取到（导入笔尖图库后重试）');
+        if (texMissing) parts.push(texMissing + ' 支画世界内置纹理未载入（需下载纹理库）');
+        if (otherNoTip) parts.push(otherNoTip + ' 支没有笔尖图、会按参数生成');
         el.textContent += '；另 ' + parts.join('，');
       }
     } catch (e) { /* ignore */ }
@@ -1309,7 +1316,9 @@
         });
         if (Array.isArray(rec.warnings) && rec.brushes.every(function (b) { return !b || !!b.tip; })) {
           rec.warnings = rec.warnings.filter(function (w) {
-            return String(w).indexOf('没有笔尖（shape）图片') < 0 && String(w).indexOf('内置笔尖') < 0;
+            const t = String(w);
+            return t.indexOf('没有笔尖') < 0 && t.indexOf('内置笔尖') < 0 &&
+              t.indexOf('笔尖图在素材库里没取到') < 0;
           });
         }
       }
@@ -1731,8 +1740,8 @@
           patCount += pat.count;
         }
         if (patFileCount) {
-          warnings.push('已将 ' + patCount + ' 张真实纹理导出为 ' + patFileCount + ' 个 PAT（按「笔刷组名-纹理」命名），与笔刷放在同一导出包或保存目录中；' +
-            (opts.textureMode === 'pattern' ? '已按图案 ID 自动关联；先在 PS 图案面板导入这些 PAT，再导入笔刷，无需逐支选择纹理' : '笔刷仍按烘焙模式输出，PAT 可按需导入 PS 图案面板备用'));
+          warnings.push('已把 ' + patCount + ' 张纹理打包成 ' + patFileCount + ' 个 PAT：' +
+            (opts.textureMode === 'pattern' ? '先在 PS「图案」面板导入 PAT，再导入笔刷，纹理自动关联，不用逐支选' : '按需导入 PS「图案」面板即可'));
         }
         if (missingTextures) warnings.push(missingTextures + ' 支笔刷缺少原纹理图片，未收入本次 PAT');
       } catch (e) { warnings.push('纹理 PAT 生成失败：' + e.message); }
@@ -1836,9 +1845,6 @@
          那个 ABR 是早年 BRU 还不支持双笔刷时的兜底，现在单支 BRU 已能内嵌副笔
          （f119 + 记录末尾副图），画世界自己就能表达双笔；而额外那个 ABR 在画世界
          里打开会闪退。实测反馈后直接移除这条出口。 */
-      if (opts.target === 'abr' && list.some(function (b) { return b.dualOn && !b._rawPreset; })) {
-        warnings.push('已生成 ABR 原生双笔刷结构，请在 Photoshop 验证导入与效果');
-      }
       if ((opts.target === 'brush' || opts.target === 'brushset') && list.some(function (b) { return b.dualOn; })) {
         warnings.push('Procreate 双笔刷已写入独立 Sub01 副笔，未烘焙主笔；请在 Procreate 验证效果');
       }
@@ -2585,7 +2591,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.130';
+const APP_VERSION = '2.8.131';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;

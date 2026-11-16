@@ -3993,7 +3993,11 @@ Write-Host 'restart MediBang Paint Pro'
      这类笔刷转出时只能按参数生成圆形/椭圆笔尖（computed），或只有纹理图（grain）。
      用户要求「转出时明确提示」，所以判断集中在这里，UI 只负责显示。 */
   function tipSourceAudit(brushList) {
-    const out = { noTip: [], procedural: [], grainOnly: [], bruTexOnly: [], bruTexMissing: [], procreateNoTip: 0 };
+    /* 【第271轮】noTip 再拆一层，因为「缺笔尖」有兩種完全不同的成因，提示也该不同：
+       · noTipRef   源里**引用了**内置笔尖图（oldTexId/ptN），但这次没取到像素 → 导入素材库能解决
+       · paramOnly  源里**根本没有引用任何图**（纯参数化画出来的笔尖）→ 任何图库都补不了，
+                    转出后按参数生成圆/椭圆笔尖。这种情况不该报「缺图库」，用户会以为导库没生效。 */
+    const out = { noTip: [], noTipRef: [], paramOnly: [], noTipOther: [], procedural: [], grainOnly: [], bruTexOnly: [], bruTexMissing: [], procreateNoTip: 0 };
     for (const b of (brushList || [])) {
       if (!b || b.enabled === false) continue;
       const hasTip = !!b.tip; // A secondary image cannot replace the missing primary.
@@ -4006,6 +4010,9 @@ Write-Host 'restart MediBang Paint Pro'
           continue;
         }
         out.noTip.push(b.name);
+        if (builtinTipKey(b)) out.noTipRef.push(b.name);
+        else if (b.source === 'bru') out.paramOnly.push(b.name);
+        else out.noTipOther.push(b.name);
         if (b.computed || b.bruProceduralTip) out.procedural.push(b.name);
         if (b.source === 'procreate') out.procreateNoTip++;
       } else if (b.tipSource === 'grain') {
@@ -4016,31 +4023,32 @@ Write-Host 'restart MediBang Paint Pro'
   }
 
   function tipSourceHint(audit) {
+    /* 【第271轮】只留**需要用户动手**的提示。用户反馈（截图）：导入图库后仍看到
+       「源文件没有笔尖图片…」和「已读取源文件内的纹理或从纹理库补上…」这类话，
+       既没有可执行动作、又让人以为图库没生效。现在的口径：
+         · 引用了内置图但没取到 → 提示导入图库（可解决）
+         · 源里压根没有图（参数化笔尖）→ 不提示（补不了，说了也没用）
+         · 纹理已补上 → 不提示（既成事实）
+         · 只有纹理图没有形状图 → 不提示（导出照常，差异由转换报告覆盖）
+       真正要保留的是「图案来自内置纹理但库里没有」——那一步会转成实心圆，必须提示。 */
     const msgs = [];
-    const list = Object.assign({ noTip: [], procedural: [], grainOnly: [], bruTexOnly: [], bruTexMissing: [], procreateNoTip: 0 }, audit || {});
+    const list = Object.assign({ noTip: [], noTipRef: [], paramOnly: [], noTipOther: [], procedural: [], grainOnly: [], bruTexOnly: [], bruTexMissing: [], procreateNoTip: 0 }, audit || {});
     function names(arr, n) {
       const head = arr.slice(0, n).join('、');
       return arr.length > n ? head + ' 等' : head;
     }
-    if (list.noTip.length) {
-      let m = list.noTip.length + ' 支笔刷源文件没有笔尖（shape）图片：' + names(list.noTip, 3) +
-        '；跨软件或强制重建只能生成近似圆形/椭圆笔尖，笔触可能不同' +
-        (list.procreateNoTip ? '；Procreate原生保留路径可保留内置引用' : '');
-      if (list.procedural.length === list.noTip.length) m += '（这些笔刷本身就是参数化笔刷，没有采样图像）';
-      else if (list.procedural.length) m += '（其中 ' + list.procedural.length + ' 支为参数化生成）';
-      msgs.push(m);
-    }
-    if (list.bruTexOnly.length) {
-      msgs.push(list.bruTexOnly.length + ' 支画世界笔刷使用圆形笔尖与独立纹理：' + names(list.bruTexOnly, 3) +
-        '；已读取源文件内的纹理或从纹理库补上，转换后的纹理疏密可能有差异');
+    if (list.noTipRef.length) {
+      msgs.push(list.noTipRef.length + ' 支笔刷的笔尖图在素材库里没取到：' + names(list.noTipRef, 3) +
+        '；到「高级设置 → 素材库」导入笔尖图库后重新导入，否则会按参数生成近似圆形笔尖');
     }
     if (list.bruTexMissing.length) {
       msgs.push(list.bruTexMissing.length + ' 支画世界内置笔刷的图案来自内置纹理，但纹理库里没找到：' + names(list.bruTexMissing, 3) +
         '；请在「高级设置 → 素材库」下载画世界纹理库后重新导入，否则只能转出实心圆笔尖');
     }
-    if (list.grainOnly.length) {
-      msgs.push(list.grainOnly.length + ' 支笔刷只有纹理（grain）图、没有形状（shape）图：' + names(list.grainOnly, 3) +
-        '；已用纹理图当笔尖，边缘与密度可能与源文件不同');
+    /* 画世界的参数化笔尖（源里没有图、也没有引用）只归类不提示：补不了，说了也没用。
+       其它来源（abr/prbr…）真的没有笔尖图属于异常，仍要提一句「会按参数生成」。 */
+    if (list.noTipOther.length) {
+      msgs.push(list.noTipOther.length + ' 支笔刷没有笔尖图：' + names(list.noTipOther, 3) + '；会按参数生成近似笔尖');
     }
     return msgs;
   }
