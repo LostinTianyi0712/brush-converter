@@ -1173,7 +1173,17 @@
        已回滚删除，注释却留了下来，容易让人以为存在「一次兜住所有字段」的路。
        现在的保真策略是两条腿：① 逐字段 Extra（brushConvBruExtra / brushConvBruTex / brushConvBruPressure）；
        ② 白名单外的未知字段原样透传（bru.js 的 BRU_KNOWN_FIELDS + _rawUnknown）。 */
-    /* 【第224轮】带 _nativeDualFromBru 标记的 brushset（本工具从画世界原生双笔导出的）       转回 bru 时还原内嵌副笔，而不是把副笔烘进主笔。第181轮那条「非 BRU 源禁止内嵌」       是为了避开原生 Procreate 副笔的重影（真机实测），原生档案没有这个标记，行为不变。 */    if (brush && brush.dualTip && (opts.embedSubTip || brush._nativeDualFromBru)) {      return makeBruEmbedded(brush, Object.assign({}, opts, { forceEmbedSubTip: brush._nativeDualFromBru ? true : opts.forceEmbedSubTip }));    }
+    /* 【第224轮】带 _nativeDualFromBru 标记的 brushset（本工具从画世界原生双笔导出的）
+
+       转回 bru 时还原内嵌副笔，而不是把副笔烘进主笔。第181轮那条「非 BRU 源禁止内嵌」
+
+       是为了避开原生 Procreate 副笔的重影（真机实测），原生档案没有这个标记，行为不变。 */
+
+    if (brush && brush.dualTip && (opts.embedSubTip || brush._nativeDualFromBru)) {
+
+      return makeBruEmbedded(brush, Object.assign({}, opts, { forceEmbedSubTip: brush._nativeDualFromBru ? true : opts.forceEmbedSubTip }));
+
+    }
     /* 同格式直抄：源就是 .bru、目标也是 .bru，且尺寸/间距/压感/烘焙等选项都没动过
        —— 原样返回源字节。画世界内置笔刷常常没有内嵌位图（450B 那类），任何重新
        生成都会换掉笔尖图案；透传是唯一能保证「导入后和原来一模一样」的路径。 */
@@ -1453,10 +1463,22 @@
       noShape: (keepNoShape || texMatchNoShape) || undefined,
       bruBuiltinTipRef: keepBuiltinTip,
       _bruProceduralOmissions: bridgeTipUnchanged ? bridgeExtra.procOmissions : undefined,
-      bruColor: brush.bruColor !== undefined ? brush.bruColor : (texMatchId ? -16777216 : undefined),      bruShapeRgbOpacity: brush.bruShapeRgbOpacity !== undefined ? brush.bruShapeRgbOpacity : (texMatchId ? true : undefined),
+      bruColor: brush.bruColor !== undefined ? brush.bruColor : (texMatchId ? -16777216 : undefined),
+
+      bruShapeRgbOpacity: brush.bruShapeRgbOpacity !== undefined ? brush.bruShapeRgbOpacity : (texMatchId ? true : undefined),
       textureInverted: brush.textureInverted,
-      /* 【第224轮】往返场景用源里存下的 textureScale，不再按「笔刷尺寸/纹理宽」重算，         否则 11px 的小笔刷把 512 纹理缩到 0.0215，平铺密到肉眼看就是不出墨。 */      textureScale: match && match.custom && !brush._nativeTexFromBru ? match.scale : brush.textureScale,
-      /* 【第224轮】往返场景的 textureBrightness/Contrast 是**绝对值**（源里读出来就是 51/100），         不能再按「中性值 + 偏移」算一遍 —— 51+51 clamp 成 100、100+100 成 200，纹理会过曝变白，         实测「还行」就是这样变得看不出墨。 */      textureBrightness: match && match.custom && !brush._nativeTexFromBru ? Math.max(0, Math.min(100, 51 + (brush.textureBrightness || 0))) : bruTexBrightness(brush),
+      /* 【第224轮】往返场景用源里存下的 textureScale，不再按「笔刷尺寸/纹理宽」重算，
+
+         否则 11px 的小笔刷把 512 纹理缩到 0.0215，平铺密到肉眼看就是不出墨。 */
+
+      textureScale: match && match.custom && !brush._nativeTexFromBru ? match.scale : brush.textureScale,
+      /* 【第224轮】往返场景的 textureBrightness/Contrast 是**绝对值**（源里读出来就是 51/100），
+
+         不能再按「中性值 + 偏移」算一遍 —— 51+51 clamp 成 100、100+100 成 200，纹理会过曝变白，
+
+         实测「还行」就是这样变得看不出墨。 */
+
+      textureBrightness: match && match.custom && !brush._nativeTexFromBru ? Math.max(0, Math.min(100, 51 + (brush.textureBrightness || 0))) : bruTexBrightness(brush),
       textureContrast: match && match.custom && !brush._nativeTexFromBru ? Math.max(0, Math.min(200, 100 + (brush.textureContrast || 0))) : bruTexContrast(brush),
       textureDepth: effectiveTextureDepth,
       taperOn: brush.taperOn,
@@ -2432,7 +2454,23 @@
       const adjusted = Math.max(0, Math.min(1, level * (1 + contrast + brightness)));
       curve[i] = Math.round(255 * (brightnessBlend ? adjusted * adjusted : adjusted));
     }
-    /* 【第223轮】按需取采样边长，不再一律 2048。       第199轮固定 512 把 241 支大笔尖压糊，第221轮改成固定 2048 又走向另一个极端：       楠.bru 59 支全部 maxW=500、sizePx 最大 499，源纹理最大 840，却每支都生成 2048² 的       Shape.png（59 个共 36.5MB，整个 brushset 45MB）。Shape 的分辨率只需要覆盖       「源纹理细节」和「笔刷最大显示尺寸」两者的较大值，超过就是纯浪费。       上限仍是 Procreate 的 2048。 */    const capTip = Math.max(64, Math.min(2048, opts.maxTipSize || 2048));    const needTip = Math.max(texture.w, texture.h, brush.maxSizePx || 0, brush.sizePx || 0);    const side = Math.max(64, Math.min(capTip, needTip));
+    /* 【第223轮】按需取采样边长，不再一律 2048。
+
+       第199轮固定 512 把 241 支大笔尖压糊，第221轮改成固定 2048 又走向另一个极端：
+
+       楠.bru 59 支全部 maxW=500、sizePx 最大 499，源纹理最大 840，却每支都生成 2048² 的
+
+       Shape.png（59 个共 36.5MB，整个 brushset 45MB）。Shape 的分辨率只需要覆盖
+
+       「源纹理细节」和「笔刷最大显示尺寸」两者的较大值，超过就是纯浪费。
+
+       上限仍是 Procreate 的 2048。 */
+
+    const capTip = Math.max(64, Math.min(2048, opts.maxTipSize || 2048));
+
+    const needTip = Math.max(texture.w, texture.h, brush.maxSizePx || 0, brush.sizePx || 0);
+
+    const side = Math.max(64, Math.min(capTip, needTip));
     const scale = Math.max(0.02, Math.min(20, brush.textureScale || 1));
     const sampleSpan = Math.max(texture.w, texture.h) / scale;
     const sampleAxis = function (pixel, length) {
@@ -2450,7 +2488,17 @@
          · 用未反转的纹理覆盖率（REVERSETEX 只影响独立的纹理层，不影响逐笔尖落墨遮罩）
          · 不压 background、不做亮度/对比度曲线、不乘圆盘遮罩
        亮度混合（f14）那条分支是第198/219轮为「浅底+深色细节」定的，保持原样不动。 */
-    /* 【第222轮】亮度混合（f14）也并入正相直通。判据不是混合模式，而是「这颗纹理是不是笔尖落墨遮罩」：       usesBruDabTexture 为真时白=满墨、Dab 就是纹理本身，压背景和平方曲线都会吃掉浅底。       楠.bru 里 34/35/36/37（f2）先前已修成块状，而 6/12/19/33 等 f14 的仍是稀疏颗粒——同一批笔刷被分成两种样子。       实测 idx54「33亮片」源纹理 m232 c100%，旧平方曲线只出 m14.8 c15%，直通后恢复浅底满墨。       f14 的平方曲线保留在下方（已不可达），作为需要时改回来的对照。 */    {
+    /* 【第222轮】亮度混合（f14）也并入正相直通。判据不是混合模式，而是「这颗纹理是不是笔尖落墨遮罩」：
+
+       usesBruDabTexture 为真时白=满墨、Dab 就是纹理本身，压背景和平方曲线都会吃掉浅底。
+
+       楠.bru 里 34/35/36/37（f2）先前已修成块状，而 6/12/19/33 等 f14 的仍是稀疏颗粒——同一批笔刷被分成两种样子。
+
+       实测 idx54「33亮片」源纹理 m232 c100%，旧平方曲线只出 m14.8 c15%，直通后恢复浅底满墨。
+
+       f14 的平方曲线保留在下方（已不可达），作为需要时改回来的对照。 */
+
+    {
       const rawGray = new Uint8Array(texture.gray.length);
       for (let i = 0; i < rawGray.length; i++) rawGray[i] = brush.textureInverted ? 255 - texture.gray[i] : texture.gray[i];
       const flat = new Uint8Array(side * side * 4);
@@ -2902,7 +2950,7 @@
     }
     const b = withExportSettings(brush, opts);
     // MYB stores parameterized dabs; it cannot carry the baked image here.
-    const bytes = mypaint.writeMyb(b);
+    const bytes = mypaint.writeMyb(b, opts);
     return { bytes: bytes, count: 1 };
   }
 

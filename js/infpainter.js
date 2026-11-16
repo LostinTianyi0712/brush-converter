@@ -60,11 +60,13 @@
     const entries = zip.read(bytes);
     const warnings = [];
     let props = null;
+    let propsRawText = null;
     let preview = null;
     for (const e of entries) {
       if (e.dir) continue;
       if (/properties\.json$/i.test(e.name)) {
-        try { props = JSON.parse(util.utf8Decode(e.data())); } catch (err) { throw new Error('.prbr 的 properties.json 解析失败'); }
+        propsRawText = util.utf8Decode(e.data());
+        try { props = JSON.parse(propsRawText); } catch (err) { throw new Error('.prbr 的 properties.json 解析失败'); }
       } else if (/preview$/i.test(e.name) || /preview\.png$/i.test(e.name)) {
         preview = e.data();
       }
@@ -99,7 +101,9 @@
     const flowProfile = profileRange(dyn['pressure profile - flow']);
     let minSizeRatio = 1;
     if (pressureSize && sizeProfile && sizeProfile.hi > sizeProfile.lo) {
-      minSizeRatio = clamp(sizeProfile.lo / Math.max(0.001, sizeProfile.hi), 0.02, 1);
+      /* 下限放到 0：sai_2.prbr 的尺寸曲线本来就是 0→1（零点完全消失），
+         钳到 0.02 会让「原样导出」把曲线中段从 0.544 抬到 0.553。 */
+      minSizeRatio = clamp(sizeProfile.lo / Math.max(0.001, sizeProfile.hi), 0, 1);
     }
     let minOpacityRatio = 1;
     if (pressureFlow && flowProfile && flowProfile.hi > flowProfile.lo) {
@@ -152,7 +156,11 @@
         headName: headName,
         /* 【minor-fix】源 properties.json 全量快照：写侧只覆盖自己映射过的键，
            其余原样写回（第 232 轮纪律：只透传未知、不覆盖已知）。 */
-        _rawPrbrProps: props
+        _rawPrbrProps: props,
+        _rawPrbrPropsText: propsRawText,
+        /* 【minor-fix 2】源 preview 原图（512×512 缩略图）。写侧以前总是用合成笔尖重新渲染，
+           4900B 的预览被换成 1.6KB 的小图，Infinite Painter 笔刷列表里能直接看出糊了。 */
+        _rawPrbrPreview: preview || undefined
       }],
       warnings: warnings
     };
@@ -250,6 +258,14 @@
     'stroke-properties': ['blend-opacity', 'paint-opacity', 'paint-size', 'wet-edges']
   };
 
+  function sortedJson(v) {
+    if (Array.isArray(v)) return '[' + v.map(sortedJson).join(',') + ']';
+    if (v && typeof v === 'object') {
+      return '{' + Object.keys(v).sort().map(function (k) { return JSON.stringify(k) + ':' + sortedJson(v[k]); }).join(',') + '}';
+    }
+    return JSON.stringify(v);
+  }
+
   function cloneProps(p) {
     try { return JSON.parse(JSON.stringify(p)); } catch (e) { return null; }
   }
@@ -287,6 +303,9 @@
       if (y > hi) hi = y;
     }
     if (!(hi > lo)) return null;
+    /* 形状已经在目标区间里就一个点都别动：归一化会把 hi≠1 的源曲线整体平移，
+       未编辑的笔刷重新导出后曲线也跟着变，等于静默改笔刷。 */
+    if (Math.abs(lo - min) <= 1e-6 && Math.abs(hi - 1) <= 1e-6) return profile.slice();
     const out = profile.slice();
     for (let i = 1; i < out.length; i += 2) out[i] = min + (out[i] - lo) / (hi - lo) * (1 - min);
     return out;
@@ -336,18 +355,28 @@
     const pressureSize = !!brush.pressureSize;
     props['dynamics-properties']['pressure - effects size'] = pressureSize;
     props['dynamics-properties']['pressure profile - size'] = profileFor('pressure profile - size',
-      pressureSize, Math.max(0.02, Math.min(1, brush.minSizeRatio === undefined ? 0.3 : brush.minSizeRatio)));
+      pressureSize, Math.max(0, Math.min(1, brush.minSizeRatio === undefined ? 0.3 : brush.minSizeRatio)));
     const pressureFlow = !!brush.pressureOpacity;
     props['dynamics-properties']['pressure - effects flow'] = pressureFlow;
     props['dynamics-properties']['pressure profile - flow'] = profileFor('pressure profile - flow',
       pressureFlow, Math.max(0, Math.min(1, brush.minOpacityRatio === undefined ? 0.3 : brush.minOpacityRatio)));
-    // preview: render a simple stroke from the brush tip
+    // preview: 源自带缩略图就原样带回去（Infinite Painter 列表直接显示它），
+    // 只有跨格式转进来的笔刷（没有源预览）才用笔尖渲染一张。
     const tip = brush.tip;
     let previewPng = null;
-    if (tip && tip.rgba) {
+    if (brush._rawPrbrPreview && brush._rawPrbrPreview.length) {
+      previewPng = brush._rawPrbrPreview;
+    } else if (tip && tip.rgba) {
       try { previewPng = renderPreview(tip); } catch (e) { previewPng = null; }
     }
-    const entries = [{ name: 'properties.json', data: util.utf8Encode(JSON.stringify(props, null, 3)) }];
+    /* 语义没变就把源 properties.json 原文本带回去：重排一次 JSON（缩进 3 空格、
+       键序变化）会让 4.8KB 的文档涨到 5.8KB，用户看到的「文件被改过」全是假象。 */
+    let propsText = null;
+    if (brush._rawPrbrPropsText && src && sortedJson(props) === sortedJson(src)) {
+      propsText = brush._rawPrbrPropsText;
+    }
+    if (propsText === null) propsText = JSON.stringify(props, null, 3);
+    const entries = [{ name: 'properties.json', data: util.utf8Encode(propsText) }];
     if (previewPng) entries.push({ name: 'preview', data: previewPng });
     return zip.write(entries);
   }

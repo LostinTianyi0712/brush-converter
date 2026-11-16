@@ -160,8 +160,231 @@
     return { base_value: base, inputs: inputs || {} };
   }
 
+  function near(a, b, tol) {
+    return Math.abs(a - b) <= (tol || 1e-4) * Math.max(1, Math.abs(a), Math.abs(b));
+  }
+
+  function deepEq(a, b) {
+    if (a === b) return true;
+    if (typeof a !== typeof b) return false;
+    if (!a || !b || typeof a !== 'object') return false;
+    if (Array.isArray(a) !== Array.isArray(b)) return false;
+    const ka = Object.keys(a), kb = Object.keys(b);
+    if (ka.length !== kb.length) return false;
+    for (let i = 0; i < ka.length; i++) {
+      if (ka[i] !== kb[i]) return false;
+      if (!deepEq(a[ka[i]], b[kb[i]])) return false;
+    }
+    return true;
+  }
+
+  /* 常数曲线不是「压感响应」而是固定偏移（或落笔门控）。关压感时把这类曲线
+     一起摘掉会改笔刷外形，所以只在曲线真的随压感变化时才摘。 */
+  function curveVaries(points) {
+    if (!points || !points.length) return false;
+    let lo = Infinity, hi = -Infinity;
+    for (const p of points) {
+      if (!p || p.length < 2 || !isFinite(p[1])) continue;
+      if (p[1] < lo) lo = p[1];
+      if (p[1] > hi) hi = p[1];
+    }
+    return isFinite(lo) && isFinite(hi) && hi - lo > 1e-9;
+  }
+
+  function dropCurve(settings, key) {
+    const cur = settings[key];
+    if (cur && typeof cur === 'object' && cur.inputs && cur.inputs.pressure) delete cur.inputs.pressure;
+  }
+
+  function addCurve(settings, key, points) {
+    const cur = settings[key];
+    if (cur && typeof cur === 'object') {
+      if (!cur.inputs) cur.inputs = {};
+      cur.inputs.pressure = points;
+    } else {
+      settings[key] = { base_value: typeof cur === 'number' ? cur : 0, inputs: { pressure: points } };
+    }
+  }
+
+  function setBase(settings, key, value) {
+    const cur = settings[key];
+    if (cur && typeof cur === 'object' && !Array.isArray(cur)) { cur.base_value = value; return; }
+    settings[key] = { base_value: value, inputs: {} };
+  }
+
+  /* 源文档缩进/结尾换行照抄，未改动时能逐字节还原 */
+  function docLayout(text) {
+    const m = /\n([ \t]+)/.exec(text);
+    return {
+      indent: m ? m[1] : '    ',
+      eol: /\n$/.test(text) ? '\n' : '',
+      /* MyPaint 自己的 writer 在逗号后留一个空格（`, \n`）：照抄这个习惯，
+         改动过的笔刷重新导出时 diff 才只剩真正改了的字段 */
+      commaSpace: /,\s\n/.test(text)
+    };
+  }
+
+  /* 原位改写：源是 .myb 时只改「与 brush 参数对得上」的那几项，其余键（
+     压感曲线、随机输入、元数据、MyPaint 新增设置）原样保留。
+     直接整份重建会丢掉源文档 400+ 项（真实样本 Blender.myb 574 项只剩 154 项），
+     压感/速度/角度曲线全没，等于把笔刷压扁成一个圆点。 */
+  function patchMyb(brush, opts) {
+    const raw = brush._rawMyb;
+    const text = util.utf8Decode(raw);
+    const doc = JSON.parse(text);
+    if (!doc.settings || typeof doc.settings !== 'object') doc.settings = {};
+    const settings = doc.settings;
+    const src = parseMyb(raw).brushes[0];
+    const layout = docLayout(text);
+
+    /* 压感开关：pressureSize/pressureOpacity=false 表示「这次导出不要压感」，
+       必须真把源曲线摘掉（否则强制关压感的导出会原样留下源曲线）。
+       摘曲线时把曲线带来的偏移折进 base，否则尺寸/不透明度会跟着曲线一起飞。 */
+    const sizePress = brush.pressureSize === undefined ? brush.pressure : brush.pressureSize;
+    /* 不透明度这里只认「导出时明确要求关压感」：
+       MyPaint 的 opaque_multiply 很多笔刷自带一个落笔门控曲线（0→1 立刻拉满），
+       读侧算出来 pressureOpacity=false（因为整条笔刷不透明度不随压感变），
+       拿它当「用户关掉了压感」去摘曲线，会把门控一起摘掉——落笔会多一个圆点。
+       明确关压感只有一条可靠信号：调用方传了 opts.pressure === false。 */
+    const opPress = (opts && opts.pressure === false) ? false : true;
+
+    /* 半径：保留源曲线形状，只平移/缩放让顶部落在目标尺寸 */
+    const sizePx = clamp(brush.sizePx === undefined ? src.sizePx : brush.sizePx, 1, 4000);
+    const radius = sizePx / 2;
+    const item = settings.radius_logarithmic;
+    const pts = item && item.inputs && Array.isArray(item.inputs.pressure) && item.inputs.pressure.length
+      ? item.inputs.pressure : null;
+    let hi = 0, lo = 0;
+    if (pts) {
+      for (const p of pts) {
+        if (!p || p.length < 2 || !isFinite(p[1])) continue;
+        if (p[1] > hi) hi = p[1];
+        if (p[1] < lo) lo = p[1];
+      }
+    }
+    const baseOld = num(settings, 'radius_logarithmic', 1.0);
+    const sizeCurveVaries = !!pts && hi - lo > 1e-9;
+    /* 关压感且曲线确实在动：曲线摘掉，偏移折进 base。
+       关压感但曲线是常数：曲线留着（那是固定偏移/门控），偏移照常折进 base。 */
+    const baseNew = (sizePress === false && sizeCurveVaries)
+      ? Math.log(radius)
+      : Math.log(radius) - hi;
+    /* 没改动就别碰：1e-16 的浮点噪声也算「改了」，会让未编辑的笔刷重新导出后
+       与源文件不一致，还会把 diff 工具刷成红的。 */
+    if (!near(baseNew, baseOld, 1e-12)) setBase(settings, 'radius_logarithmic', baseNew);
+    if (pts && sizePress === false) {
+      if (sizeCurveVaries) dropCurve(settings, 'radius_logarithmic');
+    } else if (pts && hi - lo > 1e-9) {
+      const minR = clamp(brush.minSizeRatio === undefined ? src.minSizeRatio : brush.minSizeRatio, 0.02, 1);
+      const loNew = Math.log(radius * minR) - baseNew;
+      const k = (hi - loNew) / (hi - lo);
+      if (Math.abs(k - 1) > 1e-9 || Math.abs(loNew - lo) > 1e-9) {
+        for (const p of pts) {
+          if (p && p.length >= 2 && isFinite(p[1])) p[1] = loNew + (p[1] - lo) * k;
+        }
+      }
+    } else if (!pts && sizePress === true) {
+      const minR = clamp(brush.minSizeRatio === undefined ? src.minSizeRatio : brush.minSizeRatio, 0.02, 1);
+      if (minR < 0.995) addCurve(settings, 'radius_logarithmic', [[0, Math.log(minR)], [1, 0]]);
+    }
+
+    /* 间距：dabs 总和换算，保留 dabs_per_basic_radius 原值 */
+    const spacingPct = clamp(brush.spacingPct === undefined ? src.spacingPct : brush.spacingPct, 1, 200);
+    const basic = num(settings, 'dabs_per_basic_radius', 0);
+    const dabsNew = 100 / (2 * spacingPct) - basic;
+    if (!near(dabsNew, num(settings, 'dabs_per_actual_radius', 5.82), 1e-9)) {
+      setBase(settings, 'dabs_per_actual_radius', dabsNew);
+    }
+
+    /* 不透明度 */
+    const opacity = clamp(brush.opacity === undefined ? src.opacity : brush.opacity, 0, 1);
+    const minOp = clamp(brush.minOpacityRatio === undefined ? src.minOpacityRatio : brush.minOpacityRatio, 0, 1);
+    if (opPress === false) {
+      const mult = settings.opaque_multiply;
+      const mp = mult && mult.inputs && Array.isArray(mult.inputs.pressure) ? mult.inputs.pressure : null;
+      if (curveVaries(mp)) {
+        dropCurve(settings, 'opaque_multiply');
+        if (!near(num(settings, 'opaque_multiply', 1), 1, 1e-9)) setBase(settings, 'opaque_multiply', 1);
+      }
+      const op = settings.opaque;
+      const opPts = op && op.inputs && Array.isArray(op.inputs.pressure) ? op.inputs.pressure : null;
+      if (curveVaries(opPts)) dropCurve(settings, 'opaque');
+      if (!near(num(settings, 'opaque', 1), opacity, 1e-9)) setBase(settings, 'opaque', opacity);
+    } else {
+      /* 按比例缩 base，曲线形状不动 */
+      if (!near(opacity, src.opacity, 1e-4)) {
+        const baseOp = num(settings, 'opaque', 1);
+        const scaled = baseOp * (opacity / Math.max(1e-6, src.opacity));
+        setBase(settings, 'opaque', clamp(scaled, 0, 1));
+      }
+      if (!near(minOp, src.minOpacityRatio, 2e-2) && src.minOpacityRatio > 1e-6) {
+        const mult = settings.opaque_multiply;
+        const mp = mult && mult.inputs && Array.isArray(mult.inputs.pressure) ? mult.inputs.pressure : null;
+        const k = minOp / src.minOpacityRatio;
+        if (mp && mp.length) {
+          for (const p of mp) if (p && p.length >= 2 && isFinite(p[1])) p[1] = p[1] * k;
+        } else if (mult && typeof mult === 'object') {
+          addCurve(settings, 'opaque_multiply', [[0, 0], [0.0001, minOp], [0.5, 1], [1, 1]]);
+        }
+      }
+    }
+
+    const hardNew = clamp(brush.hardness === undefined ? src.hardness : brush.hardness, 0, 1);
+    if (!near(hardNew, num(settings, 'hardness', src.hardness), 1e-12)) setBase(settings, 'hardness', hardNew);
+
+    /* 散布：MyPaint 的 offset_by_random 是「半径倍数」，可以 >1（样本里 1.54），
+       不能按百分比钳到 100 —— 那是重写路径的老 bug。 */
+    const scatter = brush.scatterOn ? Math.max(0, Math.min(10, (brush.scatterPct || 0) / 100)) : 0;
+    if (!near(scatter, num(settings, 'offset_by_random', 0), 1e-9)) setBase(settings, 'offset_by_random', scatter);
+    const jitter = clamp(Math.max(0, brush.sizeJitterPct || 0) / 100, 0, 1);
+    if (!near(jitter, num(settings, 'radius_by_random', 0), 1e-9)) setBase(settings, 'radius_by_random', jitter);
+
+    if (brush.colorDynamicsOn !== undefined || brush.colorJitterHue !== undefined) {
+      const hue = brush.colorDynamicsOn ? clamp(brush.colorJitterHue || 0, 0, 1) : 0;
+      const sat = brush.colorDynamicsOn ? clamp(brush.colorJitterSat || 0, 0, 1) : 0;
+      const val = brush.colorDynamicsOn ? clamp(brush.colorJitterVal || 0, 0, 1) : 0;
+      setBase(settings, 'change_color_h', hue);
+      setBase(settings, 'change_color_hsl_s', sat);
+      setBase(settings, 'change_color_v', val);
+    }
+    if (brush.smoothingStrength !== undefined) {
+      setBase(settings, 'slow_tracking', clamp(brush.smoothingStrength * 2, 0, 10));
+    }
+    if (brush.smudgeOn !== undefined) {
+      setBase(settings, 'smudge', brush.smudgeOn ? clamp(brush.smudgeAmount === undefined ? 0.4 : brush.smudgeAmount, 0, 1) : 0);
+    }
+    if (brush.eraser !== undefined) {
+      setBase(settings, 'eraser', brush.eraser ? clamp(brush.eraserAmount === undefined ? 1 : brush.eraserAmount, 0, 1) : 0);
+    }
+    if (brush.roundness !== undefined) {
+      setBase(settings, 'elliptical_dab_ratio', 100 / Math.max(10, Math.min(100, brush.roundness)));
+    }
+    if (brush.angle !== undefined) setBase(settings, 'elliptical_dab_angle', brush.angle);
+
+    /* parent_brush_name 在真实 MyPaint 文件里是「派生自哪支内置笔刷」（如 Dieterle/Blender），
+       是分组语义，不能拿文件名覆盖。只有本工具自己写过前缀的文件才跟着改名。 */
+    if (brush.name && brush.name !== src.name && /^brushconv\//.test(String(doc.parent_brush_name || ''))) {
+      doc.parent_brush_name = 'brushconv/' + brush.name;
+    }
+
+    /* 语义没变就原样返回源字节：重排一次 JSON 会把 MyPaint 的 `0.0` 写成 `0`、
+       浮点写成别的形式，未编辑的笔刷没必要承受这种噪声。 */
+    if (deepEq(JSON.parse(text), doc)) return util.utf8Encode(text);
+
+    let out = JSON.stringify(doc, null, layout.indent) + layout.eol;
+    if (layout.commaSpace) out = out.replace(/,\n/g, ', \n');
+    return util.utf8Encode(out);
+  }
+
   /* Write a minimal .myb from normalized brush params. */
-  function writeMyb(brush) {
+  function writeMyb(brush, opts) {
+    if (brush && brush._rawMyb && brush._rawMyb.length) {
+      try { return patchMyb(brush, opts); } catch (e) { /* 源文档结构异常：退回整份生成 */ }
+    }
+    return generateMyb(brush, opts);
+  }
+
+  function generateMyb(brush, opts) {
     const sizePx = Math.max(1, Math.min(4000, brush.sizePx || 40));
     const radius = sizePx / 2;
     const spacingPct = Math.max(1, Math.min(200, brush.spacingPct === undefined ? 10 : brush.spacingPct));
