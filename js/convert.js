@@ -685,6 +685,11 @@
       }
     } else {
       result = abr.parse(bytes);
+      /* 【第266轮】整包透传：记下原始字节与序号，makeAbrPack 在「原封不动」时直接回吐 */
+      if (result && result.brushes && result.brushes.length) {
+        const pack = { bytes: new Uint8Array(bytes), count: result.brushes.length };
+        result.brushes.forEach(function (b, i) { b._rawAbrPack = pack; b._rawAbrIndex = i; });
+      }
     }
     if (kind === 'sut' && result.brushes.length) {
       // 原位改写时要写回 NodeName，必须用原笔刷名而不是文件名，否则用户的笔刷名会被
@@ -1784,6 +1789,25 @@
 
   function makeAbrPack(brushList, opts) {
     opts = opts || {};
+    /* 【第266轮】原包透传：输入正好是源 .abr 的全部笔刷、顺序一致、且没有任何字段被改过
+       → 直接回吐原始字节。以前每次导出都重建容器（头 + section 布局），
+       66 / 503 支样本原样往返时字节全变。 */
+    if (brushList.length && brushList[0] && brushList[0]._rawAbrPack &&
+        opts.forceRebuild !== true && opts.fidelity !== false && opts.preserveRaw !== false &&
+        /* 重新绑定图案（textureMode=pattern / patternRefs）时必须重建，否则 PAT ID 换不掉 */
+        opts.textureMode !== 'pattern' && !opts.patternRefs && !opts.patternRef) {
+      const pack = brushList[0]._rawAbrPack;
+      if (brushList.length === pack.count &&
+          brushList.every(function (b, i) { return b && b._rawAbrPack === pack && b._rawAbrIndex === i; })) {
+        let clean = true;
+        for (const b of brushList) {
+          const fp = util.brushFingerprint(b);
+          if (b._rawAbrBase === undefined) b._rawAbrBase = fp;
+          if (b._rawAbrBase !== fp) { clean = false; break; }
+        }
+        if (clean) return { bytes: new Uint8Array(pack.bytes), count: pack.count, passthrough: true };
+      }
+    }
     // 重名会让 Photoshop 导入时去重/合并，导致预设与采样错位（画出来变成别的笔刷），
     // 这里统一给重名加序号
     const names = uniqueNames(brushList);
