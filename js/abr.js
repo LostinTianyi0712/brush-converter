@@ -278,7 +278,8 @@
       } else if (blk.type === 'patt') {
         if (blk.data && blk.data.length) {
           pattBlockData = blk.data;
-          patternRecords = splitPatternBlock(blk.data);
+          /* 【第287轮 R287-01】多个 patt 段要**累加**：以前每遇到一个段就覆盖，只有最后一段生效 */
+          patternRecords = patternRecords.concat(splitPatternBlock(blk.data));
         }
       } else if (blk.type === 'desc') {
         try {

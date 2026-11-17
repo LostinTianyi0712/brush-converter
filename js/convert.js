@@ -2209,6 +2209,48 @@
     });
   }
 
+  /* 【第287轮 R287-01】挑出「这批笔刷真正引用到的」纹理图案记录。
+   * 以前的做法：合计超过 32MB 就**整块丢弃**（只留一条 console.warn）。实测代价很大 ——
+   * `个人用.abr` 503 支改一支尺寸导出时，patt 段 149,558,936B → 196,884B，纹理图案全没了。
+   * 而 PS 自己导出的这个源文件本来就是**一个 149MB 的 patt 段**，说明「32MB 上限」是我们自己的
+   * 保守猜测，不是格式限制。现在照写：体积大只提示（PS 首次载入会慢），不再丢东西。
+   * 只有「一条记录都没精确匹配到、但源里有整块 patt」时才退回保留源块（否则 Txtr 引用会悬空）。
+   */
+  const ABR_PATT_NOTICE_BYTES = 32 * 1024 * 1024;
+  function selectAbrPatterns(brushList, opts) {
+    const out = { records: null, block: null, warning: null, bytes: 0 };
+    if (opts && opts.preserveRaw === false) return out;
+    const seen = Object.create(null);
+    const picked = [];
+    for (const b of (brushList || [])) {
+      const rec = b && b._patternRecord;
+      if (!rec || !rec.data) continue;
+      const key = (rec.id || '') + '|' + (rec.name || '');
+      if (seen[key]) continue;
+      seen[key] = 1;
+      picked.push(rec);
+    }
+    if (picked.length) {
+      let total = 0;
+      for (const r of picked) total += r.data.length;
+      out.records = picked;
+      out.bytes = total;
+      if (total > ABR_PATT_NOTICE_BYTES) {
+        out.warning = '引用的纹理图案合计 ' + Math.round(total / 1048576) + 'MB，已随包写出（原来会整块跳过；体积大时 PS 首次载入会慢一些）';
+      }
+      return out;
+    }
+    const withPatt = (brushList || []).find(function (b) { return b && b._pattBlock && b._pattBlock.length; });
+    if (withPatt) {
+      out.block = withPatt._pattBlock;
+      out.bytes = withPatt._pattBlock.length;
+      if (out.bytes > ABR_PATT_NOTICE_BYTES) {
+        out.warning = '源文件的纹理图案块 ' + Math.round(out.bytes / 1048576) + 'MB，已原样随包写出（原来超过 32MB 会被丢掉）';
+      }
+    }
+    return out;
+  }
+
   /* 【第285轮】条目就绪后的收尾：分组、图案块、写容器（原 makeAbrPack 后半段原样搬移） */
   function abrPackFinalize(items, brushList, opts) {
     if (!items.length) throw new Error('没有可写入 ABR 的笔刷');
@@ -2221,34 +2263,10 @@
       cur.count++;
     }
     const hasNamed = groups.some(function (g) { return !!g.name; });
-    // 源 ABR 的纹理图案：优先只带"被这些笔刷引用到的"图案记录（避免整块 143MB 全搬）
-    let patternBlock = null;
-    let patternRecords = null;
-    let patternWarning = null;
-    if (opts.preserveRaw !== false) {
-      const seen = {};
-      const picked = [];
-      for (const b of brushList) {
-        const rec = b && b._patternRecord;
-        if (rec && !seen[rec.id + '|' + rec.name]) { seen[rec.id + '|' + rec.name] = 1; picked.push(rec); }
-      }
-      if (picked.length) {
-        let total = 0;
-        for (const r of picked) total += r.data.length;
-        if (total <= 32 * 1024 * 1024) {
-          patternRecords = picked;
-        } else {
-          patternWarning = '引用的纹理图案合计过大（' + Math.round(total / 1048576) + 'MB），已跳过';
-        }
-      }
-      if (!patternRecords) {
-        const withPatt = brushList.find(function (b) { return b && b._pattBlock && b._pattBlock.length; });
-        if (withPatt && withPatt._pattBlock.length <= 32 * 1024 * 1024) patternBlock = withPatt._pattBlock;
-      }
-    }
-    const bytes = abr.writeAbrV6(items, { groups: hasNamed ? groups : null, patternBlock: patternBlock, patternRecords: patternRecords });
-    if (patternWarning && !opts._patternWarned) { opts._patternWarned = true; console.warn(patternWarning); }
-    return { bytes: bytes, count: items.length, meta: items };
+    const pat = selectAbrPatterns(brushList, opts);
+    const bytes = abr.writeAbrV6(items, { groups: hasNamed ? groups : null, patternBlock: pat.block, patternRecords: pat.records });
+    if (pat.warning && !opts._patternWarned) { opts._patternWarned = true; console.warn(pat.warning); }
+    return { bytes: bytes, count: items.length, meta: items, patternWarning: pat.warning || null, patternBytes: pat.bytes || 0 };
   }
 
   function makeAbrPack(brushList, opts) {
@@ -4670,7 +4688,7 @@ Write-Host 'restart MediBang Paint Pro'
     });
   }
 
-  const api = { detect, parseFile, restoreHsjTips, restoreProcreateBundled, builtinTipKey, expandArchive, synthTip, makeBru, makeBruPack, makeBruPackAsync, makeBruDualPair, buildBruDualPairBrushes, dualNeedsPair, makeAbrPack, makeAbrPackAsync, makeTplPack, makeUdongmanPack, makeUdongmanSutPack, makeUdongmanMtdPack, parseMtd, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, mergePatternFiles, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, tipSourceAudit, tipSourceHint, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeProcreateBrushsetAsync, makeGbr, makeMyb, makeGih, makeGihFiles, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Files, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
+  const api = { detect, parseFile, restoreHsjTips, restoreProcreateBundled, builtinTipKey, expandArchive, synthTip, selectAbrPatterns, makeBru, makeBruPack, makeBruPackAsync, makeBruDualPair, buildBruDualPairBrushes, dualNeedsPair, makeAbrPack, makeAbrPackAsync, makeTplPack, makeUdongmanPack, makeUdongmanSutPack, makeUdongmanMtdPack, parseMtd, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, mergePatternFiles, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, tipSourceAudit, tipSourceHint, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeProcreateBrushsetAsync, makeGbr, makeMyb, makeGih, makeGihFiles, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Files, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
   /* 写出口统一过一遍数值卫生（见 sanitizeBrushNumbers）。包装不改变函数签名：
      数组入口逐支处理，单支入口直接处理，字节/字符串入口原样放行。
      只有真的钳制过才替换参数并附加 warnings，合法样本走原路径零影响。 */
