@@ -2014,7 +2014,23 @@
                   packList.push(b);
                 }
               }
-              const made = BC.convert.makeBruPack(packList, Object.assign({}, commonOpts(rec), { dualBake: pairNote ? false : opts.dualBake, embedSubTip: opts.bruEmbed !== false }));
+              /* 【第281轮】整包导出改走**逐支 await** 的异步版本：
+                 同一套建包逻辑（产出与同步版逐字节相同），但每支之间让出线程，取消按钮才点得动。
+                 以前这里是一次同步重活，点取消要等整包算完才排得上队。 */
+              const bruOpts = Object.assign({}, commonOpts(rec), { dualBake: pairNote ? false : opts.dualBake, embedSubTip: opts.bruEmbed !== false });
+              let made;
+              if (BC.convert.makeBruPackAsync) {
+                made = await BC.convert.makeBruPackAsync(packList, bruOpts, {
+                  onBrush: function (i, n) {
+                    const nm = packList[i] && packList[i].name ? packList[i].name : '';
+                    setProgress(Math.min(0.98, (doneCount + (i + 1) / Math.max(1, n) * packList.length) / Math.max(1, totalBrushes)),
+                      '正在转换 ' + (i + 1) + '/' + n + (nm ? '：' + nm : ''));
+                  },
+                  shouldAbort: function () { return state.cancelRequested; }
+                });
+              } else {
+                made = BC.convert.makeBruPack(packList, bruOpts);
+              }
               outFiles.push({ name: uniqueFile(base, '.bru'), data: made.bytes });
               if (pairNote) warnings.push('画世界双笔刷：主笔旁的「原笔刷名_副笔尖」是关联辅助笔尖，请选择主笔使用；辅助条目并非重复笔刷，删除会影响双笔效果');
               else if (opts.bruEmbed !== false && list.some(function (b) { return b.dualOn && b.dualTip; })) {
@@ -2032,6 +2048,11 @@
               }
             }
           } catch (e) {
+            /* 取消是正常路径：不要把「已取消」当成一支支失败列出来 */
+            if (e && e.code === 'ABORTED') {
+              if (warnings.indexOf('已取消：已转换的部分仍会打包') < 0) warnings.push('已取消：已转换的部分仍会打包');
+              break;
+            }
             list.forEach(b => failed.push((b.name || '未命名') + '（.' + fmt + '）：' + e.message));
           }
           await sleep(0);
@@ -2654,7 +2675,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.139';
+const APP_VERSION = '2.8.140';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;

@@ -1671,36 +1671,35 @@
    * Convert a list of parsed brushes into ONE multi-brush .bru pack
    * (画世界Pro keeps the whole set together when importing a single .bru).
    */
-  function makeBruPack(brushList, opts) {
+  /* 【第281轮】把 makeBruPack 拆成「建包上下文 → 逐支转换 → 收尾 → 写盘」四步，
+     让 async 版本可以在**每支之间**让出线程。目的不是好看：
+     整包导出是一段同步重活，用户点「取消」的事件要等它算完才排得上队（第273轮遗留）。
+     拆开之后，app 用 makeBruPackAsync 逐支 await，取消按钮才真的点得动。 */
+  function bruPackContext(brushList, opts) {
     opts = opts || {};
-    const items = [];
-    const used = new Map();
-    if (brushList.length === 1) {
-      const only = makeBru(brushList[0], opts);
-      if (only.passthrough) return { bytes: only.bytes, count: 1, meta: null, passthrough: true };
-    }
-    /* AUDIT-20261111-06：单支 makeBru 对「未改动的原生 BRU」返回整文件透传（pngBytes/meta 都是 null）。
-       多支合包时不能把它当包内条目——以前直接报「缺少笔尖图像数据」。合包统一走重建路径：与来自多支
-       .bru 的笔刷同一条路（_rawMeta 字段级保留未改参数），只关掉整文件透传。单支合包上面已原样返回。 */
-    // The pack writer uses a zero image length for native procedural nibs.
     const packOpts = Object.assign({}, opts, { _noFilePassthrough: true, _packMember: brushList.length > 1 });
-    /* f121 的 field2 是「包 ID」，解析侧靠 pkgId / uuid 去匹配副笔。先把包内可用标识收齐，
-       逐支判断它引用的副笔在不在本包，再决定「保留原生链接」还是「内嵌副笔图」。 */
     const presentIds = new Set();
     brushList.forEach(function (b) {
       if (!b) return;
       if (b.pkgId) presentIds.add(b.pkgId);
       if (b.bruUuid) presentIds.add(b.bruUuid);
     });
-    brushList.forEach(function (brush, i) {
-      const linkPresent = !!(brush && brush.bruDualRefUuid && presentIds.has(brush.bruDualRefUuid));
-      const made = makeBru(brush, Object.assign({}, packOpts, { _linkTargetPresent: linkPresent }));
-      let base = sanitizeName(brush.name, i);
-      let name = base, k = 2;
-      while (used.has(name.toLowerCase())) { name = base + ' (' + k + ')'; k++; }
-      used.set(name.toLowerCase(), 1);
-      items.push(Object.assign({}, made.meta, { name: name, png: made.pngBytes }));
-    });
+    return { opts: opts, packOpts: packOpts, presentIds: presentIds, used: new Map(), items: [] };
+  }
+
+  function bruPackAddItem(ctx, brushList, brush, i) {
+    const linkPresent = !!(brush && brush.bruDualRefUuid && ctx.presentIds.has(brush.bruDualRefUuid));
+    const made = makeBru(brush, Object.assign({}, ctx.packOpts, { _linkTargetPresent: linkPresent }));
+    let base = sanitizeName(brush && brush.name, i);
+    let name = base, k = 2;
+    while (ctx.used.has(name.toLowerCase())) { name = base + ' (' + k + ')'; k++; }
+    ctx.used.set(name.toLowerCase(), 1);
+    ctx.items.push(Object.assign({}, made.meta, { name: name, png: made.pngBytes }));
+    void brushList;
+  }
+
+  function bruPackFinalize(ctx, brushList) {
+    const items = ctx.items;
     if (!items.length) throw new Error('没有可打包的笔刷');
     // Build embedded secondary metadata from the very same converted parameters
     // used for its standalone record (including scatter/size calibration).
@@ -1713,11 +1712,64 @@
         return;
       }
       const ix = brushList.indexOf(sub);
-      item.bruDualSubBrush = ix >= 0 ? items[ix] : makeBru(sub, packOpts).meta;
+      item.bruDualSubBrush = ix >= 0 ? items[ix] : makeBru(sub, ctx.packOpts).meta;
       item.dualSubName = item.bruDualSubBrush.name;
     });
+    const opts = ctx.opts;
     const bytes = bru.writePack(items, { pkgId: opts.pkgId, fidelity: opts.fidelity, keepRawMeta: opts.keepRawMeta });
-    return { bytes, count: items.length, meta: items };
+    return { bytes: bytes, count: items.length, meta: items };
+  }
+
+  function makeBruPack(brushList, opts) {
+    opts = opts || {};
+    if (brushList.length === 1) {
+      const only = makeBru(brushList[0], opts);
+      if (only.passthrough) return { bytes: only.bytes, count: 1, meta: null, passthrough: true };
+    }
+    const ctx = bruPackContext(brushList, opts);
+    brushList.forEach(function (brush, i) { bruPackAddItem(ctx, brushList, brush, i); });
+    return bruPackFinalize(ctx, brushList);
+  }
+
+  /* 逐支 await 的整包导出：产出与 makeBruPack **逐字节相同**（同一套 addItem/finalize），
+     只是每支之间让出线程，让取消按钮与进度条真正生效。
+     hooks: { onBrush(i,total), shouldAbort() } —— shouldAbort 返回真时抛 code='ABORTED'。 */
+  async function makeBruPackAsync(brushList, opts, hooks) {
+    opts = opts || {};
+    hooks = hooks || {};
+    if (brushList.length === 1) {
+      /* 单支也走异步：那一次同步重活最长（2048² 纹理烘焙），不让出的话取消照样点不到 */
+      const only = makeBru(brushList[0], opts);
+      if (only.passthrough) return { bytes: only.bytes, count: 1, meta: null, passthrough: true };
+      await yieldTick();
+      if (hooks.shouldAbort && hooks.shouldAbort()) throw abortError();
+      const ctxOne = bruPackContext(brushList, opts);
+      bruPackAddItem(ctxOne, brushList, brushList[0], 0);
+      return bruPackFinalize(ctxOne, brushList);
+    }
+    const ctx = bruPackContext(brushList, opts);
+    for (let i = 0; i < brushList.length; i++) {
+      if (hooks.shouldAbort && hooks.shouldAbort()) throw abortError();
+      await yieldTick();
+      bruPackAddItem(ctx, brushList, brushList[i], i);
+      if (hooks.onBrush) hooks.onBrush(i, brushList.length);
+    }
+    await yieldTick();
+    if (hooks.shouldAbort && hooks.shouldAbort()) throw abortError();
+    return bruPackFinalize(ctx, brushList);
+  }
+
+  function yieldTick() {
+    return new Promise(function (resolve) {
+      if (typeof setTimeout === 'function') setTimeout(resolve, 0);
+      else resolve();
+    });
+  }
+
+  function abortError() {
+    const e = new Error('已取消');
+    e.code = 'ABORTED';
+    return e;
   }
 
   /**
@@ -4522,7 +4574,7 @@ Write-Host 'restart MediBang Paint Pro'
     });
   }
 
-  const api = { detect, parseFile, restoreHsjTips, restoreProcreateBundled, builtinTipKey, expandArchive, synthTip, makeBru, makeBruPack, makeBruDualPair, buildBruDualPairBrushes, dualNeedsPair, makeAbrPack, makeTplPack, makeUdongmanPack, makeUdongmanSutPack, makeUdongmanMtdPack, parseMtd, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, mergePatternFiles, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, tipSourceAudit, tipSourceHint, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makeGihFiles, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Files, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
+  const api = { detect, parseFile, restoreHsjTips, restoreProcreateBundled, builtinTipKey, expandArchive, synthTip, makeBru, makeBruPack, makeBruPackAsync, makeBruDualPair, buildBruDualPairBrushes, dualNeedsPair, makeAbrPack, makeTplPack, makeUdongmanPack, makeUdongmanSutPack, makeUdongmanMtdPack, parseMtd, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, mergePatternFiles, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, tipSourceAudit, tipSourceHint, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makeGihFiles, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Files, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
   /* 写出口统一过一遍数值卫生（见 sanitizeBrushNumbers）。包装不改变函数签名：
      数组入口逐支处理，单支入口直接处理，字节/字符串入口原样放行。
      只有真的钳制过才替换参数并附加 warnings，合法样本走原路径零影响。 */
