@@ -1995,7 +1995,14 @@
 
   /* 【第285轮】单支笔刷 → ABR 条目（原 makeAbrPack 里 forEach 回调体的原样搬移） */
   function abrPackItem(source, i, names, opts) {
-    const brush=withExportSettings(source,opts);
+    let brush=withExportSettings(source,opts);
+    /* 【第286轮】Procreate 的 8×8 纯白方块（Blank 预设）写进 ABR 是「采样笔刷」：PS 会把 8×8 双线性放大到
+       目标直径，硬边糊成软头（实测：吹石-大号方块 117px 笔尖在产物里仍是 8×8）。BRU 出口第274轮已处理
+       （expandTinyBinaryTip），ABR 这条路一直没接。只在没有原生样本可透传时放大——带 _rawPreset 的
+       情况要逐字节保留原始样本，动了反而是破坏保真。 */
+    if (source.source !== 'bru' && !source._rawPreset && opts.fidelity !== false) {
+      brush = expandTinyBinaryTip(brush, opts);
+    }
     if(opts.pressure!==undefined){
       brush.dynamicsControlSize=opts.pressure?2:(source.dynamicsControlSize===2?0:source.dynamicsControlSize);
       if(opts.pressure===false && source.dynamicsControlOpacity===2)brush.dynamicsControlOpacity=0;
