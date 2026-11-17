@@ -193,8 +193,7 @@
         !/(^|[\\/])(?:\.\.|QuickLook|Signature)([\\/]|$)|(^|[\\/])Grain\.png$/i.test(shapePath)) {
       const image = lookupLibraryImage(shapePath, shapeResources);
       if (image) {
-        const raw = sourceShapePng(image.w, image.h, image.rgba);
-        const tip = decodeShape({ name: 'Shape.png', data: function () { return raw; } }, brush.shapeInverted === true);
+        const tip = tipFromDecodedImage(image, brush.shapeInverted === true);
         if (tip) {
           brush.tip = tip;
           brush.tipSource = 'library';
@@ -265,9 +264,7 @@
       if (!tipFromShape && shapeResources) {
         const image = lookupLibraryImage(bundledShapePath, shapeResources);
         if (image) {
-          const raw = sourceShapePng(image.w, image.h, image.rgba);
-          shapeEntry = { name: prefix + 'Shape.png', data: () => raw };
-          tipFromShape = decodeShape(shapeEntry, shapeInverted);
+          tipFromShape = tipFromDecodedImage(image, shapeInverted);
           resolvedShapePath = bundledShapePath;
           shapeFromLibrary = true;
         }
@@ -903,6 +900,21 @@
 
   // Source lookup must retain its alpha separately from luminance until the
   // archive's inversion is applied. Gray normalization happens in the writer.
+  /* 【第280轮】素材库里的图已经是解码好的 {w,h,rgba}：直接走亮度→笔尖，
+     不要再「编成 PNG 再解回来」。以前这条路上每张 2048² 图都要 encode+decode 各一次，
+     解析一套 10 支的笔刷包光这一项就多花 2~3 秒（吹石 brushset 实测 5s 里的大头）。 */
+  function tipFromDecodedImage(image, inverted) {
+    if (!image || !(image.w > 0) || !(image.h > 0) || !image.rgba) return null;
+    /* 保持原来 sourceShapePng 的上限语义：超过 2048 先缩到 2048（Procreate 的最大边长） */
+    const maxSide = Math.max(image.w, image.h);
+    if (maxSide > 2048) {
+      const scale = 2048 / maxSide;
+      const w = Math.max(1, Math.round(image.w * scale)), h = Math.max(1, Math.round(image.h * scale));
+      return luminanceToTip({ width: w, height: h, rgba: png.resize(image.rgba, image.w, image.h, w, h) }, !!inverted);
+    }
+    return luminanceToTip({ width: image.w, height: image.h, rgba: image.rgba }, !!inverted);
+  }
+
   function sourceShapePng(w, h, rgba) {
     const scale=Math.min(1,2048/Math.max(w,h));
     const width=Math.max(1,Math.round(w*scale)),height=Math.max(1,Math.round(h*scale));
@@ -1417,7 +1429,10 @@
       // 重生成 Shape.png 时像素已烘焙反转，archive 必须关掉以免二次反相；
       // 像素没变、只切换标志时则尊重新值，并继续复用原 Shape.png。
       let archiveChanges=null;
-      if(!keepRawShape&&((!sameTip&&brush.tip)||(!rawShape&&!brush.bundledShapePath)))archiveChanges={shapeInverted:false};
+      /* 【第280轮】`shapeFromLibrary`（像素来自素材库、没有 _rawShape 字节）也要按「重新生成 Shape」处理：
+         tip 里的像素已经把源反转烘进去了，archive 必须把 shapeInverted 关掉，否则二次反相。
+         以前这条路靠 `sourceShapePng` 现编一份 _rawShape 才走得到，跳过编解码优化后要显式补上。 */
+      if(!keepRawShape&&((!sameTip&&brush.tip)||(!rawShape&&(!brush.bundledShapePath||brush.shapeFromLibrary))))archiveChanges={shapeInverted:false};
       else if(keepRawShape&&!!brush.shapeInverted!==!!(brush._rawNormalized||{}).shapeInverted)
         archiveChanges={shapeInverted:!!brush.shapeInverted};
       if(normalizedShape && normalizedShape.inverted!==!!brush.shapeInverted)archiveChanges={shapeInverted:normalizedShape.inverted};
@@ -1425,7 +1440,7 @@
       if(brush._rawGrain&&brush._rawGrain.length===0&&!recoveredGrain)archiveChanges=Object.assign({},archiveChanges,{grainDepth:0});
       entries.push({name:'Brush.archive',data:patchArchive(brush,opts,archiveChanges)});
       if(keepRawShape)entries.push({name:'Shape.png',data:normalizedShape.bytes});
-      else if((!sameTip && brush.tip) || (!rawShape && !brush.bundledShapePath)){
+      else if((!sameTip && brush.tip) || (!rawShape && (!brush.bundledShapePath || brush.shapeFromLibrary))){
         let rebuilt=tipRGBA(brush,opts);
         // The decoded pixels include the original inversion. If only scalar
         // edits changed it, apply that delta before freezing it into Shape.
