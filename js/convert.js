@@ -1972,235 +1972,234 @@
     return {bytes:patMod.buildPat(records), count:records.length};
   }
 
-  function makeAbrPack(brushList, opts) {
-    opts = opts || {};
+  /* 【第285轮】原包透传判定：同步/异步两条导出路径共用同一套判断（从 makeAbrPack 提出） */
+  function abrPackPassthrough(brushList, opts) {
     /* 【第266轮】原包透传：输入正好是源 .abr 的全部笔刷、顺序一致、且没有任何字段被改过
        → 直接回吐原始字节。以前每次导出都重建容器（头 + section 布局），
        66 / 503 支样本原样往返时字节全变。 */
-    if (brushList.length && brushList[0] && brushList[0]._rawAbrPack &&
+    if (!(brushList.length && brushList[0] && brushList[0]._rawAbrPack &&
         opts.forceRebuild !== true && opts.fidelity !== false && opts.preserveRaw !== false &&
         /* 重新绑定图案（textureMode=pattern / patternRefs）时必须重建，否则 PAT ID 换不掉 */
-        opts.textureMode !== 'pattern' && !opts.patternRefs && !opts.patternRef) {
-      const pack = brushList[0]._rawAbrPack;
-      if (brushList.length === pack.count &&
-          brushList.every(function (b, i) { return b && b._rawAbrPack === pack && b._rawAbrIndex === i; })) {
-        let clean = true;
-        for (const b of brushList) {
-          /* 基线在 parseFile 收尾时记（见那里的注释）。这里是「比对」不是「初始化」：
-             没有基线就说明不是同一次解析出来的对象，一律走重建，绝不能懒初始化——
-             那会把「用户改过的当前值」当成原始值，导出等于什么都没改。 */
-          if (b._rawAbrBase === undefined || b._rawAbrBase !== util.brushFingerprint(b)) { clean = false; break; }
-        }
-        if (clean) return { bytes: new Uint8Array(pack.bytes), count: pack.count, passthrough: true };
-      }
+        opts.textureMode !== 'pattern' && !opts.patternRefs && !opts.patternRef)) return null;
+    const pack = brushList[0]._rawAbrPack;
+    if (brushList.length !== pack.count) return null;
+    if (!brushList.every(function (b, i) { return b && b._rawAbrPack === pack && b._rawAbrIndex === i; })) return null;
+    for (const b of brushList) {
+      /* 基线在 parseFile 收尾时记（见那里的注释）。这里是「比对」不是「初始化」：
+         没有基线就说明不是同一次解析出来的对象，一律走重建，绝不能懒初始化——
+         那会把「用户改过的当前值」当成原始值，导出等于什么都没改。 */
+      if (b._rawAbrBase === undefined || b._rawAbrBase !== util.brushFingerprint(b)) return null;
     }
-    // 重名会让 Photoshop 导入时去重/合并，导致预设与采样错位（画出来变成别的笔刷），
-    // 这里统一给重名加序号
-    const names = uniqueNames(brushList);
-    const items = [];
-    brushList.forEach(function (source, i) {
-      const brush=withExportSettings(source,opts);
-      if(opts.pressure!==undefined){
-        brush.dynamicsControlSize=opts.pressure?2:(source.dynamicsControlSize===2?0:source.dynamicsControlSize);
-        if(opts.pressure===false && source.dynamicsControlOpacity===2)brush.dynamicsControlOpacity=0;
-        if(opts.pressure===false)['Angle','Roundness','Scatter','Count','Flow'].forEach(k=>{if(source['dynamicsControl'+k]===2)brush['dynamicsControl'+k]=0;});
-      }
-      const keepRaw=opts.preserveRaw!==false && opts.fidelity!==false && !opts.forceRebuild;
-      const tipChanged=!!source._rawPreset && source._rawTipState!==util.brushFingerprint({tip:brush.tip});
-      const dualTipChanged=!!source._rawPreset && source._rawDualTipState!==util.brushFingerprint({tip:brush.dualTip});
-      const dualChanged=!!source._rawPreset && source._rawDualState!==util.brushFingerprint({dualBrush:brush.dualBrush,dualOn:brush.dualOn,dualBlendMode:brush.dualBlendMode});
-      const paths=new Set(),before=source._rawNormalized||{};
-      const mapping={sizePx:['Brsh.Dmtr'],spacingPct:['Brsh.Spcn'],angle:['Brsh.Angl'],roundness:['Brsh.Rndn'],
-        name:['Nm  ','Brsh.Nm  '],flipX:['Brsh.flipX'],flipY:['Brsh.flipY'],hardness:['Brsh.Hrdn'],
-        pressure:['useTipDynamics','szVr.bVTy','minimumDiameter'],pressureSize:['useTipDynamics','szVr.bVTy','minimumDiameter'],
-        pressureOpacity:['usePaintDynamics','opVr.bVTy','opVr.Mnm '],minSizeRatio:['minimumDiameter'],minOpacityRatio:['opVr.Mnm '],
-        dynamicsControlSize:['useTipDynamics','szVr.bVTy'],dynamicsControlOpacity:['usePaintDynamics','opVr.bVTy'],
-        sizeJitterPct:['useTipDynamics','szVr.jitter'],opacityJitterPct:['usePaintDynamics','opVr.jitter'],
-        flowPct:['toolOptions.flow'],opacity:['toolOptions.Opct'],
-        hasTexture:['useTexture'],textureDepth:['textureDepth'],textureScale:['textureScale'],textureInverted:['InvT']};
-      Object.assign(mapping,{dynamicsControlAngle:['useTipDynamics','angleDynamics.bVTy'],dynamicsControlRoundness:['useTipDynamics','roundnessDynamics.bVTy'],
-        dynamicsControlScatter:['scatterDynamics.bVTy'],dynamicsControlCount:['countDynamics.bVTy'],dynamicsControlFlow:['usePaintDynamics','prVr.bVTy'],
-        angleJitterDeg:['useTipDynamics','angleDynamics.jitter'],roundnessJitterPct:['useTipDynamics','roundnessDynamics.jitter'],
-        tiltJitterPct:['useTipDynamics','ttlVr.jitter'],minRoundnessRatio:['minimumRoundness'],
-        scatterOn:['useScatter'],scatterPct:['scatterDynamics.jitter'],scatterCount:['Cnt ','useScatter'],scatterBothAxes:['bothAxes'],
-        countJitterPct:['countDynamics.jitter','useScatter'],flowJitterPct:['prVr.jitter','usePaintDynamics'],
-        colorDynamicsOn:['useColorDynamics'],colorJitterFgBg:['clVr.jitter'],colorPerTip:['colorDynamicsPerTip'],colorJitterHue:['H   '],colorJitterSat:['Strt'],colorJitterVal:['Brgh'],
-        /* 【第277轮】clVr 的「控制源 / 最小值」以前没进补丁表：改了它们，keepRaw 路径不会重写
-           clVr.bVTy / clVr.Mnm，导出后回读变回 null/undefined（实测 control.abr：设 5 / 0.42 → 回读 null）。
-           同第270轮 ABR 基线那类「改了等于没改」，只是这次发生在属性子字段上。 */
-        dynamicsControlColor:['clVr.bVTy'],colorMinRatio:['clVr.Mnm '],
-        noise:['Nose'],buildUp:['Rpt '],wetEdgesOn:['Wtdg'],poseOn:['useBrushPose']});
-      if(keepRaw && source._rawPreset)Object.keys(mapping).forEach(k=>{if(brush[k]!==before[k])mapping[k].forEach(p=>paths.add(p));});
-      if(tipChanged)paths.add('Brsh.sampledData');
-      if(keepRaw && source._rawPreset && source._rawFadeState!==JSON.stringify(brush.dynamicsFadeSteps||{}))
-        ['szVr','opVr','angleDynamics','roundnessDynamics','ttlVr','scatterDynamics','countDynamics','prVr'].forEach(p=>paths.add(p+'.fStp'));
-      if(dualChanged || dualTipChanged){['useDualBrush','Brsh.Dmtr','Brsh.Angl','Brsh.Rndn','Brsh.Spcn','Brsh.sampledData','Brsh.flipX','Brsh.flipY','useScatter','Cnt ','bothAxes','scatterDynamics.jitter','countDynamics.jitter'].forEach(p=>paths.add('dualBrush.'+p));}
-      if(brush.dualBlendMode!==before.dualBlendMode)paths.add('dualBrush.BlnM');
-      let tipImg = tipToRGBA(brush);
-      if (!tipImg) tipImg = synthTip(brush, 256, opts);
-      const synthesizeDual = brush.dualOn && brush.dualTip && (!keepRaw || !brush._rawDualObjc || dualTipChanged);
-      const maxTip = Math.max(64, Math.min(2048, opts.maxTipSize || 2048));
-      const dualCap = {};   // 副笔尖缩放后的实际尺寸（写 dualW/dualH 用）
-      let w = tipImg.w, h = tipImg.h, rgba = tipImg.rgba;
-      const maxSide = Math.max(w, h);
-      if (maxSide > maxTip) {
-        const scale = maxTip / maxSide;
-        w = Math.max(1, Math.round(w * scale));
-        h = Math.max(1, Math.round(h * scale));
-        rgba = png.resize(rgba, tipImg.w, tipImg.h, w, h);
-      }
-      const name = String(names[i] || brush.name || ('brush_' + (i + 1)))
-      // 纹理：ABR 现在可以写真实 patt 图案块；只有关闭 psTexture 时才退化为烘焙
-      // 默认策略（越还原越好）：
-      //  · 源有原始描述符（保留引用路径）→ 保留原纹理引用
-      //  · 需要重建描述符（其他格式来源）→ 把纹理烘焙进笔尖（PS 不会从 ABR 导入图案，写图案引用会变空）
-      const willUseRaw = keepRaw && !!brush._rawPreset;
-      const textureMode = opts.textureMode === 'pattern';
-      const patternRef = (brush.hasTexture && (textureMode || willUseRaw) &&
-        ((opts.patternRefs && opts.patternRefs.get(textureKey(brush))) || opts.patternRef)) || null;
-      // A new brush can only enable an independent texture with a real PAT
-      // reference. Native presets may still retain their original reference.
-      const usePsTexture = !!brush.hasTexture && (willUseRaw || (textureMode && !!patternRef));
-      // Native presets otherwise pass through with their old Txtr ID, even
-      // though the companion PAT owns a new ID. Patch just the binding fields.
-      if (willUseRaw && patternRef) {
-        ['Txtr', 'useTexture'].forEach(p => paths.add(p));
-      }
-      /* 引用了已烘入反转的 PAT 时 InvT 必须是 false；而 raw 源的原值本来就是 true，
-         不把它列进 rawPatchPaths 的话 desc.patchDescriptor 根本不会改这个字段（#260）。 */
-      const effectiveTextureInverted = patternRef && patternRef.inversionBaked ? false : !!brush.textureInverted;
-      if (keepRaw && brush._rawPreset && effectiveTextureInverted !== !!brush.textureInverted) paths.add('InvT');
-      // 只有拿到真实纹理像素才烘焙：纹理开关 + 缺原图时伪造程序化噪声会直接改变笔刷图案
-      // （与第66轮 BRU「空纹理保持关闭、不用噪声兜底」的策略一致）。
-      // 烘焙前复制 rgba：bakeTextureIntoRGBA 就地修改，否则会污染 brush.tip.rgba，
-      // 同一支笔刷重复导出 ABR 会反复叠加，同一次运行里后续格式也会继承被烘焙的笔尖。
-      if (brush.hasTexture && !usePsTexture && !textureMode && opts.noTextureBake !== true && textureGray(brush)) {
-        rgba = new Uint8Array(rgba);
-        bakeTextureIntoRGBA(rgba, w, h, brush, brush.textureDepth === undefined ? (brush.grainStrength === undefined ? 0.35 : brush.grainStrength) : brush.textureDepth);
-      }
-      const fade = abrTaperFade(brush); // 锥度→渐隐（无压感占用时），报告状态与写出共用同一判定
-      items.push({
-        name: name, w: w, h: h, gray: abr.maskFromRGBA(rgba),
-        sizePx: brush.sizePx, spacingPct: brush.spacingPct,
-        angle: brush.angle, roundness: brush.roundness,
-        flipY: !!opts.abrFlipY,
-        brushFlipX: !!brush.flipX,
-        brushFlipY: !!brush.flipY,
-        pressureSize: pressureSizeOn(brush),
-        pressureOpacity: !!brush.pressureOpacity,
-        dynamicsControlSize: fade.sizeCtl !== undefined ? fade.sizeCtl : (brush.dynamicsControlSize == null ? (pressureSizeOn(brush) ? 2 : (brush.tiltSizeDyn > 0 ? 3 : 0)) : brush.dynamicsControlSize),
-        dynamicsControlOpacity: fade.opacityCtl !== undefined ? fade.opacityCtl : (brush.dynamicsControlOpacity == null ? (brush.pressureOpacity ? 2 : (brush.tiltOpacityDyn > 0 ? 3 : 0)) : brush.dynamicsControlOpacity),
-        dynamicsControlAngle: brush.dynamicsControlAngle === undefined ? (brush.tiltAngleDyn > 0 ? 3 : undefined) : brush.dynamicsControlAngle,
-        dynamicsControlRoundness: brush.dynamicsControlRoundness === undefined ? (brush.tiltRoundnessDyn > 0 ? 3 : undefined) : brush.dynamicsControlRoundness,
-        dynamicsControlScatter: brush.dynamicsControlScatter,
-        dynamicsControlCount: brush.dynamicsControlCount,
-        dynamicsControlFlow: brush.dynamicsControlFlow,
-        dynamicsFadeSteps: (fade.sizeSteps !== undefined || fade.opacitySteps !== undefined)
-          ? Object.assign({}, brush.dynamicsFadeSteps,
-              fade.sizeSteps !== undefined ? { size: fade.sizeSteps } : null,
-              fade.opacitySteps !== undefined ? { opacity: fade.opacitySteps } : null)
-          : brush.dynamicsFadeSteps,
-        smoothingStrength: brush.smoothingStrength,
-        minRoundnessRatio: brush.minRoundnessRatio,
-        opacityJitterPct: brush.opacityJitterPct,
-        roundnessJitterPct: brush.roundnessJitterPct,
-        tiltJitterPct: brush.tiltJitterPct,
-        // ABR has one control source per parameter. Approximate a standalone
-        // Procreate tilt amount by its equivalent minimum, never by random jitter.
-        minSizeRatio: !pressureSizeOn(brush) && brush.tiltSizeDyn > 0 ? Math.min(brush.minSizeRatio === undefined ? 1 : brush.minSizeRatio, 1 - Math.min(1, brush.tiltSizeDyn)) : brush.minSizeRatio,
-        minOpacityRatio: !brush.pressureOpacity && brush.tiltOpacityDyn > 0 ? Math.min(brush.minOpacityRatio === undefined ? 1 : brush.minOpacityRatio, 1 - Math.min(1, brush.tiltOpacityDyn)) : brush.minOpacityRatio,
-        angleJitterDeg: brush.source === 'procreate' ? Math.max(0, Math.min(100, (brush.angleJitterDeg || 0) / 1.8)) : (brush.angleJitterDeg || 0),
-        sizeJitterPct: brush.sizeJitterPct || 0,
-        flowJitterPct: brush.flowJitterPct || 0,
-        countJitterPct: brush.countJitterPct || 0,
-        scatterOn: !!brush.scatterOn,
-        scatterPct: brush.scatterPct || 0,
-        scatterBothAxes: !!brush.scatterBothAxes,
-        scatterCount: brush.scatterCount || 1,
-        flowPct: brush.flowPct === undefined ? 1 : brush.flowPct,
-        opacityPct: brush.opacity === undefined ? 1 : brush.opacity,
-        dualUuid: synthesizeDual ? genUuid() : (dualChanged && brush.dualBrush ? brush.dualBrush.uuid : undefined),
-        dualGray: synthesizeDual ? (function () {
-          let t2 = brush.dualTip;
-          if (t2 && !t2.rgba && t2.data) {
-            const bpp = t2.bpp || 1;
-            const rgba = new Uint8Array(t2.w * t2.h * 4);
-            for (let i = 0; i < t2.w * t2.h; i++) {
-              const a = bpp >= 3 ? Math.max(t2.data[i * bpp], t2.data[i * bpp + 1], t2.data[i * bpp + 2]) : t2.data[i];
-              rgba[i * 4] = 255; rgba[i * 4 + 1] = 255; rgba[i * 4 + 2] = 255; rgba[i * 4 + 3] = a;
-            }
-            t2 = { w: t2.w, h: t2.h, rgba: rgba };
+    return { bytes: new Uint8Array(pack.bytes), count: pack.count, passthrough: true };
+  }
+
+  /* 【第285轮】单支笔刷 → ABR 条目（原 makeAbrPack 里 forEach 回调体的原样搬移） */
+  function abrPackItem(source, i, names, opts) {
+    const brush=withExportSettings(source,opts);
+    if(opts.pressure!==undefined){
+      brush.dynamicsControlSize=opts.pressure?2:(source.dynamicsControlSize===2?0:source.dynamicsControlSize);
+      if(opts.pressure===false && source.dynamicsControlOpacity===2)brush.dynamicsControlOpacity=0;
+      if(opts.pressure===false)['Angle','Roundness','Scatter','Count','Flow'].forEach(k=>{if(source['dynamicsControl'+k]===2)brush['dynamicsControl'+k]=0;});
+    }
+    const keepRaw=opts.preserveRaw!==false && opts.fidelity!==false && !opts.forceRebuild;
+    const tipChanged=!!source._rawPreset && source._rawTipState!==util.brushFingerprint({tip:brush.tip});
+    const dualTipChanged=!!source._rawPreset && source._rawDualTipState!==util.brushFingerprint({tip:brush.dualTip});
+    const dualChanged=!!source._rawPreset && source._rawDualState!==util.brushFingerprint({dualBrush:brush.dualBrush,dualOn:brush.dualOn,dualBlendMode:brush.dualBlendMode});
+    const paths=new Set(),before=source._rawNormalized||{};
+    const mapping={sizePx:['Brsh.Dmtr'],spacingPct:['Brsh.Spcn'],angle:['Brsh.Angl'],roundness:['Brsh.Rndn'],
+      name:['Nm  ','Brsh.Nm  '],flipX:['Brsh.flipX'],flipY:['Brsh.flipY'],hardness:['Brsh.Hrdn'],
+      pressure:['useTipDynamics','szVr.bVTy','minimumDiameter'],pressureSize:['useTipDynamics','szVr.bVTy','minimumDiameter'],
+      pressureOpacity:['usePaintDynamics','opVr.bVTy','opVr.Mnm '],minSizeRatio:['minimumDiameter'],minOpacityRatio:['opVr.Mnm '],
+      dynamicsControlSize:['useTipDynamics','szVr.bVTy'],dynamicsControlOpacity:['usePaintDynamics','opVr.bVTy'],
+      sizeJitterPct:['useTipDynamics','szVr.jitter'],opacityJitterPct:['usePaintDynamics','opVr.jitter'],
+      flowPct:['toolOptions.flow'],opacity:['toolOptions.Opct'],
+      hasTexture:['useTexture'],textureDepth:['textureDepth'],textureScale:['textureScale'],textureInverted:['InvT']};
+    Object.assign(mapping,{dynamicsControlAngle:['useTipDynamics','angleDynamics.bVTy'],dynamicsControlRoundness:['useTipDynamics','roundnessDynamics.bVTy'],
+      dynamicsControlScatter:['scatterDynamics.bVTy'],dynamicsControlCount:['countDynamics.bVTy'],dynamicsControlFlow:['usePaintDynamics','prVr.bVTy'],
+      angleJitterDeg:['useTipDynamics','angleDynamics.jitter'],roundnessJitterPct:['useTipDynamics','roundnessDynamics.jitter'],
+      tiltJitterPct:['useTipDynamics','ttlVr.jitter'],minRoundnessRatio:['minimumRoundness'],
+      scatterOn:['useScatter'],scatterPct:['scatterDynamics.jitter'],scatterCount:['Cnt ','useScatter'],scatterBothAxes:['bothAxes'],
+      countJitterPct:['countDynamics.jitter','useScatter'],flowJitterPct:['prVr.jitter','usePaintDynamics'],
+      colorDynamicsOn:['useColorDynamics'],colorJitterFgBg:['clVr.jitter'],colorPerTip:['colorDynamicsPerTip'],colorJitterHue:['H   '],colorJitterSat:['Strt'],colorJitterVal:['Brgh'],
+      /* 【第277轮】clVr 的「控制源 / 最小值」以前没进补丁表：改了它们，keepRaw 路径不会重写
+         clVr.bVTy / clVr.Mnm，导出后回读变回 null/undefined（实测 control.abr：设 5 / 0.42 → 回读 null）。
+         同第270轮 ABR 基线那类「改了等于没改」，只是这次发生在属性子字段上。 */
+      dynamicsControlColor:['clVr.bVTy'],colorMinRatio:['clVr.Mnm '],
+      noise:['Nose'],buildUp:['Rpt '],wetEdgesOn:['Wtdg'],poseOn:['useBrushPose']});
+    if(keepRaw && source._rawPreset)Object.keys(mapping).forEach(k=>{if(brush[k]!==before[k])mapping[k].forEach(p=>paths.add(p));});
+    if(tipChanged)paths.add('Brsh.sampledData');
+    if(keepRaw && source._rawPreset && source._rawFadeState!==JSON.stringify(brush.dynamicsFadeSteps||{}))
+      ['szVr','opVr','angleDynamics','roundnessDynamics','ttlVr','scatterDynamics','countDynamics','prVr'].forEach(p=>paths.add(p+'.fStp'));
+    if(dualChanged || dualTipChanged){['useDualBrush','Brsh.Dmtr','Brsh.Angl','Brsh.Rndn','Brsh.Spcn','Brsh.sampledData','Brsh.flipX','Brsh.flipY','useScatter','Cnt ','bothAxes','scatterDynamics.jitter','countDynamics.jitter'].forEach(p=>paths.add('dualBrush.'+p));}
+    if(brush.dualBlendMode!==before.dualBlendMode)paths.add('dualBrush.BlnM');
+    let tipImg = tipToRGBA(brush);
+    if (!tipImg) tipImg = synthTip(brush, 256, opts);
+    const synthesizeDual = brush.dualOn && brush.dualTip && (!keepRaw || !brush._rawDualObjc || dualTipChanged);
+    const maxTip = Math.max(64, Math.min(2048, opts.maxTipSize || 2048));
+    const dualCap = {};   // 副笔尖缩放后的实际尺寸（写 dualW/dualH 用）
+    let w = tipImg.w, h = tipImg.h, rgba = tipImg.rgba;
+    const maxSide = Math.max(w, h);
+    if (maxSide > maxTip) {
+      const scale = maxTip / maxSide;
+      w = Math.max(1, Math.round(w * scale));
+      h = Math.max(1, Math.round(h * scale));
+      rgba = png.resize(rgba, tipImg.w, tipImg.h, w, h);
+    }
+    const name = String(names[i] || brush.name || ('brush_' + (i + 1)))
+    // 纹理：ABR 现在可以写真实 patt 图案块；只有关闭 psTexture 时才退化为烘焙
+    // 默认策略（越还原越好）：
+    //  · 源有原始描述符（保留引用路径）→ 保留原纹理引用
+    //  · 需要重建描述符（其他格式来源）→ 把纹理烘焙进笔尖（PS 不会从 ABR 导入图案，写图案引用会变空）
+    const willUseRaw = keepRaw && !!brush._rawPreset;
+    const textureMode = opts.textureMode === 'pattern';
+    const patternRef = (brush.hasTexture && (textureMode || willUseRaw) &&
+      ((opts.patternRefs && opts.patternRefs.get(textureKey(brush))) || opts.patternRef)) || null;
+    // A new brush can only enable an independent texture with a real PAT
+    // reference. Native presets may still retain their original reference.
+    const usePsTexture = !!brush.hasTexture && (willUseRaw || (textureMode && !!patternRef));
+    // Native presets otherwise pass through with their old Txtr ID, even
+    // though the companion PAT owns a new ID. Patch just the binding fields.
+    if (willUseRaw && patternRef) {
+      ['Txtr', 'useTexture'].forEach(p => paths.add(p));
+    }
+    /* 引用了已烘入反转的 PAT 时 InvT 必须是 false；而 raw 源的原值本来就是 true，
+       不把它列进 rawPatchPaths 的话 desc.patchDescriptor 根本不会改这个字段（#260）。 */
+    const effectiveTextureInverted = patternRef && patternRef.inversionBaked ? false : !!brush.textureInverted;
+    if (keepRaw && brush._rawPreset && effectiveTextureInverted !== !!brush.textureInverted) paths.add('InvT');
+    // 只有拿到真实纹理像素才烘焙：纹理开关 + 缺原图时伪造程序化噪声会直接改变笔刷图案
+    // （与第66轮 BRU「空纹理保持关闭、不用噪声兜底」的策略一致）。
+    // 烘焙前复制 rgba：bakeTextureIntoRGBA 就地修改，否则会污染 brush.tip.rgba，
+    // 同一支笔刷重复导出 ABR 会反复叠加，同一次运行里后续格式也会继承被烘焙的笔尖。
+    if (brush.hasTexture && !usePsTexture && !textureMode && opts.noTextureBake !== true && textureGray(brush)) {
+      rgba = new Uint8Array(rgba);
+      bakeTextureIntoRGBA(rgba, w, h, brush, brush.textureDepth === undefined ? (brush.grainStrength === undefined ? 0.35 : brush.grainStrength) : brush.textureDepth);
+    }
+    const fade = abrTaperFade(brush); // 锥度→渐隐（无压感占用时），报告状态与写出共用同一判定
+    return ({
+      name: name, w: w, h: h, gray: abr.maskFromRGBA(rgba),
+      sizePx: brush.sizePx, spacingPct: brush.spacingPct,
+      angle: brush.angle, roundness: brush.roundness,
+      flipY: !!opts.abrFlipY,
+      brushFlipX: !!brush.flipX,
+      brushFlipY: !!brush.flipY,
+      pressureSize: pressureSizeOn(brush),
+      pressureOpacity: !!brush.pressureOpacity,
+      dynamicsControlSize: fade.sizeCtl !== undefined ? fade.sizeCtl : (brush.dynamicsControlSize == null ? (pressureSizeOn(brush) ? 2 : (brush.tiltSizeDyn > 0 ? 3 : 0)) : brush.dynamicsControlSize),
+      dynamicsControlOpacity: fade.opacityCtl !== undefined ? fade.opacityCtl : (brush.dynamicsControlOpacity == null ? (brush.pressureOpacity ? 2 : (brush.tiltOpacityDyn > 0 ? 3 : 0)) : brush.dynamicsControlOpacity),
+      dynamicsControlAngle: brush.dynamicsControlAngle === undefined ? (brush.tiltAngleDyn > 0 ? 3 : undefined) : brush.dynamicsControlAngle,
+      dynamicsControlRoundness: brush.dynamicsControlRoundness === undefined ? (brush.tiltRoundnessDyn > 0 ? 3 : undefined) : brush.dynamicsControlRoundness,
+      dynamicsControlScatter: brush.dynamicsControlScatter,
+      dynamicsControlCount: brush.dynamicsControlCount,
+      dynamicsControlFlow: brush.dynamicsControlFlow,
+      dynamicsFadeSteps: (fade.sizeSteps !== undefined || fade.opacitySteps !== undefined)
+        ? Object.assign({}, brush.dynamicsFadeSteps,
+            fade.sizeSteps !== undefined ? { size: fade.sizeSteps } : null,
+            fade.opacitySteps !== undefined ? { opacity: fade.opacitySteps } : null)
+        : brush.dynamicsFadeSteps,
+      smoothingStrength: brush.smoothingStrength,
+      minRoundnessRatio: brush.minRoundnessRatio,
+      opacityJitterPct: brush.opacityJitterPct,
+      roundnessJitterPct: brush.roundnessJitterPct,
+      tiltJitterPct: brush.tiltJitterPct,
+      // ABR has one control source per parameter. Approximate a standalone
+      // Procreate tilt amount by its equivalent minimum, never by random jitter.
+      minSizeRatio: !pressureSizeOn(brush) && brush.tiltSizeDyn > 0 ? Math.min(brush.minSizeRatio === undefined ? 1 : brush.minSizeRatio, 1 - Math.min(1, brush.tiltSizeDyn)) : brush.minSizeRatio,
+      minOpacityRatio: !brush.pressureOpacity && brush.tiltOpacityDyn > 0 ? Math.min(brush.minOpacityRatio === undefined ? 1 : brush.minOpacityRatio, 1 - Math.min(1, brush.tiltOpacityDyn)) : brush.minOpacityRatio,
+      angleJitterDeg: brush.source === 'procreate' ? Math.max(0, Math.min(100, (brush.angleJitterDeg || 0) / 1.8)) : (brush.angleJitterDeg || 0),
+      sizeJitterPct: brush.sizeJitterPct || 0,
+      flowJitterPct: brush.flowJitterPct || 0,
+      countJitterPct: brush.countJitterPct || 0,
+      scatterOn: !!brush.scatterOn,
+      scatterPct: brush.scatterPct || 0,
+      scatterBothAxes: !!brush.scatterBothAxes,
+      scatterCount: brush.scatterCount || 1,
+      flowPct: brush.flowPct === undefined ? 1 : brush.flowPct,
+      opacityPct: brush.opacity === undefined ? 1 : brush.opacity,
+      dualUuid: synthesizeDual ? genUuid() : (dualChanged && brush.dualBrush ? brush.dualBrush.uuid : undefined),
+      dualGray: synthesizeDual ? (function () {
+        let t2 = brush.dualTip;
+        if (t2 && !t2.rgba && t2.data) {
+          const bpp = t2.bpp || 1;
+          const rgba = new Uint8Array(t2.w * t2.h * 4);
+          for (let i = 0; i < t2.w * t2.h; i++) {
+            const a = bpp >= 3 ? Math.max(t2.data[i * bpp], t2.data[i * bpp + 1], t2.data[i * bpp + 2]) : t2.data[i];
+            rgba[i * 4] = 255; rgba[i * 4 + 1] = 255; rgba[i * 4 + 2] = 255; rgba[i * 4 + 3] = a;
           }
-          if (!t2 || !t2.rgba) return null;
-          /* 副笔尖也必须遵守「笔尖最大边长」：以前直接写原图（Procreate 常见 2048²），
-             一个采样就是 4MB，画世界 Pro 导入会在 BrushSectionParser 抛 NPE（实测）。 */
-          let w2 = t2.w, h2 = t2.h, rgba2 = t2.rgba;
-          const maxSide2 = Math.max(w2, h2);
-          if (maxSide2 > maxTip) {
-            const sc2 = maxTip / maxSide2;
-            const nw2 = Math.max(1, Math.round(w2 * sc2)), nh2 = Math.max(1, Math.round(h2 * sc2));
-            rgba2 = png.resize(rgba2, w2, h2, nw2, nh2);
-            w2 = nw2; h2 = nh2;
-          }
-          dualCap.w = w2; dualCap.h = h2;
-          return abr.maskFromRGBA(rgba2);
-        })() : undefined,
-        dualW: synthesizeDual ? (dualCap.w || (brush.dualTip && brush.dualTip.w)) : undefined,
-        dualH: synthesizeDual ? (dualCap.h || (brush.dualTip && brush.dualTip.h)) : undefined,
-        dualDiameter: brush.dualBrush && brush.dualBrush.diameter ? brush.dualBrush.diameter : undefined,
-        dualBlend: (function () {
-          const m = brush.dualBlendMode;
-          const numMap = { 0: 'normal', 1: 'darken', 2: 'multiply', 3: 'colorBurn', 4: 'linearBurn', 5: 'lighten', 6: 'screen', 7: 'hardMix', 8: 'overlay', 9: 'softLight', 10: 'hardLight', 11: 'difference' };
-          if (typeof m === 'number') return numMap[m] || 'hardMix';
-          return m || 'hardMix';
-        })(),
-        dualName: (brush.dualBrush && brush.dualBrush.name) || ((brush.name || 'brush') + ' 2'),
-        dualInfo: brush.dualBrush,
-        hardness: brush.hardness,
-        wetEdgesOn: !!brush.wetEdgesOn,
-        wetEdgesAmount: brush.wetEdgesAmount,
-        noise: !!brush.noise,
-        buildUp: !!brush.buildUp,
-        poseOn: !!brush.poseOn,
-        poseAngle: brush.poseAngle,
-        poseTiltX: brush.poseTiltX,
-        poseTiltY: brush.poseTiltY,
-        posePressure: brush.posePressure,
-        wetnessDynamics: brush.wetnessDynamics,
-        mixDynamics: brush.mixDynamics,
-        colorDynamicsOn: !!brush.colorDynamicsOn,
-        colorJitterFgBg: brush.colorJitterFgBg,
-        /* 第262轮：颜色动态控制源/最小值透传（abr.js 写侧 clVr 的 bVTy/Mnm 回填用） */
-        dynamicsControlColor: brush.dynamicsControlColor,
-        colorMinRatio: brush.colorMinRatio,
-        colorPerTip: brush.colorPerTip,
-        colorJitterHue: brush.colorJitterHue,
-        colorJitterSat: brush.colorJitterSat,
-        colorJitterVal: brush.colorJitterVal,
-        colorJitterPurity: brush.colorJitterPurity,
-        psTexture: usePsTexture,
-        patternRef: patternRef,
-        textureDepth: brush.textureDepth,
-        textureScale: brush.textureScale,
-        textureBlendMode: brush.textureBlendMode,
-        textureEnabled: !!brush.hasTexture,
-        // PatternRef 里的 .pat 已经烘入了“是否需要反转”（inversionBaked），所以只要引用了它，
-        // InvT 就必须是 false；否则 PS 会把已反转的图案再反转一次，纹理回到未反转原貌。
-        // 以前多了 !willUseRaw 前置，只修了非 raw 重建路径，漏了 raw 源「改了参数→走重建」的兄弟路径（#260）。
-        textureInverted: effectiveTextureInverted,
-        // 源就是 ABR 时，保留原始描述符/样本字节（部分导出也能保住 PS 原版特性）
-        rawPreset: keepRaw ? brush._rawPreset : undefined,
-        rawPatchPaths: Array.from(paths), mainTipChanged:tipChanged,
-        rawSample: keepRaw && !tipChanged ? brush._rawSample : undefined,
-        keepSampleUuids: keepRaw && !dualTipChanged && brush.dualBrush && brush.dualBrush.uuid ? [brush.dualBrush.uuid] : [],
-        sampleMap: brush._sampleMap,
-        rawDualObjc: keepRaw ? brush._rawDualObjc : undefined,
-        rawDualChanged:dualChanged || dualTipChanged,
-        dualOn: !!brush.dualOn,
-        rle: opts.abrRle !== false,
-        uuid: (opts.abrUuids && opts.abrUuids[i]) || (keepRaw && !tipChanged && brush._rawPreset ? brush.uuid : undefined)
-      });
+          t2 = { w: t2.w, h: t2.h, rgba: rgba };
+        }
+        if (!t2 || !t2.rgba) return null;
+        /* 副笔尖也必须遵守「笔尖最大边长」：以前直接写原图（Procreate 常见 2048²），
+           一个采样就是 4MB，画世界 Pro 导入会在 BrushSectionParser 抛 NPE（实测）。 */
+        let w2 = t2.w, h2 = t2.h, rgba2 = t2.rgba;
+        const maxSide2 = Math.max(w2, h2);
+        if (maxSide2 > maxTip) {
+          const sc2 = maxTip / maxSide2;
+          const nw2 = Math.max(1, Math.round(w2 * sc2)), nh2 = Math.max(1, Math.round(h2 * sc2));
+          rgba2 = png.resize(rgba2, w2, h2, nw2, nh2);
+          w2 = nw2; h2 = nh2;
+        }
+        dualCap.w = w2; dualCap.h = h2;
+        return abr.maskFromRGBA(rgba2);
+      })() : undefined,
+      dualW: synthesizeDual ? (dualCap.w || (brush.dualTip && brush.dualTip.w)) : undefined,
+      dualH: synthesizeDual ? (dualCap.h || (brush.dualTip && brush.dualTip.h)) : undefined,
+      dualDiameter: brush.dualBrush && brush.dualBrush.diameter ? brush.dualBrush.diameter : undefined,
+      dualBlend: (function () {
+        const m = brush.dualBlendMode;
+        const numMap = { 0: 'normal', 1: 'darken', 2: 'multiply', 3: 'colorBurn', 4: 'linearBurn', 5: 'lighten', 6: 'screen', 7: 'hardMix', 8: 'overlay', 9: 'softLight', 10: 'hardLight', 11: 'difference' };
+        if (typeof m === 'number') return numMap[m] || 'hardMix';
+        return m || 'hardMix';
+      })(),
+      dualName: (brush.dualBrush && brush.dualBrush.name) || ((brush.name || 'brush') + ' 2'),
+      dualInfo: brush.dualBrush,
+      hardness: brush.hardness,
+      wetEdgesOn: !!brush.wetEdgesOn,
+      wetEdgesAmount: brush.wetEdgesAmount,
+      noise: !!brush.noise,
+      buildUp: !!brush.buildUp,
+      poseOn: !!brush.poseOn,
+      poseAngle: brush.poseAngle,
+      poseTiltX: brush.poseTiltX,
+      poseTiltY: brush.poseTiltY,
+      posePressure: brush.posePressure,
+      wetnessDynamics: brush.wetnessDynamics,
+      mixDynamics: brush.mixDynamics,
+      colorDynamicsOn: !!brush.colorDynamicsOn,
+      colorJitterFgBg: brush.colorJitterFgBg,
+      /* 第262轮：颜色动态控制源/最小值透传（abr.js 写侧 clVr 的 bVTy/Mnm 回填用） */
+      dynamicsControlColor: brush.dynamicsControlColor,
+      colorMinRatio: brush.colorMinRatio,
+      colorPerTip: brush.colorPerTip,
+      colorJitterHue: brush.colorJitterHue,
+      colorJitterSat: brush.colorJitterSat,
+      colorJitterVal: brush.colorJitterVal,
+      colorJitterPurity: brush.colorJitterPurity,
+      psTexture: usePsTexture,
+      patternRef: patternRef,
+      textureDepth: brush.textureDepth,
+      textureScale: brush.textureScale,
+      textureBlendMode: brush.textureBlendMode,
+      textureEnabled: !!brush.hasTexture,
+      // PatternRef 里的 .pat 已经烘入了“是否需要反转”（inversionBaked），所以只要引用了它，
+      // InvT 就必须是 false；否则 PS 会把已反转的图案再反转一次，纹理回到未反转原貌。
+      // 以前多了 !willUseRaw 前置，只修了非 raw 重建路径，漏了 raw 源「改了参数→走重建」的兄弟路径（#260）。
+      textureInverted: effectiveTextureInverted,
+      // 源就是 ABR 时，保留原始描述符/样本字节（部分导出也能保住 PS 原版特性）
+      rawPreset: keepRaw ? brush._rawPreset : undefined,
+      rawPatchPaths: Array.from(paths), mainTipChanged:tipChanged,
+      rawSample: keepRaw && !tipChanged ? brush._rawSample : undefined,
+      keepSampleUuids: keepRaw && !dualTipChanged && brush.dualBrush && brush.dualBrush.uuid ? [brush.dualBrush.uuid] : [],
+      sampleMap: brush._sampleMap,
+      rawDualObjc: keepRaw ? brush._rawDualObjc : undefined,
+      rawDualChanged:dualChanged || dualTipChanged,
+      dualOn: !!brush.dualOn,
+      rle: opts.abrRle !== false,
+      uuid: (opts.abrUuids && opts.abrUuids[i]) || (keepRaw && !tipChanged && brush._rawPreset ? brush.uuid : undefined)
     });
+  }
+
+  /* 【第285轮】条目就绪后的收尾：分组、图案块、写容器（原 makeAbrPack 后半段原样搬移） */
+  function abrPackFinalize(items, brushList, opts) {
     if (!items.length) throw new Error('没有可写入 ABR 的笔刷');
     // 文件夹分组：按笔刷顺序把同组连续笔刷折叠成 phry token（组名/数量）
     const groups = [];
@@ -2239,6 +2238,46 @@
     const bytes = abr.writeAbrV6(items, { groups: hasNamed ? groups : null, patternBlock: patternBlock, patternRecords: patternRecords });
     if (patternWarning && !opts._patternWarned) { opts._patternWarned = true; console.warn(patternWarning); }
     return { bytes: bytes, count: items.length, meta: items };
+  }
+
+  function makeAbrPack(brushList, opts) {
+    opts = opts || {};
+    const pass = abrPackPassthrough(brushList, opts);
+    if (pass) return pass;
+    // 重名会让 Photoshop 导入时去重/合并，导致预设与采样错位（画出来变成别的笔刷），
+    // 这里统一给重名加序号
+    const names = uniqueNames(brushList);
+    const items = [];
+    brushList.forEach(function (source, i) { items.push(abrPackItem(source, i, names, opts)); });
+    return abrPackFinalize(items, brushList, opts);
+  }
+
+  /* 【第285轮】可取消的 ABR 整包：逐支 await 一次，UI 才有机会重绘/响应取消。
+     容器只写一次（writeAbrV6 是单次调用），所以取消点落在「每支笔刷之间」；
+     与同步版共用 abrPackPassthrough / abrPackItem / abrPackFinalize，输出字节完全一致。 */
+  async function makeAbrPackAsync(brushList, opts, hooks) {
+    opts = opts || {};
+    hooks = hooks || {};
+    const pass = abrPackPassthrough(brushList, opts);
+    if (pass) {
+      if (hooks.onBrush) hooks.onBrush(brushList.length - 1, brushList.length, null);
+      return pass;
+    }
+    const names = uniqueNames(brushList);
+    const items = [];
+    const total = brushList.length;
+    for (let i = 0; i < total; i++) {
+      if (hooks.shouldAbort && hooks.shouldAbort()) {
+        const err = new Error('已取消');
+        err.code = 'ABORTED';
+        throw err;
+      }
+      /* 与 makeBruPackAsync 同一约定：onBrush(i, total, name) 0 基索引，帧间 await yieldTick 让出线程 */
+      await yieldTick();
+      items.push(abrPackItem(brushList[i], i, names, opts));
+      if (hooks.onBrush) hooks.onBrush(i, total, names[i]);
+    }
+    return abrPackFinalize(items, brushList, opts);
   }
 
   /** Supported import route documented by Udonman/CELSYS: ABR, not renamed SUT. */
@@ -2727,27 +2766,27 @@
   }
 
   /** Convert a whole set to one Procreate .brushset file (zip). */
-  function makeProcreateBrushset(brushList, opts) {
-    opts = opts || {};
-    // 同一包里重名笔刷：Procreate 里会显示多支同名，用户无法区分，统一去重
-    // （#48 WorkBuddy 第106轮：改用全局 uniqueNames，与 ABR/GoPaint 的大小写折叠与长度上限口径一致）
-    const names = uniqueNames(brushList);
-    /* 【第208轮】前背景色动态（双色）：opts.fgBgDyn ∈ 0..1。不传/为 0 时行为不变。
-       画世界的双色是 App 全局颜色模式（前景/背景色），BRU 里没有笔刷级标记，
-       所以这里做成转换选项，而不是从源笔刷自动推断。 */
-    const fgBgDynOpt = (opts.fgBgDyn === undefined || opts.fgBgDyn === null || !isFinite(Number(opts.fgBgDyn)))
+  /* 【第285轮】前背景色动态选项归一（从 makeProcreateBrushset 提出：同步/异步共用同一口径） */
+  function brushsetFgBgDyn(opts) {
+    return (opts.fgBgDyn === undefined || opts.fgBgDyn === null || !isFinite(Number(opts.fgBgDyn)))
       ? 0 : Math.max(0, Math.min(1, Number(opts.fgBgDyn)));
-    const list = brushList.map(function (b, i) {
-      b=withExportSettings(b,opts);
-      if (fgBgDynOpt > 0) {
-        b = Object.assign({}, b, { colorJitterFgBg: fgBgDynOpt, colorDynamicsOn: true });
-        /* 原生 Procreate 笔刷带着 _rawArchive 时会走 raw 透传（procreate.writeBrush 里的 unchanged()），
-           那样新写入的字段会被原样档案覆盖掉。既然用户明确要求开前背景色动态，就剥掉原始档案强制重建。 */
-        delete b._rawArchive; delete b._rawBrushState; delete b._rawGrainState;
-      }
-      if (b.name !== names[i]) b = Object.assign({}, b, { name: names[i] });
-      return procreateExportTip(b, opts);
-    });
+  }
+
+  /* 【第285轮】单支笔刷 → brushset 条目（原 makeProcreateBrushset 里 map 回调体的原样搬移） */
+  function brushsetItem(b, i, names, opts, fgBgDynOpt) {
+    b=withExportSettings(b,opts);
+    if (fgBgDynOpt > 0) {
+      b = Object.assign({}, b, { colorJitterFgBg: fgBgDynOpt, colorDynamicsOn: true });
+      /* 原生 Procreate 笔刷带着 _rawArchive 时会走 raw 透传（procreate.writeBrush 里的 unchanged()），
+         那样新写入的字段会被原样档案覆盖掉。既然用户明确要求开前背景色动态，就剥掉原始档案强制重建。 */
+      delete b._rawArchive; delete b._rawBrushState; delete b._rawGrainState;
+    }
+    if (b.name !== names[i]) b = Object.assign({}, b, { name: names[i] });
+    return procreateExportTip(b, opts);
+  }
+
+  /* 【第285轮】收尾：写 brushset 容器 + 纹理/未知字段告警（原后半段原样搬移） */
+  function brushsetFinalize(list, opts) {
     const bytes = procreate.writeBrushset(list, opts);
     /* 【第194轮】纹理丢失必须报出来。画世界 BRU 的 texAssetId 有两种形态：
          ptN（内置素材库能解）→ 现在会写进 Grain.png；
@@ -2769,6 +2808,42 @@
         'Grain.png 已留空（' + sample + (noTex.length > 3 ? ' 等' : '') + '）——这会让它们在 Procreate 里缺少纹理质感');
     }
     return { bytes: bytes, count: list.length, warnings: warnings };
+  }
+
+  function makeProcreateBrushset(brushList, opts) {
+    opts = opts || {};
+    // 同一包里重名笔刷：Procreate 里会显示多支同名，用户无法区分，统一去重
+    // （#48 WorkBuddy 第106轮：改用全局 uniqueNames，与 ABR/GoPaint 的大小写折叠与长度上限口径一致）
+    const names = uniqueNames(brushList);
+    /* 【第208轮】前背景色动态（双色）：opts.fgBgDyn ∈ 0..1。不传/为 0 时行为不变。
+       画世界的双色是 App 全局颜色模式（前景/背景色），BRU 里没有笔刷级标记，
+       所以这里做成转换选项，而不是从源笔刷自动推断。 */
+    const fgBgDynOpt = brushsetFgBgDyn(opts);
+    const list = [];
+    brushList.forEach(function (b, i) { list.push(brushsetItem(b, i, names, opts, fgBgDynOpt)); });
+    return brushsetFinalize(list, opts);
+  }
+
+  /* 【第285轮】可取消的 brushset 整包：逐支 await 一次，UI 才有机会重绘/响应取消；
+     与同步版共用 brushsetFgBgDyn / brushsetItem / brushsetFinalize，输出字节完全一致。 */
+  async function makeProcreateBrushsetAsync(brushList, opts, hooks) {
+    opts = opts || {};
+    hooks = hooks || {};
+    const names = uniqueNames(brushList);
+    const fgBgDynOpt = brushsetFgBgDyn(opts);
+    const list = [];
+    const total = brushList.length;
+    for (let i = 0; i < total; i++) {
+      if (hooks.shouldAbort && hooks.shouldAbort()) {
+        const err = new Error('已取消');
+        err.code = 'ABORTED';
+        throw err;
+      }
+      await yieldTick();
+      list.push(brushsetItem(brushList[i], i, names, opts, fgBgDynOpt));
+      if (hooks.onBrush) hooks.onBrush(i, total, names[i]);
+    }
+    return brushsetFinalize(list, opts);
   }
 
   function bytesToB64(bytes) {
@@ -4584,13 +4659,13 @@ Write-Host 'restart MediBang Paint Pro'
     });
   }
 
-  const api = { detect, parseFile, restoreHsjTips, restoreProcreateBundled, builtinTipKey, expandArchive, synthTip, makeBru, makeBruPack, makeBruPackAsync, makeBruDualPair, buildBruDualPairBrushes, dualNeedsPair, makeAbrPack, makeTplPack, makeUdongmanPack, makeUdongmanSutPack, makeUdongmanMtdPack, parseMtd, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, mergePatternFiles, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, tipSourceAudit, tipSourceHint, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeGbr, makeMyb, makeGih, makeGihFiles, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Files, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
+  const api = { detect, parseFile, restoreHsjTips, restoreProcreateBundled, builtinTipKey, expandArchive, synthTip, makeBru, makeBruPack, makeBruPackAsync, makeBruDualPair, buildBruDualPairBrushes, dualNeedsPair, makeAbrPack, makeAbrPackAsync, makeTplPack, makeUdongmanPack, makeUdongmanSutPack, makeUdongmanMtdPack, parseMtd, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, mergePatternFiles, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, tipSourceAudit, tipSourceHint, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeProcreateBrushsetAsync, makeGbr, makeMyb, makeGih, makeGihFiles, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Files, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
   /* 写出口统一过一遍数值卫生（见 sanitizeBrushNumbers）。包装不改变函数签名：
      数组入口逐支处理，单支入口直接处理，字节/字符串入口原样放行。
      只有真的钳制过才替换参数并附加 warnings，合法样本走原路径零影响。 */
-  const GUARDED_WRITERS = ['makeBru', 'makeBruPack', 'makeBruDualPair', 'makeAbrPack', 'makeTplPack',
+  const GUARDED_WRITERS = ['makeBru', 'makeBruPack', 'makeBruPackAsync', 'makeBruDualPair', 'makeAbrPack', 'makeAbrPackAsync', 'makeTplPack',
     'makeUdongmanPack', 'makeUdongmanSutPack', 'makeUdongmanMtdPack', 'makePatternFile', 'makeTexturePng',
-    'makeProcreateBrush', 'makeProcreateBrushset', 'makeGbr', 'makeMyb', 'makeKpp', 'makeGih', 'makeGihFiles',
+    'makeProcreateBrush', 'makeProcreateBrushset', 'makeProcreateBrushsetAsync', 'makeGbr', 'makeMyb', 'makeKpp', 'makeGih', 'makeGihFiles',
     'makePainter', 'makeMdp', 'makeMediBangBrush', 'makeMediBangIniPack', 'makeIpcfg', 'makePrbr',
     'makeGoPaintAbr', 'makeGoPaintBrush', 'makeGoPaintSet', 'makeGoPaintGroup',
     'makeSai2Files', 'makeSai2Pack', 'makeKritaBundle', 'makeTipPng', 'makeTipPngPack'];
@@ -4599,7 +4674,7 @@ Write-Host 'restart MediBang Paint Pro'
      但其它格式把 textureDepth 当「深度」用：画世界官方「小方块/网点」这类笔刷 f123 缺省(=0，界面 100%)，
      转出去成了深度 0，纹理整张丢掉，只剩一个实心圆糊成一坨。
      所以只在**非 BRU 写出口**换算成界面深度，并标记纹理按画布坐标采样（Procreate 写成「纹理化」）。 */
-  const BRU_WRITERS = ['makeBru', 'makeBruPack', 'makeBruDualPair'];
+  const BRU_WRITERS = ['makeBru', 'makeBruPack', 'makeBruPackAsync', 'makeBruDualPair'];
   function prepareBruForCrossFormat(brush) {
     if (!brush || typeof brush !== 'object' || brush instanceof Uint8Array) return brush;
     if (brush.source !== 'bru') return brush;
@@ -4643,12 +4718,20 @@ Write-Host 'restart MediBang Paint Pro'
       args[0] = sanitized;
       const out = fn.apply(this, args);
       const notes = collectGuardNotes(sanitized);
-      if (out && typeof out === 'object' && notes.length) {
-        const msg = '源参数超出目标格式可接受范围，已钳制后再写出：' + notes.slice(0, 6).join('；') +
-          (notes.length > 6 ? ' 等 ' + notes.length + ' 项' : '');
-        out.warnings = (Array.isArray(out.warnings) ? out.warnings : []).concat([msg]);
-      }
-      return out;
+      if (!notes.length) return out;
+      const msg = '源参数超出目标格式可接受范围，已钳制后再写出：' + notes.slice(0, 6).join('；') +
+        (notes.length > 6 ? ' 等 ' + notes.length + ' 项' : '');
+      /* 【第285轮】异步写出口（makeAbrPackAsync / makeProcreateBrushsetAsync / makeBruPackAsync）
+         返回的是 Promise，「给 Promise 挂 warnings」等于什么都没做——告警会凭空消失。
+         这里区分 thenable：先等结果，再往结果上追加告警。 */
+      const attach = function (res) {
+        if (res && typeof res === 'object') {
+          res.warnings = (Array.isArray(res.warnings) ? res.warnings : []).concat([msg]);
+        }
+        return res;
+      };
+      if (out && typeof out.then === 'function') return out.then(attach);
+      return attach(out);
     };
   }
 

@@ -265,9 +265,65 @@
     const raw = new Uint8Array((stride + 1) * height);
     const prev = new Uint8Array(stride);
     const cand = [new Uint8Array(stride), new Uint8Array(stride), new Uint8Array(stride), new Uint8Array(stride), new Uint8Array(stride)];
+    const src = rgb;
+    /* 【第283轮·性能】与 encode 同策略：大图（≥512²）用「前 3 行投票选一种滤波，整图沿用」，
+       省掉 4/5 的逐行扫描；小图继续逐行择优，保证既有黄金样本字节不变。滤波无损，像素必然还原。 */
+    const adaptiveAllRows = (width * height) < 512 * 512;
+    let forced = -1;
+    if (!adaptiveAllRows) {
+      const probeRows = Math.min(3, height);
+      const votes = [0, 0, 0, 0, 0];
+      const probePrev = new Uint8Array(stride);
+      for (let y = 0; y < probeRows; y++) {
+        const row = src.subarray(y * stride, (y + 1) * stride);
+        let bestScore = Infinity, bestFt = 0;
+        for (let ft = 0; ft < 5; ft++) {
+          const b = cand[ft];
+          let score = 0;
+          for (let x = 0; x < stride; x++) {
+            const a = x >= 3 ? row[x - 3] : 0;
+            const bb = probePrev[x];
+            const c = x >= 3 ? probePrev[x - 3] : 0;
+            let v;
+            if (ft === 0) v = row[x];
+            else if (ft === 1) v = (row[x] - a) & 255;
+            else if (ft === 2) v = (row[x] - bb) & 255;
+            else if (ft === 3) v = (row[x] - ((a + bb) >> 1)) & 255;
+            else v = (row[x] - paeth(a, bb, c)) & 255;
+            b[x] = v;
+            score += v < 128 ? v : 256 - v;
+          }
+          if (score < bestScore) { bestScore = score; bestFt = ft; }
+        }
+        votes[bestFt]++;
+        probePrev.set(row);
+      }
+      let bestVote = -1;
+      for (let ft = 0; ft < 5; ft++) if (votes[ft] > bestVote) { bestVote = votes[ft]; forced = ft; }
+    }
     let pos = 0;
     for (let y = 0; y < height; y++) {
-      const row = rgb.subarray(y * stride, (y + 1) * stride);
+      const row = src.subarray(y * stride, (y + 1) * stride);
+      if (forced >= 0) {
+        const fb = cand[forced];
+        for (let x = 0; x < stride; x++) {
+          const a = x >= 3 ? row[x - 3] : 0;
+          const bb = prev[x];
+          const c = x >= 3 ? prev[x - 3] : 0;
+          let v;
+          if (forced === 0) v = row[x];
+          else if (forced === 1) v = (row[x] - a) & 255;
+          else if (forced === 2) v = (row[x] - bb) & 255;
+          else if (forced === 3) v = (row[x] - ((a + bb) >> 1)) & 255;
+          else v = (row[x] - paeth(a, bb, c)) & 255;
+          fb[x] = v;
+        }
+        raw[pos++] = forced;
+        raw.set(fb, pos);
+        pos += stride;
+        prev.set(row);
+        continue;
+      }
       let best = 0, bestScore = Infinity, bestBuf = null;
       for (let ft = 0; ft < 5; ft++) {
         const b = cand[ft];
@@ -314,10 +370,66 @@
     const raw = new Uint8Array((stride + 1) * height);
     const prev = new Uint8Array(stride);
     const cand = [new Uint8Array(stride), new Uint8Array(stride), new Uint8Array(stride), new Uint8Array(stride), new Uint8Array(stride)];
+    const src = gray;
+    /* 【第283轮·性能】与 encode 同策略：大图（≥512²）用「前 3 行投票选一种滤波，整图沿用」，
+       省掉 4/5 的逐行扫描；小图继续逐行择优，保证既有黄金样本字节不变。滤波无损，像素必然还原。 */
+    const adaptiveAllRows = (width * height) < 512 * 512;
+    let forced = -1;
+    if (!adaptiveAllRows) {
+      const probeRows = Math.min(3, height);
+      const votes = [0, 0, 0, 0, 0];
+      const probePrev = new Uint8Array(stride);
+      for (let y = 0; y < probeRows; y++) {
+        const row = src.subarray(y * stride, (y + 1) * stride);
+        let bestScore = Infinity, bestFt = 0;
+        for (let ft = 0; ft < 5; ft++) {
+          const b = cand[ft];
+          let score = 0;
+          for (let x = 0; x < stride; x++) {
+            const a = x >= 1 ? row[x - 1] : 0;
+            const bb = probePrev[x];
+            const c = x >= 1 ? probePrev[x - 1] : 0;
+            let v;
+            if (ft === 0) v = row[x];
+            else if (ft === 1) v = (row[x] - a) & 255;
+            else if (ft === 2) v = (row[x] - bb) & 255;
+            else if (ft === 3) v = (row[x] - ((a + bb) >> 1)) & 255;
+            else v = (row[x] - paeth(a, bb, c)) & 255;
+            b[x] = v;
+            score += v < 128 ? v : 256 - v;
+          }
+          if (score < bestScore) { bestScore = score; bestFt = ft; }
+        }
+        votes[bestFt]++;
+        probePrev.set(row);
+      }
+      let bestVote = -1;
+      for (let ft = 0; ft < 5; ft++) if (votes[ft] > bestVote) { bestVote = votes[ft]; forced = ft; }
+    }
     let pos = 0;
     for (let y = 0; y < height; y++) {
-      const row = gray.subarray(y * stride, (y + 1) * stride);
-      let best = 0, bestScore = Infinity, bestBuf = cand[0];
+      const row = src.subarray(y * stride, (y + 1) * stride);
+      if (forced >= 0) {
+        const fb = cand[forced];
+        for (let x = 0; x < stride; x++) {
+          const a = x >= 1 ? row[x - 1] : 0;
+          const bb = prev[x];
+          const c = x >= 1 ? prev[x - 1] : 0;
+          let v;
+          if (forced === 0) v = row[x];
+          else if (forced === 1) v = (row[x] - a) & 255;
+          else if (forced === 2) v = (row[x] - bb) & 255;
+          else if (forced === 3) v = (row[x] - ((a + bb) >> 1)) & 255;
+          else v = (row[x] - paeth(a, bb, c)) & 255;
+          fb[x] = v;
+        }
+        raw[pos++] = forced;
+        raw.set(fb, pos);
+        pos += stride;
+        prev.set(row);
+        continue;
+      }
+      let best = 0, bestScore = Infinity, bestBuf = null;
       for (let ft = 0; ft < 5; ft++) {
         const b = cand[ft];
         let score = 0;

@@ -1885,7 +1885,22 @@
             if (fmt === 'brushset') {
               // 组名必须用包名（文件名），否则会回落到 brushList[0].name，
               // 导入 Procreate 后整包显示成第一支笔刷的名字（如「感谢支持」）。
-              const made = BC.convert.makeProcreateBrushset(list, Object.assign(commonOpts(rec), { setName: base }));
+              const bsOpts = Object.assign(commonOpts(rec), { setName: base });
+              /* 【第285轮】整包 brushset 改走逐支 await 的异步版：建包逻辑同一套（产出与同步版逐字节相同，
+                 见 _probe/abr-async285/compare2.js 的分进程验证），但每支之间让出线程，取消按钮才点得动。 */
+              let made;
+              if (BC.convert.makeProcreateBrushsetAsync) {
+                made = await BC.convert.makeProcreateBrushsetAsync(list, bsOpts, {
+                  onBrush: function (i, n) {
+                    const nm = list[i] && list[i].name ? list[i].name : '';
+                    setProgress(Math.min(0.98, (doneCount + (i + 1) / Math.max(1, n) * list.length) / Math.max(1, totalBrushes)),
+                      '正在打包 brushset ' + (i + 1) + '/' + n + (nm ? '：' + nm : ''));
+                  },
+                  shouldAbort: function () { return state.cancelRequested; }
+                });
+              } else {
+                made = BC.convert.makeProcreateBrushset(list, bsOpts);
+              }
               outFiles.push({ name: uniqueFile(base, '.brushset'), data: made.bytes });
             } else if (fmt === 'brush' || fmt === 'gbr' || fmt === 'myb') {
               for (const b of list) {
@@ -1985,7 +2000,22 @@
                 // 整包 ABR→ABR 等于复制文件，没必要产出；只有筛选子集/合并才需要重新打包
                 warnings.push((rec.name || 'ABR') + '：源文件已经是 .abr 且整包导出，跳过（如需筛选/拆分，请只勾选部分笔刷）');
               } else {
-                const made = BC.convert.makeAbrPack(list, commonOpts(rec));
+                /* 【第285轮】ABR 整包同样改走逐支 await 的异步版：容器仍是一次写出，
+                   但每支之间让出线程 —— 503 支的大包以前点取消要等整包算完才轮得到事件循环。 */
+                const abrOpts = commonOpts(rec);
+                let made;
+                if (BC.convert.makeAbrPackAsync) {
+                  made = await BC.convert.makeAbrPackAsync(list, abrOpts, {
+                    onBrush: function (i, n) {
+                      const nm = list[i] && list[i].name ? list[i].name : '';
+                      setProgress(Math.min(0.98, (doneCount + (i + 1) / Math.max(1, n) * list.length) / Math.max(1, totalBrushes)),
+                        '正在打包 abr ' + (i + 1) + '/' + n + (nm ? '：' + nm : ''));
+                    },
+                    shouldAbort: function () { return state.cancelRequested; }
+                  });
+                } else {
+                  made = BC.convert.makeAbrPack(list, abrOpts);
+                }
                 outFiles.push({ name: uniqueFile(base, '.abr'), data: made.bytes });
               }
             } else {
@@ -2675,7 +2705,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.142';
+const APP_VERSION = '2.8.143';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;
