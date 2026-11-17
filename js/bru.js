@@ -91,7 +91,7 @@
      会跳过本次已写出的字段号，不会重复。 */
   const BRU_KNOWN_FIELDS = new Set([
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
-    28, 29, 31, 32, 33, 35, 36, 37, 42, 43, 44, 47, 49, 50, 51, 56, 57, 58, 59, 60, 61, 62, 63, 64,
+    28, 29, 31, 32, 33, 35, 36, 37, 41, 42, 43, 44, 47, 49, 50, 51, 56, 57, 58, 59, 60, 61, 62, 63, 64,
     65, 67, 74, 77, 78, 79, 80, 81, 82, 83, 84, 87, 90, 92, 93, 94, 95, 96, 97, 99, 100, 101, 103,
     104, 109, 115, 117, 119, 120, 121, 122, 123, 129, 134, 135, 136, 138, 139, 158
   ]);
@@ -224,6 +224,11 @@
          noShape 布局也把 f31 原样写回，字段不丢。 */
       parts.push(u8arr(fVarint(31, 1)));
     }
+    /* 【第289轮】f41 = SQUARE（笔尖页「笔尖」下拉：圆形笔触 / 方形笔触；
+       字段号逆向自画世界 BrushModel 的 SQUARE=41）。以前完全不写，方笔尖转进来仍是
+       「圆形笔触」，用户必须手动改。只有调用方判定「纯二值正方形笔尖」时才置 true；
+       原生 BRU 源读出的值原样写回。 */
+    if (b.bruSquareTip) parts.push(u8arr(fVarint(41, 1)));
     if (b.hasTexture) parts.push(u8arr(fVarint(28, 1)));        // TEXTURE ON
     // Native texture panel stores “apply texture to each tip” inverted.
     if (b.bruTexturePerTip === false) parts.push(u8arr(fVarint(99, 1)));
@@ -441,7 +446,19 @@
       if(patch.size){
         const freshBytes=buildMetadata(brush),fresh=readFields(freshBytes,0,freshBytes.length);
         const old=readFields(brush._rawMeta,0,brush._rawMeta.length);
-        return encodeFields(old.filter(f=>!patch.has(f.f)).concat(fresh.filter(f=>patch.has(f.f))));
+        /* 【第291轮（作者：Claude）R290-05】补丁字段放回原来的位置，不再统一追加到末尾。
+           以前改了 pkgId（f2）就变成「f1, f3, …, f2」，而原生 meta 一律以 f1, f2, f3 开头（楠 59/59、轻舟 66/66），
+           parseBru 读非首条记录时靠 metaAt（f1 后紧跟 f2）认 meta 起点，认不出就退回特征扫描，
+           扫到 f121 子消息（同样以 f1 uuid + f2 开头）→ 整条记录被读成副笔（名字变「_副笔尖」）。 */
+        const freshPatched=fresh.filter(f=>patch.has(f.f)),placed=new Set(),merged=[];
+        old.forEach(function(f){
+          if(!patch.has(f.f)){merged.push(f);return;}
+          if(placed.has(f.f))return;
+          placed.add(f.f);
+          freshPatched.forEach(function(x){if(x.f===f.f)merged.push(x);});
+        });
+        freshPatched.forEach(function(x){if(!placed.has(x.f))merged.push(x);});
+        return encodeFields(merged);
       }
       const raw = new Uint8Array(brush._rawMeta);
       const oldId = (brush.oldTexId || '').toUpperCase();
@@ -864,7 +881,8 @@
           if (pe < 0 || pe > extraEnd) break;
           try {
             const im = png.decode(bytes.subarray(pj, pe));
-            embeddedTips.push({ w: im.width, h: im.height, rgba: im.rgba });
+            /* 【第290轮（作者：Claude）】留原始 PNG 字节：重转写回时逐字节不变（f121 里的 f7 是它的 md5） */
+            embeddedTips.push({ w: im.width, h: im.height, rgba: im.rgba, raw: bytes.slice(pj, pe) });
           } catch (e) { break; }
           ep = pe;
         }
@@ -994,6 +1012,8 @@
         })(o[7]),
         bruProceduralTip: !tip && !o[31] && !(o[7] && o[7].length),
         bruShapeInverted: !!o[32],
+        /* 【第289轮】f41：笔尖页「笔尖」下拉是否为「方形笔触」。读出来才能往返原样写回。 */
+        bruSquareTip: !!o[41],
         source: 'bru',
         bruVersion: version
       };
@@ -1048,6 +1068,25 @@
       }
       return bytes[i + 2 + len] === 0x12;
     }
+    /* 【第291轮（作者：Claude）R290-05】旧版补丁路径写出的 meta 是「f1, f3, …, f2」（补丁字段被追加到末尾），
+       metaAt 要求 f1 后紧跟 f2 → 认不出 → 退回特征扫描会扫到 f121 子消息、把整条记录读成副笔。
+       索引块给的 metaLen 若能把这段 protobuf 正好读完，且含 f2 / f3（名字）/ f8（尺寸），就按它读。 */
+    function metaLooseAt(i, len) {
+      if (!(len > 0) || i + len > bytes.length || bytes[i] !== 0x0a) return false;
+      const l1 = bytes[i + 1];
+      if (l1 < 8 || l1 > 80) return false;
+      for (let k = 0; k < l1; k++) {
+        const c = bytes[i + 2 + k];
+        if (c < 32 || c > 126) return false;
+      }
+      const fs = readFields(bytes, i, i + len);
+      if (!fs.length) return false;
+      const last = fs[fs.length - 1];
+      if (!last.raw || last.raw.byteOffset - bytes.byteOffset + last.raw.length !== i + len) return false;
+      let has2 = false, has3 = false, has8 = false;
+      fs.forEach(function (f) { if (f.f === 2 && f.w === 2) has2 = true; if (f.f === 3 && f.w === 2) has3 = true; if (f.f === 8 && f.w === 5) has8 = true; });
+      return has2 && has3 && has8;
+    }
     function findNextMeta(from, limit) {
       const stop = Math.min(bytes.length - 8, from + (limit || 4 * 1024 * 1024));
       for (let i = from; i < stop; i++) {
@@ -1077,7 +1116,7 @@
       const img2Len = util.u32(bytes, pos + 0x14);
       let endOff = util.u32(bytes, pos + 0x18);
       let metaStart = pos + 50;
-      let ok = metaLen > 0 && metaLen < 0x10000 && metaAt(metaStart);
+      let ok = metaLen > 0 && metaLen < 0x10000 && (metaAt(metaStart) || metaLooseAt(metaStart, metaLen));
       if (!ok) {
         // container variant: locate next metadata by signature scan (block size may differ)
         const found = findNextMeta(pos + 1, 4096);

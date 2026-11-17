@@ -1605,7 +1605,9 @@
     const dualPair = $('#optDualPair') ? $('#optDualPair').value !== '0' : true;
     const bruEmbed = $('#optBruEmbed') ? $('#optBruEmbed').value !== '0' : true;
     const compareReport = $('#optCompareReport') ? $('#optCompareReport').value === '1' : false;
-    return { tipSize, sizeScale, spacingOverride, pressureMode, prefix, groupBySource, mode, target, packOut, goScatter, grainBake, fidelity, textureMode, bruTexAsset, bruDensity, scatterScale, autoBatch, dualBake, dualCompanion, dualPair, bruEmbed, compareReport };
+    /* 【第290轮（作者：Claude）】Procreate 焦边 → 画世界双笔深色描边：outline（默认）/ both（原样 + 描边版）/ off */
+    const burntOutline = $('#optBurntOutline') ? $('#optBurntOutline').value : 'outline';
+    return { tipSize, sizeScale, spacingOverride, pressureMode, prefix, groupBySource, mode, target, packOut, goScatter, grainBake, fidelity, textureMode, bruTexAsset, bruDensity, scatterScale, autoBatch, dualBake, dualCompanion, dualPair, bruEmbed, compareReport, burntOutline };
   }
 
   /* 提示条（toast）：停留时间统一收短——默认 2.2s、最长 3.2s，点一下也能立刻关。
@@ -1651,10 +1653,49 @@
       default: return '笔刷包';
     }
   }
-  function setOutputLocation(text) {
+  /* 【第290轮（作者：Claude）】输出位置可点击：桌面版直接打开保存文件夹，安卓打开系统「下载」。
+     网页版拿不到真实路径（浏览器下载 / showDirectoryPicker 都不给路径），保持纯文字。 */
+  let outputOpenTarget = null;
+  function canOpenLocation(loc) {
+    if (!loc) return false;
+    if (loc.kind === 'desktop') return !!(loc.dir && window.BrushDesktop && typeof window.BrushDesktop.openFolder === 'function');
+    if (loc.kind === 'android') return !!(window.BrushNative && typeof window.BrushNative.openDownloads === 'function');
+    return false;
+  }
+  function setOutputLocation(text, loc) {
     const el = document.getElementById('outPathText');
     if (!el) return;
     el.textContent = text || '已取消保存';
+    /* 不传 loc = 刚保存完：取保存器记下的位置（调用点不加新标识符，测试里抠出 convertAllOnce 的桩不用改） */
+    if (loc === undefined) loc = lastSaveLocation();
+    outputOpenTarget = text && canOpenLocation(loc) ? loc : null;
+    el.classList.toggle('openable', !!outputOpenTarget);
+    if (outputOpenTarget) {
+      el.title = '点击打开这个文件夹';
+      el.setAttribute('role', 'button');
+      el.tabIndex = 0;
+    } else {
+      el.removeAttribute('title');
+      el.removeAttribute('role');
+      el.removeAttribute('tabindex');
+    }
+  }
+  async function openOutputLocation() {
+    const loc = outputOpenTarget;
+    if (!loc) return;
+    try {
+      if (loc.kind === 'desktop') {
+        const r = await window.BrushDesktop.openFolder(loc.dir);
+        if (!r || !r.ok) toast('打不开文件夹：' + ((r && r.error) || '未知原因'), 5000);
+      } else if (loc.kind === 'android') {
+        if (!window.BrushNative.openDownloads()) toast('打不开系统「下载」，请到 文件管理 → 下载 / 画世界笔刷 查看', 6000);
+      }
+    } catch (e) {
+      toast('打不开文件夹：' + (e && e.message ? e.message : e), 5000);
+    }
+  }
+  function lastSaveLocation() {
+    return window.BCSaver && window.BCSaver.lastLocation ? window.BCSaver.lastLocation : null;
   }
 
   function defaultOutputHint() {
@@ -1827,8 +1868,20 @@
         fidelity: opts.fidelity === false ? false : undefined,
         textureMode: (opts.target === 'abr' || opts.target === 'all' || opts.target === 'tpl') ? opts.textureMode : undefined,
         bruTexAsset: opts.bruTexAsset && opts.bruTexAsset !== 'off' ? opts.bruTexAsset : undefined,
-        bruDensity: opts.bruDensity === 'off' ? 'off' : undefined
+        /* 第293轮（作者：Claude）R292-01：以前选「实验浓度归一」传的是 undefined，内核按 off 处理，选了等于没选 */
+        bruDensity: opts.bruDensity === 'auto' ? 'auto' : 'off',
+        burntOutline: opts.burntOutline || 'outline'
       };
+    }
+    /* 【第290轮（作者：Claude）】焦边描边的提示：画世界里得把主/副颜色设对才像原笔刷 */
+    function noteBurntOutline(list, co) {
+      if (!BC.convert.burntOutlineCandidate || co.burntOutline === 'off') return;
+      const hit = list.filter(function (b) { return b && !b._burntOutlineCopy && BC.convert.burntOutlineCandidate(b, co); });
+      if (!hit.length) return;
+      const names = hit.map(function (b) { return '「' + (b.name || '未命名') + '」'; }).join('、');
+      const msg = '画世界没有 Procreate 的焦边，' + names + (co.burntOutline === 'both' ? ' 另出了「-描边版」，' : ' ') +
+        '用双笔刷模拟描边：大一圈的深色「辅助」副笔垫底，框固定深色、芯跟画笔颜色（别删双笔里的「辅助」）';
+      if (warnings.indexOf(msg) < 0) warnings.push(msg);
     }
 
     for (let recIdx = 0; recIdx < records.length; recIdx++) {
@@ -2025,8 +2078,12 @@
                  它们的副笔是「与主笔混合」，直接内嵌到画世界会重影（第181轮真机）；
                  拆开用的是画世界自己的原生双笔结构（主笔 f119 + f121 指向副笔），不重影。
                  BRU 原生双笔不受影响，仍走内嵌。 */
+              /* 【第293轮 R293-01（WorkBuddy 真机）】颗粒要写成独立纹理层的笔刷**不拆双笔**——
+                 拆出来的辅助笔是不透明无纹理的实心尖，会把颗粒整片压平（0.0622 → 0.0232）。
+                 判据要看 bruGrainLayer / fidelity / sizeScale，所以把 commonOpts 传进去。 */
+              const coForPair = commonOpts(rec);
               const autoPair = opts.dualPair !== false && BC.convert.dualNeedsPair &&
-                list.some(function (b) { return BC.convert.dualNeedsPair(b); });
+                list.some(function (b) { return BC.convert.dualNeedsPair(b, coForPair); });
               if ((opts.bruEmbed === false || autoPair) && opts.dualPair !== false && BC.convert.buildBruDualPairBrushes) {
                 /* 【第275轮修正（WorkBuddy 复核 P1）】以前只要 autoPair 为真，这段就把**所有** dualOn 的
                    笔刷都拆开——连 BRU 原生双笔（f119+f121 本来就自洽）也一起拆，混包里凭空多出条目。
@@ -2036,7 +2093,7 @@
                 packList = [];
                 for (const b of list) {
                   const shouldSplit = b && b.dualOn && b.dualTip &&
-                    (splitAllDual || (BC.convert.dualNeedsPair && BC.convert.dualNeedsPair(b)));
+                    (splitAllDual || (BC.convert.dualNeedsPair && BC.convert.dualNeedsPair(b, coForPair)));
                   if (shouldSplit) {
                     const pair = BC.convert.buildBruDualPairBrushes(b);
                     if (pair) { packList.push(pair.primary, pair.secondary); pairNote = true; continue; }
@@ -2047,7 +2104,10 @@
               /* 【第281轮】整包导出改走**逐支 await** 的异步版本：
                  同一套建包逻辑（产出与同步版逐字节相同），但每支之间让出线程，取消按钮才点得动。
                  以前这里是一次同步重活，点取消要等整包算完才排得上队。 */
-              const bruOpts = Object.assign({}, commonOpts(rec), { dualBake: pairNote ? false : opts.dualBake, embedSubTip: opts.bruEmbed !== false });
+              const bruOpts = Object.assign({}, coForPair, { dualBake: pairNote ? false : opts.dualBake, embedSubTip: opts.bruEmbed !== false });
+              /* 【第290轮】先在这里展开「-描边版」，进度条按 packList[i] 取名才对得上（内核里的展开是幂等的） */
+              noteBurntOutline(packList, bruOpts);
+              if (BC.convert.expandBurntOutlineVariants) packList = BC.convert.expandBurntOutlineVariants(packList, bruOpts);
               let made;
               if (BC.convert.makeBruPackAsync) {
                 made = await BC.convert.makeBruPackAsync(packList, bruOpts, {
@@ -2113,7 +2173,7 @@
             const co = commonOpts(rec);
             /* 【第275轮】逐支模式同样默认拆 pair（非 BRU 双笔），再考虑内嵌 */
             if (fmt === 'bru' && opts.dualPair !== false && BC.convert.dualNeedsPair &&
-                BC.convert.dualNeedsPair(b) && BC.convert.makeBruDualPair) {
+                BC.convert.dualNeedsPair(b, co) && BC.convert.makeBruDualPair) {
               const autoPair = BC.convert.makeBruDualPair(b, co);
               if (autoPair) {
                 outFiles.push({ name: uniqueFile(folder + base, '.bru'), data: autoPair.bytes });
@@ -2162,6 +2222,14 @@
             const extOut = { painter: '.brushcategory', kbundle: '.bundle', sai2: '.zip', medibang: '.zip', mbini: '.zip',
               udongman: '.abr', udongman_sut: '.sut', udongman_mtd: '.mtd', gopaint: '.gobrush', gopaint_abr: '.abr', gopaint_set: '.gobrushes' }[fmt] || ('.' + fmt);
             outFiles.push({ name: uniqueFile(folder + base, extOut), data: made.bytes });
+            /* 【第290轮】逐支模式：焦边描边笔刷按设置加中空；both 时再多出一个「-描边版」文件 */
+            if (fmt === 'bru') {
+              noteBurntOutline([b], co);
+              if (co.burntOutline === 'both' && BC.convert.burntOutlineCandidate && BC.convert.burntOutlineCandidate(b, co)) {
+                const outlined = BC.convert.makeBru(Object.assign({}, b, { name: (b.name || '') + '-描边版', _burntOutlineCopy: true }), co);
+                outFiles.push({ name: uniqueFile(folder + base + '-描边版', '.bru'), data: outlined.bytes });
+              }
+            }
             if (fmt === 'sai2') autoSaveSai2ToFolder([b], co).catch(function () { /* 已在内部记日志 */ });
             /* 第165轮：所有 writer 的不可保真提示统一收集（原先只有 tpl）。
                GIH/MDP 等纯位图格式回读会静默重置尺寸与间距，互转时尤其需要提示。 */
@@ -2705,7 +2773,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.146';
+const APP_VERSION = '2.8.147';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;
@@ -2759,7 +2827,21 @@ const UPDATE_ENABLED = false;
   }
 
   /* 初始化输出位置提示 */
-  setOutputLocation(defaultOutputHint());
+  setOutputLocation(defaultOutputHint(), null);
+  /* 【第290轮】桌面版已记住保存目录时，一打开就显示真实路径并可点击打开 */
+  if (window.BrushDesktop && typeof window.BrushDesktop.getOutputFolder === 'function') {
+    Promise.resolve(window.BrushDesktop.getOutputFolder()).then(function (dir) {
+      if (dir) setOutputLocation('保存到 ' + dir, { kind: 'desktop', dir: dir });
+    }).catch(function () { /* 拿不到就保留默认提示 */ });
+  }
+  (function bindOutputOpen() {
+    const el = document.getElementById('outPathText');
+    if (!el) return;
+    el.addEventListener('click', openOutputLocation);
+    el.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openOutputLocation(); }
+    });
+  })();
   initNotice();
 
   /* ---------------- events ---------------- */

@@ -201,10 +201,14 @@
         throw e;
       }
     },
+    /* 【第290轮（作者：Claude）】最近一次保存的位置，给「点输出位置打开文件夹」用：
+       { kind: 'desktop', dir } / { kind: 'android' } / null（网页下载、浏览器选的文件夹拿不到真实路径） */
+    lastLocation: null,
     save: async function (files, opts, hooks) {
       opts = opts || {};
       var progress = (hooks && hooks.progress) || function () {};
       var i;
+      window.BCSaver.lastLocation = null;
 
       // 1) Android native bridge: save into Downloads/画世界笔刷
       if (window.BrushNative && typeof window.BrushNative.beginFile === 'function') {
@@ -222,6 +226,7 @@
           last = res;
           await sleep(0);
         }
+        window.BCSaver.lastLocation = { kind: 'android' };
         return last ? '已保存到 ' + last.replace(/\/[^/]+$/, '/') : '已保存';
       }
 
@@ -246,6 +251,7 @@
             if (w !== 'OK') throw new Error(String(w || '文件写入未完成').replace(/^ERROR:\s*/, ''));
           }
         }
+        window.BCSaver.lastLocation = { kind: 'desktop', dir: dir };
         return '已保存到 ' + dir;
       }
 

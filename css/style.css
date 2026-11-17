@@ -486,6 +486,10 @@ main {
   color: var(--sub);
 }
 .outpath #outPathText { font-weight: 600; }
+/* 【第290轮】可点击打开保存文件夹 */
+.outpath #outPathText.openable { cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.outpath #outPathText.openable::after { content: '  打开文件夹 ›'; font-weight: 400; text-decoration: none; display: inline-block; margin-left: 4px; color: #2f7fc4; }
+.outpath #outPathText.openable:hover, .outpath #outPathText.openable:focus-visible { color: #0f5fa6; outline: none; }
 
 .progress {
   position: fixed;

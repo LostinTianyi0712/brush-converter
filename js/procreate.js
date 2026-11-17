@@ -24,6 +24,20 @@
     return out;
   }
 
+  /* 【第291轮（作者：Claude）R290-04】副笔尖 RGB 是否「单一非白色」（如焦边描边的深色副笔 07050a）。
+     Procreate 的 Shape 只有灰度，副笔尖颜色出去就没了；只在颜色单一时记成 [r,g,b] 带回，彩色笔尖不处理。 */
+  function uniformTipRgb(tip) {
+    const px = tip && tip.rgba;
+    if (!px || !(tip.w > 0) || !(tip.h > 0) || px.length !== tip.w * tip.h * 4) return undefined;
+    let r = -1, g = -1, b = -1;
+    for (let i = 0; i < px.length; i += 4) {
+      if (!px[i + 3]) continue;
+      if (r < 0) { r = px[i]; g = px[i + 1]; b = px[i + 2]; continue; }
+      if (px[i] !== r || px[i + 1] !== g || px[i + 2] !== b) return undefined;
+    }
+    if (r < 0 || (r === 255 && g === 255 && b === 255)) return undefined;
+    return [r, g, b];
+  }
   function isProcreate(bytes) {
     if (!zip.isZip(bytes)) return false;
     try {
@@ -540,6 +554,11 @@
       if (typeof ex.scatterOn === 'boolean') brush.scatterOn = ex.scatterOn;
       if (typeof ex.speedPressure === 'boolean') brush.speedPressure = ex.speedPressure;
       if (typeof ex.borderOn === 'boolean') brush.borderOn = ex.borderOn;
+      if (typeof ex.squareTip === 'boolean') brush.bruSquareTip = ex.squareTip;
+      /* 【第291轮】双笔副笔的颜色 / 精确尺寸 / 名字（转回 BRU 时 buildBruDualPairBrushes 用） */
+      if (Array.isArray(ex.subTipRgb) && ex.subTipRgb.length === 3 && ex.subTipRgb.every(function (v) { return Number.isInteger(v) && v >= 0 && v <= 255; })) brush._bruSubTipRgb = ex.subTipRgb.slice();
+      if (Number.isFinite(ex.subSizePx) && ex.subSizePx > 0) brush._bruSubSizePx = ex.subSizePx;
+      if (typeof ex.subName === 'string' && ex.subName) brush._bruSubName = ex.subName;
       if (typeof ex.dualEnabled === 'boolean') brush.bruDualEnabled = ex.dualEnabled;
       if (typeof ex.dualRef === 'string' && ex.dualRef) brush.bruDualRefUuid = ex.dualRef;
       if (Number.isFinite(ex.fingerPressurePct)) brush.bruFingerPressurePct = ex.fingerPressurePct;
@@ -1183,6 +1202,14 @@
         scatterOn: brush.scatterOn, speedPressure: !!brush.speedPressure,
         borderOn: !!brush.borderOn, borderBlend: brush.borderBlend,
         borderBrightness: brush.borderBrightness, borderStrength: brush.borderStrength,
+        /* 【第289轮】笔尖页「方形笔触」f41：Procreate 没有对应概念，不存下来 BRU↔brushset 往返会丢。 */
+        squareTip: !!brush.bruSquareTip,
+        /* 【第291轮（作者：Claude）R290-04】画世界双笔的副笔：笔尖颜色（单一非白色时）、精确尺寸、名字。
+           brushset 的 Sub01 形状只有灰度、直径按整数存，不记下来转回 BRU 时深色副笔变白（描边框消失）、
+           ×1.0526 的比例被取整成 88/84、副笔名「辅助」变成「_副笔尖」。 */
+        subTipRgb: brush.bruDualRefUuid ? uniformTipRgb(brush.dualTip) : undefined,
+        subSizePx: brush.bruDualRefUuid && brush.dualBrush && brush.dualBrush.sizePx > 0 ? brush.dualBrush.sizePx : undefined,
+        subName: brush.bruDualRefUuid && brush.dualSubName ? String(brush.dualSubName) : undefined,
         /* 【第230轮】双笔三件套：f119 开关、f121 引用的副笔 uuid、f122 混合模式。
            brushset 没有对等结构，不存下来往返后 f119/f122 整组消失（10 支双笔：enabled true→false、blend 3→0）。 */
         dualEnabled: brush.bruDualEnabled, dualRef: brush.bruDualRefUuid || undefined,

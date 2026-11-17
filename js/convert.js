@@ -943,11 +943,18 @@
      第181轮真机实测过把非 BRU 副笔直接内嵌会**重影**。而「拆成主笔+辅助条目」是画世界
      自己的原生双笔结构（主笔 f119=1 + f121 指向副笔），不会重影，且副笔参数可单独调。
      所以：BRU 原生双笔 → 仍走内嵌（真原生）；非 BRU 双笔 → 默认走 pair。 */
-  function dualNeedsPair(brush) {
+  function dualNeedsPair(brush, opts) {
     if (!brush || !brush.dualOn || !brush.dualTip) return false;
     if (brush.source === 'bru' || brush._nativeDualFromBru) return false;
     const d = brush.dualTip;
-    return !!(d.rgba || d.data);
+    if (!(d.rgba || d.data)) return false;
+    /* 【第293轮 R293-01（WorkBuddy 真机）】颗粒要写成独立纹理层的笔刷**不能拆双笔**：
+       拆出来的辅助条目是一支不透明、无纹理的实心尖，混合模式「叠加」，会把主笔的颗粒整片压平
+       （同一支笔：拆 = grain 0.0232，不拆（副笔烘进笔尖）= 0.0622，与源缩略图 0.0632 基本重合；
+       把「双重笔刷」一关立刻回到 0.0625 —— 压平颗粒的就是辅助笔本身）。
+       所以这类保持「副笔烘进笔尖 + 独立纹理层」，判据直接复用 grainLayerWillApply，避免两处口径漂移。 */
+    if (grainLayerWillApply(brush, opts)) return false;
+    return true;
   }
 
   function buildBruDualPairBrushes(brush) {
@@ -990,6 +997,22 @@
       bruDualRefUuid: null,
       pkgId: pkgUuid
     });
+    /* 【第291轮（作者：Claude）R290-04】本工具从画世界双笔导出的 brushset 转回 BRU：
+       Procreate 形状只有灰度、直径只存整数，靠 brushConvBruExtra 记下的副笔颜色 / 精确尺寸 / 名字还原。
+       深色副笔（焦边描边、f38「颜色」）要按原色涂回并跳过白遮罩，否则框变白看不见。
+       尺寸只在「直径没被改过」（取整后相等）时才用精确值。 */
+    if (brush._nativeDualFromBru) {
+      const rgb = brush._bruSubTipRgb;
+      if (Array.isArray(rgb) && rgb.length === 3 && sec.tip && sec.tip.rgba) {
+        const px = new Uint8Array(sec.tip.rgba);
+        for (let i = 0; i < px.length; i += 4) { px[i] = rgb[0]; px[i + 1] = rgb[1]; px[i + 2] = rgb[2]; }
+        sec.tip = { w: sec.tip.w, h: sec.tip.h, rgba: px };
+        sec._keepTipRgb = true;
+      }
+      const exact = Number(brush._bruSubSizePx);
+      if (exact > 0 && Math.round(exact) === sec.sizePx) sec.sizePx = exact;
+      if (typeof brush._bruSubName === 'string' && brush._bruSubName) sec.name = brush._bruSubName.slice(0, 60);
+    }
     const primary = Object.assign({}, brush, {
       bruUuid: priUuid,
       bruDualRefUuid: pkgUuid,
@@ -1189,15 +1212,84 @@
     const lib = isNode ? require('./hsj-textures-lib.js') : (root.BC && root.BC.hsjTextureLib);
     const hit = lib && lib.matchKnown(plain.w, plain.h, plain.gray);
     if (hit) return { id:hit };
-    if (brush.source !== 'procreate' || Math.abs(Number(brush.textureRotation) || 0) > 1e-4 ||
-        !(brush.textureDepth >= 0.8)) return null;
-    if (!regularDotGrain(plain)) return null;
+    if (brush.source !== 'procreate' || Math.abs(Number(brush.textureRotation) || 0) > 1e-4) return null;
     // BRU's scale is relative to the bitmap width. Procreate's moving grain
     // uses the dab width as reference. Preserve the nominal tile size at export.
     const scale = Math.max(1, Math.min(3000, (brush.sizePx || 100) * (opts.sizeScale || 1))) *
       (brush.textureScale || 1) / plain.w;
     if (!(scale >= 0.01 && scale <= 20)) return null;
-    return { custom:true, scale, plain };
+    if (brush.textureDepth >= 0.8 && regularDotGrain(plain)) return { custom:true, scale, plain };
+    if (scale >= GRAIN_LAYER_MIN_SCALE && grainLayerCandidate(brush, opts) && grainHasPattern(plain)) return { custom:true, scale, plain, grainLayer:true };
+    return null;
+  }
+
+  /* 【第293轮（作者：Claude）R292-02】不规则颗粒（纸纹 / Willow 之类）写成画世界独立纹理层，不再烘进笔尖。
+     真机（WorkBuddy，MuMu 画世界 Pro，_probe/claude-watercolor292/results/report.md）：「吹石-水彩铺色」颗粒烘进笔尖后
+     跟着笔尖走，4.2% 间距叠十几次被抹平（grain 0.0135，平滑实心一片）；改独立纹理层、固定画布（f99=0）颗粒就出来了
+     （grain 0.23）；「每个笔尖设置纹理」开 = 和烘焙一样平（0.0163）。纹理深度照搬源 80% 太碎太白，
+     手调到画世界界面 55% 最像原图（grain 0.061 vs 参考 0.063）→ 界面深度 = 源深度 × 0.69。
+     **只在一支笔上标定过**，用户 2026-11-17 拍板先只放这一类：颗粒深度 ≥ 0.75、间距 ≤ 15%（密到会把烘焙颗粒叠平）。
+     其余照旧烘焙；放宽前要先真机测别的笔刷。双笔不拆也不烘（dualBake:false 内嵌）时不走：第224轮实测
+     内嵌副笔尖双笔 + 自定义纹理层不出墨。 */
+  const GRAIN_LAYER_MIN_DEPTH = 0.75;
+  const GRAIN_LAYER_MAX_SPACING = 15;
+  const GRAIN_LAYER_DEPTH_RATIO = 0.69;
+  /* 【第293轮 R293-02（WorkBuddy 真机）】两个硬边界：
+     · 源 depth = **1.00** 的一组（背景质感2 / 火焰湾 / 油漆 / 尼科滚动 / 材质笔刷 / Edge Control / 过渡）
+       真机上 5 组明确变差、2 组持平、**没有一组变好** —— 它们的颗粒图对比高，写进独立纹理层会把笔迹
+       「打穿」（火焰湾白洞 22%、油漆 17%、材质笔刷 dark 掉 43%）。在拿到 depth=1 专用标定之前一律继续烘焙。
+     · 界面深度上限 **0.55**：×0.69 只在源 depth≈0.80（→55%）上标定过；源 depth=1.00 会被推到 69%，
+       那是白洞/发淡的直接原因。上限 0.55 让「水彩铺色 0.80×0.69=0.552」落在标定值上，且永不超过它。 */
+  const GRAIN_LAYER_MAX_SRC_DEPTH = 1.0;
+  const GRAIN_LAYER_MAX_UI_DEPTH = 0.55;
+  /* 纹理缩放太小（平铺比笔尖细得多）没标定过，先不走；Blank 这类纯色 / 8×8 占位颗粒写成纹理层没意义 */
+  const GRAIN_LAYER_MIN_SCALE = 0.1;
+  function grainHasPattern(plain) {
+    if (!plain || !(plain.w >= 64) || !(plain.h >= 64) || !plain.gray) return false;
+    const g = plain.gray, n = g.length, step = Math.max(1, Math.floor(n / 65536));
+    let s = 0, s2 = 0, k = 0;
+    for (let i = 0; i < n; i += step) { s += g[i]; s2 += g[i] * g[i]; k++; }
+    const m = s / k;
+    return Math.sqrt(Math.max(0, s2 / k - m * m)) >= 8;
+  }
+  function grainLayerCandidate(brush, opts) {
+    if (!brush || brush.source !== 'procreate' || brush._bruExtra || brush._nativeTexFromBru) return false;
+    if (opts && (opts.bruGrainLayer === 'off' || opts.fidelity === false)) return false;
+    if (!(Number(brush.textureDepth) >= GRAIN_LAYER_MIN_DEPTH)) return false;
+    /* 【R293-02】源 depth = 1.00 的整组在真机上没有一组变好（5 组明确变差）→ 继续走烘焙 */
+    if (Number(brush.textureDepth) >= GRAIN_LAYER_MAX_SRC_DEPTH) return false;
+    const sp = Number(brush.spacingPct);
+    if (!(sp > 0 && sp <= GRAIN_LAYER_MAX_SPACING)) return false;
+    if (brush.dualOn && brush.dualTip && !brush.bruDualRefUuid && opts && opts.dualBake === false) return false;
+    if (brush.embeddedSubPng && brush.embeddedSubPng.length) return false;   // 记录内嵌副笔尖（makeBruEmbedded）
+    return true;
+  }
+
+  /* 「这支笔刷最终会不会写出独立纹理层」——收尾判据与 dualNeedsPair 共用，保证两处口径一致。
+     缓存用 WeakMap 而不是挂在 brush 上：`_` 前缀的临时字段会进 brushFingerprint，
+     而「原样透传」的判据正是拿它做基线，多一个键会让「没改过」被误判成「改过」。 */
+  const grainLayerMemo = (typeof WeakMap === 'function') ? new WeakMap() : null;
+  function grainLayerWillApply(brush, opts) {
+    if (!brush) return false;
+    const key = [(opts && opts.bruGrainLayer) || '', opts && opts.fidelity === false ? '0' : '1',
+      opts && opts.dualBake === false ? '0' : '1', (opts && opts.sizeScale) || 1].join('|');
+    if (grainLayerMemo) {
+      const memo = grainLayerMemo.get(brush);
+      if (memo && memo.key === key) return memo.value;
+    }
+    let out = false;
+    if (grainLayerCandidate(brush, opts)) {
+      try {
+        const plain = textureGray(brush.textureInverted ? Object.assign({}, brush, { textureInverted: false }) : brush);
+        if (plain && grainHasPattern(plain)) {
+          const scale = Math.max(1, Math.min(3000, (brush.sizePx || 100) * ((opts && opts.sizeScale) || 1))) *
+            (brush.textureScale || 1) / plain.w;
+          out = scale >= GRAIN_LAYER_MIN_SCALE;
+        }
+      } catch (e) { out = false; }
+    }
+    if (grainLayerMemo) grainLayerMemo.set(brush, { key: key, value: out });
+    return out;
   }
 
   function bruTextureBytes(brush, match) {
@@ -1251,9 +1343,176 @@
     return Object.assign({}, brush, { tip: { w: nw, h: nh, rgba: out }, _tipNearestExpanded: true });
   }
 
+  /* 【第289轮】笔尖是不是「纯二值正方形」——画世界笔尖页把它显示成「方形笔触」(f41)。
+     判据：正方形 + alpha 只有 0/255 + 四角不透明（满格方块）。菱形/十字这类二值但
+     四角透明的笔尖不算：它们的形状是「图里画出来的」，不能切成方形档（会变成一整块实心方）。 */
+  function isBinarySquareTip(t) {
+    if (!t || !t.rgba || !(t.w > 1) || t.w !== t.h || t.rgba.length !== t.w * t.h * 4) return false;
+    for (let i = 3; i < t.rgba.length; i += 4) {
+      const a = t.rgba[i];
+      if (a !== 0 && a !== 255) return false;
+    }
+    const last = t.w - 1;
+    return t.rgba[3] === 255 && t.rgba[last * 4 + 3] === 255 &&
+      t.rgba[last * t.w * 4 + 3] === 255 && t.rgba[(last * t.w + last) * 4 + 3] === 255;
+  }
+
+  /* 【第290轮（作者：Claude）】Procreate「焦边」→ 画世界「双笔：主笔 + 大一圈的深色辅助副笔」。
+     画世界没有焦边。真机试验（2026-11-17，用户逐支试画四轮）：
+       · 混边（各模式、亮度 1~40%）、湿边深度 40~100%：都不出框；
+       · 中空 20：出框，但框 = 主颜色、芯 = 副颜色，蓝笔就是蓝框，且框太厚 → 用户否决；
+       · 照用户给的原生参考「空心卡通」做双笔：副笔 = 同笔尖、RGB 涂成近黑 ff07050a、开「颜色」(f38，
+         按笔尖自身颜色画)、比主笔大 53/50.35 倍 → **芯 = 画笔颜色、框固定深色**，1.05 倍厚度与参考一致（1.10/1.20 偏厚）；
+       · 单笔「笔尖自带深边 + 颜色」：画出来是笔尖原色（白芯灰边），不乘画笔颜色 → 不可行。
+     判据：非 BRU 源、不是 BRU 往返回来的（_bruExtra）、焦边 ≥ 0.5、没有纹理/颗粒
+     （质感叠加这类纹理笔焦边=1 但原图没有明显框，不加）、本身不是双笔、源没自带中空、fidelity 没关。 */
+  const BURNT_OUTLINE_RATIO = 53 / 50.35;        // 参考「空心卡通」副笔 f8 / 主笔 f8
+  const BURNT_OUTLINE_COLOR = -16317174;         // 0xff07050a，参考的 f82（HOLLOWCOLOR）
+  const BURNT_OUTLINE_RGB = [7, 5, 10];
+  const BURNT_OUTLINE_SUB_NAME = '辅助';
+  const BURNT_OUTLINE_SUFFIX = '-描边版';
+  /* 单个 varint 字段的原始 wire 字节（f38/f141/f146 不在 BRU_KNOWN_FIELDS，走 _rawUnknown 原样写出） */
+  function rawVarintField(field, value) {
+    const enc = function (n) { const o = []; while (n > 127) { o.push((n & 127) | 128); n = Math.floor(n / 128); } o.push(n); return o; };
+    return new Uint8Array(enc(field * 8).concat(enc(value)));
+  }
+  function burntOutlineCandidate(brush, opts) {
+    if (!brush || brush.source === 'bru' || brush._bruExtra) return false;
+    if (opts && opts.fidelity === false) return false;
+    if (brush.dualOn || brush.dualTip || brush.bruDualSubBrush || brush.bruDualRefUuid) return false;
+    if (!(Number(brush.burntEdgesAmount) >= 0.5)) return false;
+    if (brush.hasTexture || brush.hasGrain) return false;
+    if (Number(brush.hollowPct) > 0) return false;
+    return true;
+  }
+  /* burntOutline === 'both'（设置里「描边笔刷出两个版本」）：候选笔刷后面紧跟一支「-描边版」复制品。
+     原对象保持同一个引用（双笔 indexOf 查找依赖它），只是在 both 模式下不加描边。 */
+  function expandBurntOutlineVariants(list, opts) {
+    if (!opts || opts.burntOutline !== 'both' || !Array.isArray(list)) return list;
+    /* 幂等：app 为了进度条名字对得上会先展开一次，这里再进来不能二次复制 */
+    if (list.some(function (b) { return b && b._burntOutlineCopy; })) return list;
+    const out = [];
+    list.forEach(function (b) {
+      out.push(b);
+      if (burntOutlineCandidate(b, opts)) {
+        out.push(Object.assign({}, b, { name: (b.name || '') + BURNT_OUTLINE_SUFFIX, _burntOutlineCopy: true }));
+      }
+    });
+    return out;
+  }
+  /* 主笔不动（仍用画笔颜色），另建一支副笔：同笔尖但 RGB 涂深、关湿边、开 f38「颜色」+ f141 辅助 + f146，
+     尺寸 ×BURNT_OUTLINE_RATIO，内嵌成画世界原生双笔（f119=1 + f121）。uuid/pkgId 关系照 buildBruDualPairBrushes。 */
+  function applyBurntOutline(brush, opts) {
+    const pkg = genUuid(), pri = genUuid(), sec = genUuid();
+    let darkTip = brush.tip;
+    if (darkTip && darkTip.rgba && darkTip.rgba.length === darkTip.w * darkTip.h * 4) {
+      const r = new Uint8Array(darkTip.rgba);
+      for (let i = 0; i < r.length; i += 4) { r[i] = BURNT_OUTLINE_RGB[0]; r[i + 1] = BURNT_OUTLINE_RGB[1]; r[i + 2] = BURNT_OUTLINE_RGB[2]; }
+      darkTip = { w: darkTip.w, h: darkTip.h, rgba: r };
+    }
+    const subSrc = Object.assign({}, brush, {
+      name: BURNT_OUTLINE_SUB_NAME, tip: darkTip,
+      sizePx: (Number(brush.sizePx) > 0 ? Number(brush.sizePx) : 100) * BURNT_OUTLINE_RATIO,
+      wetEdgesOn: false, wetEdgesAmount: 0,
+      hollowColor: BURNT_OUTLINE_COLOR,
+      bruUuid: sec, bruDualRefUuid: null, pkgId: pkg,
+      _burntOutlineDone: true, _keepTipRgb: true,
+      _rawUnknown: [rawVarintField(38, 1), rawVarintField(141, 1), rawVarintField(146, 1)]
+    });
+    const sub = makeBru(subSrc, Object.assign({}, opts, { embedSubTip: false }));
+    return Object.assign({}, brush, {
+      bruUuid: pri, bruDualRefUuid: pkg, pkgId: pkg,
+      dualSubName: BURNT_OUTLINE_SUB_NAME, bruDualSubBrush: sub.meta, embeddedSubPng: sub.pngBytes, bruDualEnabled: true,
+      hollowColor: BURNT_OUTLINE_COLOR,
+      _rawUnknown: (Array.isArray(brush._rawUnknown) ? brush._rawUnknown : []).concat([rawVarintField(146, 1)]),
+      _burntOutlineDone: true
+    });
+  }
+
+  /* 【第294轮（作者：Lead）】BRU 记录可以内嵌 **多张** PNG：主笔尖之后的「副笔尖 + 副笔纹理」。
+     原生实测（珠宝装饰·金属勾线02/03、金边装饰05）：f121 里是两组 (纹理 md5, 副笔尖 md5)，
+     记录尾部紧跟两张 PNG（副笔尖 11~21KB + 副笔纹理 806KB，后者与主纹理同图）。
+     以前只写回 embeddedTips[0]，第二张被静默丢弃 → 画世界里副笔那层没有纹理，用户看到「转换后纹路没了」。
+     现在按源顺序把全部内嵌 PNG 逐字节拼接写回；记录 +0x73 的长度本来就是整段长度，容器字段不用改。 */
+  function bruEmbeddedSubPng(brush) {
+    if (!brush || brush.source !== 'bru' || !brush.bruDualRefUuid) return undefined;
+    const tips = brush.embeddedTips || [];
+    if (!tips.length) return undefined;
+    const parts = [];
+    for (let i = 0; i < tips.length; i++) {
+      const t = tips[i];
+      if (t && t.raw && t.raw.length) { parts.push(new Uint8Array(t.raw)); continue; }
+      if (t && t.rgba && t.w > 0 && t.h > 0 && t.rgba.length === t.w * t.h * 4) { parts.push(png.encode(t.w, t.h, t.rgba)); continue; }
+      break;   /* 解不出来的那张之后不再拼，宁可少一段也不写坏 */
+    }
+    if (!parts.length) return undefined;
+    if (parts.length === 1) return parts[0];
+    let total = 0;
+    for (let i = 0; i < parts.length; i++) total += parts[i].length;
+    const out = new Uint8Array(total);
+    let at = 0;
+    for (let i = 0; i < parts.length; i++) { out.set(parts[i], at); at += parts[i].length; }
+    return out;
+  }
+
+  /* 【第291轮（作者：Claude）R290-03】BRU 源双笔改「尺寸倍率」时，f121 里的副笔尺寸也按同倍率缩放。
+     以前主笔 f8 放大了、f121 的副笔 f8 原样透传 → 描边类双笔（主笔 + 大一圈的深色副笔）框被主笔盖住消失。
+     副笔的尺寸字段在 23 条原生 f121 里（楠 13 + 轻舟 10）全是 float32（wire 5），原位改 4 字节，长度不变，
+     _rawMeta / bruLinkTemplate 其余字节逐字节保留。规则照主笔：f8×r（≤5000）、f9 同比例、
+     f12 = max(新 f8, 原 f12)、f135 = f12/500、f136 = f8/f12；其它字段（f50 比例、f11 等）不动。 */
+  function pbScan(buf, start, end) {
+    const out = []; let i = start;
+    const rv = function () { let s = 0, v = 0; for (;;) { if (i >= end) return -1; const c = buf[i++]; v += (c & 127) * Math.pow(2, s); if (!(c & 128)) return v; s += 7; if (s > 63) return -1; } };
+    while (i < end) {
+      const k = rv(); if (k < 0) break;
+      const f = Math.floor(k / 8), w = k % 8;
+      if (w === 0) { if (rv() < 0) break; }
+      else if (w === 5) { if (i + 4 > end) break; out.push({ f: f, w: w, off: i, len: 4 }); i += 4; }
+      else if (w === 1) { i += 8; }
+      else if (w === 2) { const l = rv(); if (l < 0 || i + l > end) break; out.push({ f: f, w: w, off: i, len: l }); i += l; }
+      else break;
+    }
+    return out;
+  }
+  function scaleBruSubSizeInPlace(buf, start, end, ratio) {
+    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    const fl = {};
+    pbScan(buf, start, end).forEach(function (x) { if (x.w === 5 && fl[x.f] === undefined) fl[x.f] = x.off; });
+    if (fl[8] === undefined) return false;
+    const get = function (f) { return dv.getFloat32(fl[f], true); };
+    const set = function (f, v) { if (fl[f] !== undefined) dv.setFloat32(fl[f], v, true); };
+    const w0 = get(8);
+    if (!(w0 > 0)) return false;
+    const w1 = Math.max(1, Math.min(5000, w0 * ratio));
+    set(8, w1);
+    if (fl[9] !== undefined) set(9, get(9) * (w1 / w0));
+    const max0 = fl[12] !== undefined ? get(12) : 500;
+    const max1 = Math.max(w1, max0 > 0 ? max0 : 500);
+    set(12, max1);
+    set(135, max1 / 500);
+    set(136, w1 / max1);
+    return true;
+  }
+  function scaleBruLinkTemplate(tpl, ratio) {
+    if (!(tpl && tpl.length) || !(Math.abs(ratio - 1) > 1e-6)) return tpl;
+    const out = new Uint8Array(tpl);
+    return scaleBruSubSizeInPlace(out, 0, out.length, ratio) ? out : tpl;
+  }
+  function scaleBruF121InMeta(meta, ratio) {
+    if (!(meta && meta.length) || !(Math.abs(ratio - 1) > 1e-6)) return meta;
+    const f121 = pbScan(meta, 0, meta.length).filter(function (x) { return x.f === 121 && x.w === 2; })[0];
+    if (!f121) return meta;
+    const out = new Uint8Array(meta);
+    return scaleBruSubSizeInPlace(out, f121.off, f121.off + f121.len, ratio) ? out : meta;
+  }
+
   function makeBru(brush, opts) {
     opts = opts || {};
     brush = angleControlAliases(brush);
+    if (brush && !brush._burntOutlineDone && opts.burntOutline !== 'off' && burntOutlineCandidate(brush, opts) &&
+        (opts.burntOutline !== 'both' || brush._burntOutlineCopy === true)) {
+      brush = applyBurntOutline(brush, opts);
+    }
     /* 非 BRU 源才放大：BRU 原生往返要逐字节一致，动它的笔尖等于破坏透传。 */
     if (brush && brush.source !== 'bru' && opts.fidelity !== false) brush = expandTinyBinaryTip(brush, opts);
     /* 【第236轮·清理】这里原本写着第227轮的「全字段快照还原」方案——那段代码当年实测红 21 项，
@@ -1394,7 +1653,12 @@
     /* 精确命中内置纹理：f123 = 1 - 界面深度（第198轮已确认的口径）。Procreate grainDepth / PS 纹理深度即界面深度；
        界面 100% → f123 = 0 → 不写（与官方小方块一致，App 缺省即 100%）。 */
     if (texMatchId) {
-      const uiDepth = Math.max(0, Math.min(1, brush.textureDepth === undefined ? 1 : Number(brush.textureDepth) || 0));
+      let uiDepth = Math.max(0, Math.min(1, brush.textureDepth === undefined ? 1 : Number(brush.textureDepth) || 0));
+      /* 第293轮：不规则颗粒的独立纹理层，深度按真机标定打折（见 grainLayerCandidate），并受界面深度上限约束 */
+      if (match && match.grainLayer) {
+        uiDepth = Math.min(GRAIN_LAYER_MAX_UI_DEPTH, uiDepth * GRAIN_LAYER_DEPTH_RATIO);
+        uiDepth = Math.round(uiDepth * 10000) / 10000;
+      }
       effectiveTextureDepth = Math.round((1 - uiDepth) * 10000) / 10000;
     }
     // Put coverage into dark RGB only when the source BRU used f42.
@@ -1408,7 +1672,8 @@
         encodeRgba[i] = v; encodeRgba[i + 1] = v; encodeRgba[i + 2] = v;
         encodeRgba[i + 3] = a === 0 ? 0 : 255;    // alpha 只保留形状
       }
-    } else if (brush.source !== 'bru') {
+    } else if (brush.source !== 'bru' && !brush._keepTipRgb) {
+      /* _keepTipRgb：第290轮焦边描边的深色副笔，靠笔尖自身 RGB（f38「颜色」）画出深框，不能规整成白 */
       encodeRgba = png.toMaskRgba(rgba);
     }
     const pngBytes = png.encode(w, h, encodeRgba);
@@ -1462,9 +1727,17 @@
       }
     }
     const rawUnchanged = !brush._rawState || Object.keys(brush._rawState).every(function (key) { return brush[key] === brush._rawState[key]; });
+    /* 【第290轮（作者：Claude）】撤回第289轮的「焦边 → 混边」映射：真机试验（同色、白底、8 种组合）
+       证明画世界「混边」在白底上不出框——正常/正片叠底/颜色加深 + 亮度 1~40% 全无变化，变暗是整条变暗。
+       混边现在只透传源自带的值。焦边改走双笔深色副笔，见 applyBurntOutline。 */
+    const bruBorder = { on: !!brush.borderOn, blend: brush.borderBlend, brightness: brush.borderBrightness, strength: brush.borderStrength };
     const meta = {
       name: brush.name || '',
       bruShapeInverted: !!brush.bruShapeInverted,
+      /* 【第289轮】方形笔尖 → 画世界「方形笔触」(f41)。原生 BRU 源读出来的值原样保留；
+         非 BRU 源只在笔尖确实是「纯二值正方形」时置 true，柔边/异形笔尖一律不动。 */
+      bruSquareTip: brush.bruSquareTip !== undefined ? !!brush.bruSquareTip
+        : (brush.source !== 'bru' && opts.fidelity !== false && isBinarySquareTip(brush.tip)),
       pkgId: brush.pkgId || opts.pkgId,
       /* f7(MASKTEXPATH) = 笔尖图在 App 里的文件名。第179轮用 exportBrushes 的两支
          原生样本验证：App 导出时 oldTexId 逐字节等于内嵌 PNG 的 md5，导入时 App 就
@@ -1560,9 +1833,10 @@
       noShape: (keepNoShape || texMatchNoShape) || undefined,
       bruBuiltinTipRef: keepBuiltinTip,
       _bruProceduralOmissions: bridgeTipUnchanged ? bridgeExtra.procOmissions : undefined,
-      bruColor: brush.bruColor !== undefined ? brush.bruColor : (texMatchId ? -16777216 : undefined),
+      /* 第293轮：不规则颗粒纹理层不套第206轮网点那套「黑色 + f42」（真机测的是 f16=-1、f42 关） */
+      bruColor: brush.bruColor !== undefined ? brush.bruColor : (texMatchId && !(match && match.grainLayer) ? -16777216 : undefined),
 
-      bruShapeRgbOpacity: brush.bruShapeRgbOpacity !== undefined ? brush.bruShapeRgbOpacity : (texMatchId ? true : undefined),
+      bruShapeRgbOpacity: brush.bruShapeRgbOpacity !== undefined ? brush.bruShapeRgbOpacity : (texMatchId && !(match && match.grainLayer) ? true : undefined),
       textureInverted: brush.textureInverted,
       /* 【第224轮】往返场景用源里存下的 textureScale，不再按「笔刷尺寸/纹理宽」重算，
 
@@ -1602,10 +1876,10 @@
       wetEdgesDepth: brush.wetEdgesDepth,
       hollowPct: brush.hollowPct,
       antialiasLevel: brush.antialiasLevel,
-      borderOn: !!brush.borderOn,
-      borderBlend: brush.borderBlend,
-      borderBrightness: brush.borderBrightness,
-      borderStrength: brush.borderStrength,
+      borderOn: bruBorder.on,
+      borderBlend: bruBorder.blend,
+      borderBrightness: bruBorder.brightness,
+      borderStrength: bruBorder.strength,
       renderCount: brush.renderCount,
       speedPressure: !!brush.speedPressure,
       // #37（WorkBuddy 第106轮）：Procreate 湿混「混合」(dynamicsMix) 在 smudge 字段缺失时兜底，
@@ -1630,15 +1904,20 @@
          源的 bruDualEnabled 本来就是 undefined，于是笔尖里含一层副笔、双笔刷又画一层，
          同一笔落两次墨 = 用户看到的「重影」（黄土笔刷实测）。 */
       bruDualEnabled: bakingDual ? false : brush.bruDualEnabled,
-      embeddedSubPng: brush.embeddedSubPng,
-      bruLinkTemplate: brush.bruLinkTemplate,
+      /* 【第290轮（作者：Claude）】BRU 源的「记录内嵌副笔尖」重转时别丢：f121 走 _rawMeta 原样带过去，
+         副笔尖 PNG 却只在 embeddedTips 里（解码后的像素），以前没人写回 → 重转后副笔没有图。
+         焦边描边的深色副笔（只有内嵌、包里没有独立副笔条目）重转一次框就没了；楠/轻舟的内嵌副图也一并被丢。
+         按像素重编码写回（RGB 原样，BRU 源不走白遮罩）。 */
+      embeddedSubPng: brush.embeddedSubPng || bruEmbeddedSubPng(brush),
+      bruLinkTemplate: brush.source === 'bru' ? scaleBruLinkTemplate(brush.bruLinkTemplate, brush.sizePx > 0 ? sizePx / brush.sizePx : 1) : brush.bruLinkTemplate,
       dualBlendMode: brush.dualBlendMode === undefined ? (brush.dualBrush && brush.dualBrush.blend) : brush.dualBlendMode,
       bruDualBlendMode: brush.bruDualBlendMode,
       /* 【第233轮】审计出的三个「写侧恒用常量」字段：源值必须透到写侧 */
       bruProtoVer: brush.bruProtoVer, hollowColor: brush.hollowColor,
       bruLegacyDirection: brush.bruLegacyDirection,
       oldTexId: brush.oldTexId,
-      _rawMeta: opts.fidelity !== false && !opts.forceRebuild ? brush._rawMeta : undefined,
+      /* 第291轮 R290-03：改尺寸倍率时 f121 副笔尺寸同比例（见 scaleBruF121InMeta） */
+      _rawMeta: opts.fidelity !== false && !opts.forceRebuild ? (brush.source === 'bru' ? scaleBruF121InMeta(brush._rawMeta, brush.sizePx > 0 ? sizePx / brush.sizePx : 1) : brush._rawMeta) : undefined,
       /* 【第232轮】未知字段原样透传（field-matrix D 表）：rebuild/brushset 路径靠它过桥。 */
       _rawUnknown: brush._rawUnknown,
       _rawOriginalName:brush._rawState && brush._rawState.name
@@ -1650,7 +1929,7 @@
         roundness:[22],hardness:[23],sizeJitterPct:[10],spacingJitterPct:[18],flowJitterPct:[27],countJitterPct:[60],
         /* 【第232轮】保真导出（原生 BRU 改参数再导出）只重写 mapping 里登记过的字段。
            f84 纹理混合模式、f43 速度压感、f16 画笔颜色以前都没登记，改了等于没改。 */
-        bruTextureBlendMode:[84],speedPressure:[43],bruColor:[16],bruProtoVer:[37],hollowColor:[82],bruLegacyDirection:[19],
+        bruTextureBlendMode:[84],speedPressure:[43],bruColor:[16],bruProtoVer:[37],hollowColor:[82],bruLegacyDirection:[19],bruSquareTip:[41],
         hasTexture:[28,123],texAssetId:[6],bruTexturePerTip:[99],textureInverted:[29],textureDepth:[123],textureScale:[24],textureBrightness:[35],textureContrast:[33],scatterOn:[56,57,58,59],
         scatterPct:[58],scatterCount:[59],scatterBothAxes:[57],taperOn:[74,77,78],taperSize:[77],taperOpacity:[78],wetEdgesOn:[100,101,129],
         wetEdgesAmount:[101],wetEdgesDepth:[129],borderOn:[92],borderBlend:[95],borderBrightness:[93],borderStrength:[94],renderCount:[97],
@@ -1722,6 +2001,7 @@
 
   function makeBruPack(brushList, opts) {
     opts = opts || {};
+    brushList = expandBurntOutlineVariants(brushList, opts);
     if (brushList.length === 1) {
       const only = makeBru(brushList[0], opts);
       if (only.passthrough) return { bytes: only.bytes, count: 1, meta: null, passthrough: true };
@@ -1737,6 +2017,7 @@
   async function makeBruPackAsync(brushList, opts, hooks) {
     opts = opts || {};
     hooks = hooks || {};
+    brushList = expandBurntOutlineVariants(brushList, opts);
     if (brushList.length === 1) {
       /* 单支也走异步：那一次同步重活最长（2048² 纹理烘焙），不让出的话取消照样点不到 */
       const only = makeBru(brushList[0], opts);
@@ -4078,6 +4359,7 @@ Write-Host 'restart MediBang Paint Pro'
         if (brush.source !== 'bru') {
           if (!(pixels && opts.noTextureBake !== true)) return '未写出（缺少原图或已关闭烘焙，禁用空纹理避免无墨）';
           const match = bruIndependentTexture(brush, opts);
+          if (match && match.grainLayer) return '近似（颗粒原图写入画世界独立纹理层、固定在画布；深度按真机标定 ×0.69）';
           if (match && match.custom) return '近似（规则网点的原纹理图写入独立纹理；移动方式和缩放仍需实绘核对）';
           if (match) return '参数映射（与画世界内置 ' + match.id + ' 逐像素相同；普通硬边圆可写独立纹理，非圆默认烘焙）';
           return opts.bruTexAsset && opts.bruTexAsset !== 'off'
@@ -4688,7 +4970,7 @@ Write-Host 'restart MediBang Paint Pro'
     });
   }
 
-  const api = { detect, parseFile, restoreHsjTips, restoreProcreateBundled, builtinTipKey, expandArchive, synthTip, selectAbrPatterns, makeBru, makeBruPack, makeBruPackAsync, makeBruDualPair, buildBruDualPairBrushes, dualNeedsPair, makeAbrPack, makeAbrPackAsync, makeTplPack, makeUdongmanPack, makeUdongmanSutPack, makeUdongmanMtdPack, parseMtd, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, mergePatternFiles, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, tipSourceAudit, tipSourceHint, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeProcreateBrushsetAsync, makeGbr, makeMyb, makeGih, makeGihFiles, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Files, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
+  const api = { detect, parseFile, restoreHsjTips, restoreProcreateBundled, builtinTipKey, expandArchive, synthTip, selectAbrPatterns, makeBru, makeBruPack, makeBruPackAsync, burntOutlineCandidate, expandBurntOutlineVariants, makeBruDualPair, buildBruDualPairBrushes, dualNeedsPair, makeAbrPack, makeAbrPackAsync, makeTplPack, makeUdongmanPack, makeUdongmanSutPack, makeUdongmanMtdPack, parseMtd, makeAbrPassthrough, makePatternFile, makeTexturePng, textureGray, textureKey, mergePatternFiles, grainNoise, bakeGrainIntoRGBA, bakeTextureIntoRGBA, makeInstallScripts, brushLossReport, buildCompareHtml, tipSourceAudit, tipSourceHint, brushParamInfo, brushParamText, parseFileAsync, makeProcreateBrush, makeProcreateBrushset, makeProcreateBrushsetAsync, makeGbr, makeMyb, makeGih, makeGihFiles, makePainter, makeMdp, makeMediBangBrush, makeMediBangIniPack, makeIpcfg, makePrbr, makeGoPaintAbr, makeGoPaintBrush, makeGoPaintSet, makeGoPaintGroup, makeSai2Files, makeSai2Pack, makeKritaBundle, makeTipPng, makeTipPngPack, tipToRGBA, bakeTipTransform, sanitizeName, uniqueNames, extLabel };
   /* 写出口统一过一遍数值卫生（见 sanitizeBrushNumbers）。包装不改变函数签名：
      数组入口逐支处理，单支入口直接处理，字节/字符串入口原样放行。
      只有真的钳制过才替换参数并附加 warnings，合法样本走原路径零影响。 */
