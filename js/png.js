@@ -159,27 +159,84 @@
     const raw = new Uint8Array((stride + 1) * height);
     const prev = new Uint8Array(stride);
     const cand = [new Uint8Array(stride), new Uint8Array(stride), new Uint8Array(stride), new Uint8Array(stride), new Uint8Array(stride)];
+    /* 【第283轮·性能】大图用「前 3 行投票选一种滤波，整图沿用」：原实现每行都要生成 5 份候选
+       并逐字节打分（2048² RGBA 每张要扫 5×8M 次）。大图相邻行高度相似，整图同一种滤波体积只差几个
+       百分点，但省掉 4/5 的扫描；小图（<512²）继续逐行择优，**保证既有黄金样本字节不变**。
+       任何 PNG 行滤波都是无损的（解码按行逆变换），像素一定还原。 */
+    const adaptiveAllRows = (width * height) < 512 * 512;
+    let forced = -1;
+    if (!adaptiveAllRows) {
+      const probeRows = Math.min(3, height);
+      const votes = [0, 0, 0, 0, 0];
+      const probePrev = new Uint8Array(stride);
+      for (let y = 0; y < probeRows; y++) {
+        const row = rgba.subarray(y * stride, (y + 1) * stride);
+        let bestScore = Infinity, bestFt = 0;
+        for (let ft = 0; ft < 5; ft++) {
+          const cb = cand[ft];
+          let score = 0;
+          for (let x = 0; x < stride; x++) {
+            const aa = x >= 4 ? row[x - 4] : 0;
+            const bb = probePrev[x];
+            const c = x >= 4 ? probePrev[x - 4] : 0;
+            let v;
+            if (ft === 0) v = row[x];
+            else if (ft === 1) v = (row[x] - aa) & 255;
+            else if (ft === 2) v = (row[x] - bb) & 255;
+            else if (ft === 3) v = (row[x] - ((aa + bb) >> 1)) & 255;
+            else v = (row[x] - paeth(aa, bb, c)) & 255;
+            cb[x] = v;
+            score += v < 128 ? v : 256 - v;
+          }
+          if (score < bestScore) { bestScore = score; bestFt = ft; }
+        }
+        votes[bestFt]++;
+        probePrev.set(row);
+      }
+      let bestVote = -1;
+      for (let ft = 0; ft < 5; ft++) if (votes[ft] > bestVote) { bestVote = votes[ft]; forced = ft; }
+    }
     let pos = 0;
     for (let y = 0; y < height; y++) {
       const row = rgba.subarray(y * stride, (y + 1) * stride);
+      if (forced >= 0) {
+        const fb = cand[forced];
+        for (let x = 0; x < stride; x++) {
+          const aa = x >= 4 ? row[x - 4] : 0;
+          const bb = prev[x];
+          const c = x >= 4 ? prev[x - 4] : 0;
+          let v;
+          if (forced === 0) v = row[x];
+          else if (forced === 1) v = (row[x] - aa) & 255;
+          else if (forced === 2) v = (row[x] - bb) & 255;
+          else if (forced === 3) v = (row[x] - ((aa + bb) >> 1)) & 255;
+          else v = (row[x] - paeth(aa, bb, c)) & 255;
+          fb[x] = v;
+        }
+        raw[pos++] = forced;
+        raw.set(fb, pos);
+        pos += stride;
+        prev.set(row);
+        continue;
+      }
       let best = 0, bestScore = Infinity, bestBuf = null;
       for (let ft = 0; ft < 5; ft++) {
-        const b = cand[ft];
+        const cb = cand[ft];
         let score = 0;
         for (let x = 0; x < stride; x++) {
-          const a = x >= 4 ? row[x - 4] : 0;
+          const aa = x >= 4 ? row[x - 4] : 0;
           const bb = prev[x];
           const c = x >= 4 ? prev[x - 4] : 0;
           let v;
           if (ft === 0) v = row[x];
-          else if (ft === 1) v = (row[x] - a) & 255;
+          else if (ft === 1) v = (row[x] - aa) & 255;
           else if (ft === 2) v = (row[x] - bb) & 255;
-          else if (ft === 3) v = (row[x] - ((a + bb) >> 1)) & 255;
-          else v = (row[x] - paeth(a, bb, c)) & 255;
-          b[x] = v;
+          else if (ft === 3) v = (row[x] - ((aa + bb) >> 1)) & 255;
+          else v = (row[x] - paeth(aa, bb, c)) & 255;
+          cb[x] = v;
           score += v < 128 ? v : 256 - v;
         }
-        if (score < bestScore) { bestScore = score; best = ft; bestBuf = b; }
+        if (score < bestScore) { bestScore = score; best = ft; bestBuf = cb; }
       }
       raw[pos++] = best;
       raw.set(bestBuf, pos);
