@@ -2667,17 +2667,27 @@
        f14 的平方曲线保留在下方（已不可达），作为需要时改回来的对照。 */
 
     {
+      /* 【第282轮·性能】这段是「2048² 逐像素」热点。两点改动：
+         ① 一次 Uint32 写整像素（替代 4 次字节写）；
+         ② 填充时顺手记最大 alpha，省掉后面再扫一遍 4·side² 的 `.some()`。
+         ⚠ 对照方法：导出字节里含**随机 UUID**（同一输入两次跑 md5 都不同），所以不能拿整文件
+         做基准；这里只比 **tip 像素 md5**（67 支笔刷前后完全一致）。
+         另外第一版把 `0xffffffff | (a<<24)` 当遮罩写，按 int32 解释 -1 会把 alpha 钉成 255——已修。 */
       const rawGray = new Uint8Array(texture.gray.length);
       for (let i = 0; i < rawGray.length; i++) rawGray[i] = brush.textureInverted ? 255 - texture.gray[i] : texture.gray[i];
       const flat = new Uint8Array(side * side * 4);
+      const flat32 = new Uint32Array(flat.buffer);
+      let maxAlpha = 0;
       for (let y = 0; y < side; y++) {
         const row = sampleAxis(y, texture.h) * texture.w;
+        const base = y * side;
         for (let x = 0; x < side; x++) {
-          const o = (y * side + x) * 4;
-          flat[o] = 255; flat[o + 1] = 255; flat[o + 2] = 255; flat[o + 3] = rawGray[row + sampleX[x]];
+          const a = rawGray[row + sampleX[x]];
+          if (a > maxAlpha) maxAlpha = a;
+          flat32[base + x] = ((a << 24) | 0x00ffffff) >>> 0;
         }
       }
-      if (!flat.some(function (value, i) { return i % 4 === 3 && value > 0; })) {
+      if (!maxAlpha) {
         return Object.assign({}, brush, { tip: synthTip(shape, 256, opts) });
       }
       return Object.assign({}, brush, { tip: { w: side, h: side, rgba: flat }, hasTexture: false, textureDepth: 0, _bruGrainInTip: true,
