@@ -972,7 +972,7 @@
         if (nl > Math.max(0, Math.floor((data.length - p2) / 2))) throw new Error('pattern name overflow');
         const chars = [];
         for (let i = 0; i < nl; i++) { chars.push(String.fromCharCode(util.u16(data, p2))); p2 += 2; }
-        name = chars.join('').replace(/ +$/, '');
+        name = chars.join('').replace(/\u0000+$/, '');
         const idl = data[p2]; p2 += 1;
         let s2 = '';
         for (let i = 0; i < idl; i++) s2 += String.fromCharCode(data[p2 + i]);
@@ -1211,18 +1211,31 @@
     }
 
     const sampParts = [];
+    /* 【第287轮 R270-02】同 uuid 的采样条目在源里只有一份（多支 preset 共用同一笔尖），
+       这里按 uuid 去重，避免把同一份笔尖写 2~N 次（个人用.abr 实测重复 180 条 / 42.8MB）。 */
+    const sampledUuids = new Set();
     const presets = [];
     for (const it of valid) {
       const uuid = it.uuid || (it.rawSample && it.rawPreset ? util.utf8Decode(it.rawSample.subarray(1, 37)) : allocateUuid());
+      /* 【第287轮 R270-02】源 preset 走 patch 路径、而源本身**没有** samp 条目时，不要凭空合成一条位图样本。
+       * 典型的 computedBrush（PS「计算画笔」，如 个人用.abr 的 22 支「尖角」）：源里 desc 是 computedBrush、
+       * 没有 sampledData 引用，samp 里也没有它的条目；我们按 tip 合成一条 500×500 灰度图，实测让样本从
+       * 0B 涨到 250KB 量级（整包 41396B → 258056B），而这条样本**没有任何 desc 指向它**，纯属死重。
+       * 判据由 convert.js 给出（noSample = 保留原 preset + 源无 rawSample + 笔尖未改），这里只管照办。 */
+      if (it.noSample) { presets.push({ it, uuid }); continue; }
       // 原样样本：直接复用源 ABR 的采样条目字节（只重算长度派生字段），
       // 用于“部分导出也保留 PS 原版特性”
-      if (it.rawSample && it.rawSample.length > 320) {
+      const sampleKey = String(uuid).toLowerCase();
+      if (sampledUuids.has(sampleKey)) {
+        /* 共用样本：desc.sampledData 指同一个 uuid，只写一份 */
+      } else if (it.rawSample && it.rawSample.length > 320) {
         const body = new Uint8Array(it.rawSample);
         const entryLenRaw = body.length;
         // Raw descriptors refer to the original UUID. Keep sample headers byte
         // for byte, including legacy layouts; rewriting v6 offsets corrupts them.
         const padRaw = ((entryLenRaw + 3) & ~3) - entryLenRaw;
         sampParts.push(util.concat([_u32be(entryLenRaw), body, new Uint8Array(padRaw)]));
+        sampledUuids.add(sampleKey);
       } else {
       let gray = it.gray;
       if (it.flipY) {
@@ -1263,6 +1276,7 @@
       const body = util.concat([head, rect, pixelData, new Uint8Array(8)]);
       const padLen = ((body.length + 3) & ~3) - body.length;
       sampParts.push(util.concat([_u32be(entryLen), body, new Uint8Array(padLen)]));
+      sampledUuids.add(sampleKey);
       }
       if (it.dualGray && it.dualW && it.dualH && it.dualUuid) {
         const dualUuid = allocateUuid();
@@ -1601,11 +1615,13 @@
         })));
       }
     }
-    const phryData = util.concat([
+    /* 【第287轮 R270-02】没有具名分组时不写 phry 段。以前无条件写一条 43B 的空 hierarchy，
+     * 而源 ABR（如 星空笔刷.abr）里压根没有 phry —— 「改一个尺寸」导出的包就凭空多一段容器结构。
+     * 空 hierarchy 和「完全没有 phry」在 PS 里都是「未分组」，写它没有收益。 */
+    const phryBlock = hierItems ? _block8('phry', util.concat([
       _u32be(16), _u32be(1), _u16be(0), _u32be(0), _ascii4('null'), _u32be(1),
-      _descItem('hierarchy', 'VlLs', hierItems || util.concat([_u32be(0)]))
-    ]);
-    const phryBlock = _block8('phry', phryData);
+      _descItem('hierarchy', 'VlLs', hierItems)
+    ])) : new Uint8Array(0);
     return util.concat([_u16be(6), _u16be(2), sampBlock, pattBlock, descBlock, phryBlock]);
   }
 

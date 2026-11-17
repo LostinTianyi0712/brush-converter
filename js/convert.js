@@ -2195,6 +2195,10 @@
       rawPreset: keepRaw ? brush._rawPreset : undefined,
       rawPatchPaths: Array.from(paths), mainTipChanged:tipChanged,
       rawSample: keepRaw && !tipChanged ? brush._rawSample : undefined,
+      /* 【第287轮 R270-02】保留原 preset（computedBrush 这类），而源**本来就没有**采样条目时，
+         明确告诉写侧「别合成样本」：否则每支 computedBrush 都会被塞进一张 500×500 灰度图（实测整包
+         41396B → 258056B），而 desc 里根本没有任何 sampledData 指向它。 */
+      noSample: !!(keepRaw && !tipChanged && brush._rawPreset && !brush._rawSample),
       keepSampleUuids: keepRaw && !dualTipChanged && brush.dualBrush && brush.dualBrush.uuid ? [brush.dualBrush.uuid] : [],
       sampleMap: brush._sampleMap,
       rawDualObjc: keepRaw ? brush._rawDualObjc : undefined,
