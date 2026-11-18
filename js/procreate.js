@@ -202,6 +202,12 @@
        库没装     → 去下载（现有按钮）
        库在场但没这张 → 下载一百次也没有，得从 Procreate 导出该笔刷，或把 Shape.png 放进图库文件夹
      判定不需要新增字段：库是否非空、有没有引用、tip/shapeFromLibrary 是否已补上，提示点全都拿得到。 */
+  /* 【第300轮】Procreate_Library/ 前缀的引用来自 Procreate 5.4 及以上的内置库。
+     单看「库里没有」还不足以解释「为什么我的内置图库也没有」——本工具这份图库是从 5.3.8 提的，
+     5.3.8 的 622 个资源里既没有 Procreate_Library 这个前缀，也没有 Pelion 这批新笔刷。 */
+  const NEWER_LIB_HINT = '注意：Procreate_Library/ 前缀是 Procreate 5.4 及以上的内置资源命名——' +
+    '本工具内置图库取自 5.3.8（该版本无此前缀、也无 Pelion 这批新笔刷），所以「再下载一次图库」同样补不上。';
+
   function missingShapeWarning(brush, withName, shapeResources) {
     const p = brush && brush.bundledShapePath;
     const prefix = withName ? String((brush && brush.name) || '未命名') + ': ' : '';
@@ -214,7 +220,7 @@
     if (libCount > 0 && !backfilled) {
       return prefix + '缺少内置笔尖原图 ' + p + '：内置图库 ' + libCount + ' 张里没有这张' +
         '（它是 Procreate 内置笔刷自带的形状，Procreate 导出笔刷时只写引用、不打包像素——' +
-        '所以再导一次也一样）。原图只在 Procreate 安装包里（Procreate_Library/ 这组 xxx_Shape.png）：' +
+        '所以再导一次也一样）。' + NEWER_LIB_HINT + '原图只在 Procreate 安装包里（Procreate_Library/ 这组 xxx_Shape.png）：' +
         '取出来后放进图库文件夹并重新挂载图库就能补回；拿不到就只能用合成圆头近似';
     }
     return prefix + '缺少内置笔尖原图 ' + p + '；Procreate原生导出保留引用，跨软件圆头仅为近似';
