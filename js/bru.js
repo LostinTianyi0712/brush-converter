@@ -104,6 +104,11 @@
   function buildMetadata(b) {
     const parts = [];
     const omitted = new Set((b.noShape || b.bruBuiltinTipRef) && Array.isArray(b._bruProceduralOmissions) ? b._bruProceduralOmissions : []);
+    /* 【第297轮（作者：Lead）】「源里本来没有的字段」——brushset 往返时存在 brushConvBruExtra 里的源字段集合，
+       convert 侧算出 absent 表传进来。原生语义是「不写 = App 取缺省」，而这些字段的缺省值恰好不是
+       parse 侧的兜底值（f35 缺省 0 vs 兜底 51、f33 缺省 0 vs 兜底 100），凭空写出来就会把
+       纹理的明暗差压平（第296轮真机 C 组实测「均匀色块」的直接原因之一）。 */
+    const absent = new Set(Array.isArray(b._bruAbsentFields) ? b._bruAbsentFields : []);
     const nameBytes = util.utf8Encode(b.name || 'brush');
     parts.push(u8arr(fBytes(1, util.utf8Encode(util.uid()))));   // ID
     parts.push(u8arr(fBytes(2, util.utf8Encode(b.pkgId || util.uid())))); // PKGID
@@ -122,7 +127,9 @@
        同一笔落两次墨（黄土笔刷实测的「重影」）。
        判定：确实挂着副笔（内嵌 PNG 或引用 UUID）且没被显式关掉，才写 1，其余写 0。 */
     const dualFlag = (!!(b.bruDualSubBrush || b.bruDualRefUuid) && b.bruDualEnabled !== false) ? 1 : 0;
-    if (!omitted.has(119) || dualFlag) parts.push(u8arr(fVarint(119, dualFlag)));
+    /* 【第297轮】存在性：源里没 f119 的记录（副笔子消息就是）不再补 0。
+       dualFlag=1（确实挂着副笔）时照旧无条件写，保留第181轮防重影的约定。 */
+    if (dualFlag || (!absent.has(119) && !omitted.has(119))) parts.push(u8arr(fVarint(119, dualFlag)));
     const size = Math.max(1, Math.min(5000, b.sizePx || 100));
     const maxSize=Math.max(size,b.maxSizePx||500);
     /* 【第192轮】minSizeRatio 不能写 0。
@@ -217,7 +224,7 @@
     const smallFlow = Number.isFinite(b.bruSmallFlow) ? Math.max(0, Math.min(1, b.bruSmallFlow)) : flow * minFlow;
     parts.push(u8arr(fF32(26, smallFlow)));                     // SMALLBRUSHFLOW
     if (!b.noShape) {
-      if (!omitted.has(32) || b.bruShapeInverted) parts.push(u8arr(fVarint(32, b.bruShapeInverted ? 1 : 0)));
+      if (!absent.has(32) && (!omitted.has(32) || b.bruShapeInverted)) parts.push(u8arr(fVarint(32, b.bruShapeInverted ? 1 : 0)));
       if (!b.bruBuiltinTipRef || b._bruF31Field) parts.push(u8arr(fVarint(31, 1))); // USESHAPE
     } else if (b._bruF31Field) {
       /* 【第232轮·field-matrix】源里「无笔尖图但带 f31」的原生记录（扁头质感描边实测）：
@@ -232,7 +239,7 @@
     if (b.hasTexture) parts.push(u8arr(fVarint(28, 1)));        // TEXTURE ON
     // Native texture panel stores “apply texture to each tip” inverted.
     if (b.bruTexturePerTip === false) parts.push(u8arr(fVarint(99, 1)));
-    if (!omitted.has(29) || b.textureInverted) parts.push(u8arr(fVarint(29, b.textureInverted ? 1 : 0))); // REVERSETEX
+    if (!absent.has(29) && (!omitted.has(29) || b.textureInverted)) parts.push(u8arr(fVarint(29, b.textureInverted ? 1 : 0))); // REVERSETEX
     /* 【第206轮 R204-02（作者：Claude）】f35 必须写 **varint**（wire type 0），不是 float。
        依据：bru_标定 / 样本 / pressure193 / 官方小方块等 165 份原生 BRU 的 f35 全部是 varint（如 `98 02 64` = 100）；
        全字段 wire type 对照里，我们写出的字段只有 f35 与原生不符。App 用 protobuf 读，类型不符的字段按未知字段
@@ -241,10 +248,10 @@
    f35/f33 是**有符号绝对值**：原生样本「眼睛」f35 = -6（wire: 98 02 FA FF FF FF FF FF FF FF FF 01），
    「头发亮晶晶」f33 = -3。旧实现把负值当成「相对中性 51/100 的偏移」再加回中性，
    往返后 -6 变 45、-3 变 97 —— 亮度/对比整体偏 51/100，203 支里 23 支 / 12 支受影响。 */
-    if (b.textureBrightness !== undefined && Number.isFinite(Number(b.textureBrightness))) {
+    if (!absent.has(35) && b.textureBrightness !== undefined && Number.isFinite(Number(b.textureBrightness))) {
       parts.push(u8arr(fVarint(35, Math.max(-100, Math.min(100, Math.round(Number(b.textureBrightness))))))); // TEXBRIGHTNESS
     }
-    if (b.textureContrast !== undefined && Number.isFinite(Number(b.textureContrast))) {
+    if (!absent.has(33) && b.textureContrast !== undefined && Number.isFinite(Number(b.textureContrast))) {
       parts.push(u8arr(fVarint(33, Math.max(-200, Math.min(200, Math.round(Number(b.textureContrast))))))); // CONTRAST
     }
     if (b.textureDepth) parts.push(u8arr(fF32(123, Math.max(0, Math.min(1, b.textureDepth))))); // TEXTUREDEPTH
@@ -288,8 +295,8 @@
        所以 f26 不是这一项的落点，保持原写法不动。
        旧代码写 `min(1, flow*minFlow)`，当 flow<1 时会把最小值再乘一次流量，App 里显示的
        最小百分比就会偏小——这也是「流量压力最小值不对」的直接原因。 */
-    if (!omitted.has(51) || minFlow !== 1) parts.push(u8arr(fF32(51, minFlow))); // SMALLBRUSHFLOWPERCENT
-    if (!omitted.has(65) || b.colorPerTip === true) parts.push(u8arr(fVarint(65, 1))); // ALLBRUSHRECT
+    if (!absent.has(51) && (!omitted.has(51) || minFlow !== 1)) parts.push(u8arr(fF32(51, minFlow))); // SMALLBRUSHFLOWPERCENT
+    if (!absent.has(65) && (!omitted.has(65) || b.colorPerTip === true)) parts.push(u8arr(fVarint(65, 1))); // ALLBRUSHRECT
     /* f67 = 流量平滑开关。标定证据：p193_s5(关闭) → s6(开启)，diff 只有 `f67: — → 1`，
        反向 s10→s11 之外再关回也是一样（不写即关闭）。面板默认关闭，所以默认不写。 */
     if (b.bruFlowSmooth) parts.push(u8arr(fVarint(67, 1)));      // FLOWSMOOTH
@@ -319,9 +326,14 @@
       const depth = Math.max(0, Math.min(1, 1 - (b.wetEdgesDepth === undefined ? 0.4 : b.wetEdgesDepth)));
       if (!omitted.has(101) || strength !== 1) parts.push(u8arr(fF32(101, strength)));
       if (!omitted.has(129) || depth !== 1) parts.push(u8arr(fF32(129, depth)));
-    } else if (b._bruWetDepthField) {
-      /* 【第232轮·field-matrix】源里 f100 关着但单写了 f129：原样写回深度，不写开关/强度（源也没有）。 */
-      parts.push(u8arr(fF32(129, Math.max(0, Math.min(1, 1 - (b.wetEdgesDepth === undefined ? 0.4 : b.wetEdgesDepth))))));
+    } else {
+      if (b._bruWetStrengthField) {
+        parts.push(u8arr(fF32(101, Math.max(0, Math.min(1, 1 - (b.wetEdgesAmount === undefined ? 0.4 : b.wetEdgesAmount))))));
+      }
+      if (b._bruWetDepthField) {
+        /* 【第232轮·field-matrix】源里 f100 关着但单写了 f129：原样写回深度，不写开关/强度（源也没有）。 */
+        parts.push(u8arr(fF32(129, Math.max(0, Math.min(1, 1 - (b.wetEdgesDepth === undefined ? 0.4 : b.wetEdgesDepth))))));
+      }
     }
     // #37：混色（f103 开关 / f104 强度，反向存储）。smudge 字段优先；
     // Procreate 源只有湿混「混合」(dynamicsMix) 时用它兜底，跨格式不再把混色丢回默认值。
@@ -355,15 +367,36 @@
     }
     parts.push(u8arr(fVarint(79, 1)));                          // TAPEREFFECT
     const smoothing = b.smoothingStrength === undefined ? 0.2 : Math.max(0, Math.min(1, b.smoothingStrength));
-    if (!omitted.has(80) || Math.fround(smoothing) !== Math.fround(0.2)) parts.push(u8arr(fF32(80, smoothing))); // SMOOTHSTRENGTH
+    if (!absent.has(80) && (!omitted.has(80) || Math.fround(smoothing) !== Math.fround(0.2))) parts.push(u8arr(fF32(80, smoothing))); // SMOOTHSTRENGTH
     if (b.bruUuid || b.bruDualRefUuid) {
       const uuidBytes = util.utf8Encode(b.bruUuid || ('bc-' + Date.now().toString(16) + '-0000-0000-0000-000000000000'));
-      parts.push(u8arr(fBytes(120, uuidBytes)));
+      /* 【第297轮】f120 也按存在性写（但 f121 必须不受影响，所以只卡这一行）。 */
+      if (!absent.has(120)) parts.push(u8arr(fBytes(120, uuidBytes)));
       if (b.bruDualRefUuid) {
         const u1 = uuidBytes, u2 = util.utf8Encode(b.bruDualRefUuid);
         const sub = b.bruDualSubBrush;
+        /* 【第296轮（作者：Lead）】f121 里的副笔图引用（f7）必须等于**实际写出的内嵌 PNG** 的 md5，
+           否则 App 按 md5 找不到副笔图 → 副笔那层回退/丢纹理（用户「转 Procreate 再转回」看的就是这个）。
+           旧值非 32 位 md5（App 内置占位名）时保持不动。 */
+        let subTexId = sub ? (sub.texId || sub.oldTexId || '') : '';
+        if (b.embeddedSubPng && b.embeddedSubPng.length) {
+          const eb = b.embeddedSubPng;
+          let st = -1;
+          for (let i = 0; i + 8 <= eb.length; i++) {
+            if (eb[i] === 0x89 && eb[i + 1] === 0x50 && eb[i + 2] === 0x4e && eb[i + 3] === 0x47) { st = i; break; }
+          }
+          if (st >= 0) {
+            let en = -1;
+            for (let i = st; i + 12 <= eb.length; i++) {
+              if (eb[i] === 0x49 && eb[i + 1] === 0x45 && eb[i + 2] === 0x4e && eb[i + 3] === 0x44) { en = i + 8; break; }
+            }
+            if (en <= st) en = eb.length;
+            const pngMd5 = util.md5(eb.subarray(st, en)).toUpperCase();
+            if (!subTexId || /^[0-9a-f]{32}$/i.test(subTexId)) subTexId = pngMd5;
+          }
+        }
         const tpl = sub ? metadataFor(Object.assign({}, sub, {
-          bruDualRefUuid: null, bruDualSubBrush: null, texId: sub.texId || sub.oldTexId || ''
+          bruDualRefUuid: null, bruDualSubBrush: null, texId: subTexId
         }),{}) : (b.bruLinkTemplate || dualLinkTemplate());
         const subName = util.utf8Encode(String(b.dualSubName || '第二支笔刷'));
         const iconPath = util.utf8Encode('icons/yzb');
@@ -378,8 +411,8 @@
            Procreate 侧的 dualBlendMode 是它自己的下标，绕过去会把 12=linearHeight 写成 0。 */
         /* 【第232轮·field-matrix】源里带 f87（实测 −1 的 10 字节 varint）时原样写回，
            替代经验常数 9629115——双笔源里有 f87 的 13 支此前全部 VALUE 失真。 */
-        parts.push(u8arr(b._bruF87Raw || fVarint(87, 9629115)));
-        parts.push(u8arr(fF32(158, 90)));
+        if (!absent.has(87)) parts.push(u8arr(b._bruF87Raw || fVarint(87, 9629115)));
+        if (!absent.has(158)) parts.push(u8arr(fF32(158, 90)));
       }
     }
     /* 【第232轮】非双笔但源里带 f87 的笔刷（eye 等 93 支，值 −1）：原样写回。 */
@@ -390,25 +423,25 @@
       parts.push(u8arr(fVarint(92, 1)));
     }
     if (b.speedPressure) parts.push(u8arr(fVarint(43, 1)));
-    parts.push(u8arr(fF32(81, 1)));                             // HOLLOWALPHA
+    parts.push(u8arr(fF32(81, Number.isFinite(b._bruHollowAlpha) ? b._bruHollowAlpha : 1))); // HOLLOWALPHA
     parts.push(u8arr(fVarint(82, b.hollowColor === undefined ? -1 : b.hollowColor))); // HOLLOWCOLOR（源有就写源）
-    parts.push(u8arr(fVarint(83, 1)));                          // HOLALPIND
+    if (!absent.has(83)) parts.push(u8arr(fVarint(83, 1)));     // HOLALPIND
     parts.push(u8arr(fVarint(90, 1)));                          // NEWSPACECALTYPE
     // Write each field once, including when the effect is disabled: its stored
     // settings must survive toggling it back on. Zero is an explicit value.
     parts.push(u8arr(fF32(93, b.borderBrightness === undefined ? 1 : Math.max(0, Math.min(1, b.borderBrightness / 100)))));
     parts.push(u8arr(fF32(94, b.borderStrength === undefined ? 1 : Math.max(0, Math.min(1, b.borderStrength / 100)))));
-    parts.push(u8arr(fVarint(95, b.borderBlend === undefined ? 4 : Math.max(0, Math.round(b.borderBlend)))));
+    if (!absent.has(95)) parts.push(u8arr(fVarint(95, b.borderBlend === undefined ? 4 : Math.max(0, Math.round(b.borderBlend)))));
     parts.push(u8arr(fVarint(97, Math.max(1, Math.round(b.renderCount || 1))))); // RENDERCOUNT
-    if (!omitted.has(115) || rotationMode !== Number(legacyDirection)) parts.push(u8arr(fVarint(115, rotationMode)));
+    if (!absent.has(115) && (!omitted.has(115) || rotationMode !== Number(legacyDirection))) parts.push(u8arr(fVarint(115, rotationMode)));
     /* f117 = 手指压力·强度。标定：s9(100%) → s10(55%) 得 `f117: — → 0.45`；
        s11(55%) → s12(27%) 得 `0.45 → 0.73`，即 `1 − 强度/100`。100% 时 = 0，App 省略。 */
     if (fingerPressVal > 1e-6) parts.push(u8arr(fF32(117, fingerPressVal))); // FINGERPRESSURE
     /* f134 = 淡入淡出。**1 = 关闭（反相）**，不写 = 开启。
        标定：s6(开)→s7(误触关) 出现 `f134: — → 1`；s10(关)→s11(开) 又变回 `1 → —`。 */
     if (!fadeInOutOn) parts.push(u8arr(fVarint(134, 1)));       // FADEOFF
-    parts.push(u8arr(fF32(135, maxSize / 500)));                // BRUWMAXSCALE
-    parts.push(u8arr(fF32(136, size / maxSize)));               // BRUWSCALE
+    parts.push(u8arr(fF32(135, Number.isFinite(b._bruF135) ? b._bruF135 : maxSize / 500))); // BRUWMAXSCALE
+    parts.push(u8arr(fF32(136, Number.isFinite(b._bruF136) ? b._bruF136 : size / maxSize))); // BRUWSCALE
     /* f138 / f139 = 大小压力·压力影响 / 流量压力·压力影响，取值为 `面板%/100 − 1`（-2..0）。
        标定：s3→s3b `-1 → -1.5`（0%→-50%）、s3b→s3c `-1.5 → -0.51`（-50%→49%）；
        s3c→s4 出现 `f138: — → -1`。面板 100%（默认）时值为 0，App 省略不写。 */
@@ -482,6 +515,52 @@
     return buildMetadata(Object.assign({}, brush, { pkgId: brush.pkgId || opts.pkgId, texId: texId }));
   }
 
+  /* 【第298轮】50B 索引头里副笔的四项字段（+0x1d 内置笔尖旗标、+0x21 内置纹理旗标、
+     +0x25 副笔尖 PNG 长度、+0x29 副笔纹理 PNG 长度）必须与 f121 子消息的 f6/f7 及尾部 PNG 对应：
+     - 之前把「副笔尖 + 副笔纹理」总长全塞进 +0x25、+0x29 置 0，App 导入时按 +0x25 把两张图拼接块
+       算 md5 覆盖 DB 的副笔 maskTexPath，且因 +0x29=0 不解出副笔纹理；
+     - 副笔用 psN 内置笔尖（如金属勾线01 / 金属亮片04 的 ps22）时，+0x20 置 1、+0x25=0，
+       尾部唯一的 PNG 是副笔纹理，长度写进 +0x29。 */
+  function splitEmbeddedSub(embedded, sub, meta) {
+    const len = embedded && embedded.length ? embedded.length : 0;
+    let subF6 = sub && sub.texAssetId ? String(sub.texAssetId) : '';
+    let subF7 = sub ? String(sub.texId || sub.oldTexId || '') : '';
+    if (meta && meta.length) {
+      const top = readFields(meta, 0, meta.length);
+      for (let i = 0; i < top.length; i++) {
+        if (top[i].f === 121 && top[i].w === 2 && top[i].v) {
+          const sf = readFields(top[i].v, 0, top[i].v.length);
+          for (let j = 0; j < sf.length; j++) {
+            if (sf[j].f === 6 && sf[j].w === 2) subF6 = util.utf8Decode(sf[j].v).replace(/\u0000+$/, '');
+            if (sf[j].f === 7 && sf[j].w === 2) subF7 = util.utf8Decode(sf[j].v).replace(/\u0000+$/, '');
+          }
+        }
+      }
+    }
+    const subBuiltinTip = !!(
+      (sub && (sub.noShape || sub.bruBuiltinTipRef)) ||
+      /^ps\d+$/i.test(subF7)
+    );
+    const subBuiltinTex = /^pt\d+$/i.test(subF6);
+    if (subBuiltinTip) {
+      return { builtinTip: true, builtinTex: subBuiltinTex && len === 0, shapeLen: 0, grainLen: len };
+    }
+    if (len > 8) {
+      let en1 = -1, p = 8;
+      while (p + 12 <= len) {
+        const clen = util.u32(embedded, p);
+        const cend = p + 12 + clen;
+        if (cend > len) break;
+        if (embedded[p + 4] === 0x49 && embedded[p + 5] === 0x45 && embedded[p + 6] === 0x4e && embedded[p + 7] === 0x44) { en1 = cend; break; }
+        p = cend;
+      }
+      if (en1 > 0 && en1 < len) {
+        return { builtinTip: false, builtinTex: false, shapeLen: en1, grainLen: len - en1 };
+      }
+    }
+    return { builtinTip: false, builtinTex: subBuiltinTex && len === 0, shapeLen: len, grainLen: 0 };
+  }
+
   /* Build a single-brush .bru file */
   function writeBrush(brush, opts) {
     opts = opts || {};
@@ -529,8 +608,12 @@
     if (hasSecondary) {
       // Native single-export fixture: trailing 22-byte descriptor starts at 128.
       out[rec + 0x6a] = 1;
+      const s0 = splitEmbeddedSub(embedded, sub, meta);
+      if (s0.builtinTip) out[rec + 0x6e] = 1;
+      if (s0.builtinTex) out[rec + 0x72] = 1;
       if (embedded) {
-        dv.setUint32(rec + 0x73, embedded.length, false);
+        dv.setUint32(rec + 0x73, s0.shapeLen, false);
+        dv.setUint32(rec + 0x77, s0.grainLen, false);
         out.set(embedded, BODY_START + meta.length + img.length + texLength);
       }
     }
@@ -556,11 +639,11 @@
       if (!noImage && (!pngBytes || !pngBytes.length)) throw new Error('缺少笔尖图像数据: ' + (b.name || ''));
       const meta = metadataFor(b, opts);
       const embedded = b.embeddedSubPng || new Uint8Array(0);
-      const sub = b.bruDualSubBrush;
+      const sub = b.bruDualSubBrush || b.dualSubBrush;
       const hasSecondary = !!(embedded.length || (sub && (sub.noShape || sub.bruBuiltinTipRef)));
       const texture = b.bruTextureBytes || new Uint8Array(0);
       const builtinTexture = b.hasTexture && b.texAssetId && !texture.length;
-      return { meta, img: pngBytes, texture, embedded, hasSecondary, builtinTip: b.bruBuiltinTipRef, builtinTexture };
+      return { meta, img: pngBytes, texture, embedded, sub, hasSecondary, builtinTip: b.bruBuiltinTipRef, builtinTexture };
     });
     let total = BODY_START;
     for (let i = 0; i < items.length; i++) {
@@ -592,24 +675,30 @@
     out.set(items[0].texture, pos); pos += items[0].texture.length;
     if (items[0].hasSecondary) {
       out[CONTAINER_HEAD + 0x6a] = 1;
-      dv.setUint32(CONTAINER_HEAD + 0x73, items[0].embedded.length, false);
+      const s0 = splitEmbeddedSub(items[0].embedded, items[0].sub, items[0].meta);
+      if (s0.builtinTip) out[CONTAINER_HEAD + 0x6e] = 1;
+      if (s0.builtinTex) out[CONTAINER_HEAD + 0x72] = 1;
+      dv.setUint32(CONTAINER_HEAD + 0x73, s0.shapeLen, false);
+      dv.setUint32(CONTAINER_HEAD + 0x77, s0.grainLen, false);
     }
     out.set(items[0].embedded, pos); pos += items[0].embedded.length;
     for (let i = 1; i < items.length; i++) {
       const blockPos = pos;
       const metaLen = items[i].meta.length, imgLen = items[i].img.length;
       const endOff = blockPos + 50 + metaLen + imgLen + items[i].texture.length + items[i].embedded.length;
-      if (items[i].builtinTip) {
-        out[blockPos + 3] = 1;
-        if (items[i].builtinTexture) out[blockPos + 7] = 1;
-      }
+      if (items[i].builtinTip) out[blockPos + 3] = 1;
+      if (items[i].builtinTexture) out[blockPos + 7] = 1;
       dv.setUint32(blockPos + 0x08, metaLen, false);
       dv.setUint32(blockPos + 0x10, imgLen, false);
       dv.setUint32(blockPos + 0x14, items[i].texture.length, false);
       dv.setUint32(blockPos + 0x18, endOff, false);
       if (items[i].hasSecondary) {
         out[blockPos + 0x1c] = 1;
-        dv.setUint32(blockPos + 0x25, items[i].embedded.length, false);
+        const si = splitEmbeddedSub(items[i].embedded, items[i].sub, items[i].meta);
+        if (si.builtinTip) out[blockPos + 0x20] = 1;
+        if (si.builtinTex) out[blockPos + 0x24] = 1;
+        dv.setUint32(blockPos + 0x25, si.shapeLen, false);
+        dv.setUint32(blockPos + 0x29, si.grainLen, false);
       }
       pos = blockPos + 50;
       out.set(items[i].meta, pos); pos += metaLen;
@@ -754,7 +843,7 @@
       return -1;
     }
 
-    function pushBrush(metaStart, metaEnd, pngStart, pngEnd, embeddedMeta, extraEnd, textureLen) {
+    function pushBrush(metaStart, metaEnd, pngStart, pngEnd, embeddedMeta, extraEnd, textureLen, subHeader) {
       const rawMeta = embeddedMeta || bytes.subarray(metaStart, metaEnd);
       const fields = readFields(rawMeta, 0, rawMeta.length);
       const o = fieldsToObj(fields);
@@ -846,12 +935,14 @@
         : Math.max(-100, Math.min(100, (num(o[138], 0) + 1) * 100));   // 大小压力·压力影响（f138）
       const flowInfluencePct = o[139] === undefined ? 100
         : Math.max(-100, Math.min(100, (num(o[139], 0) + 1) * 100));   // 流量压力·压力影响（f139）
-      let tip = null;
+      let tip = null, rawTipPng = null;
       if (pngStart >= 0 && pngEnd > pngStart) {
         try {
-          const im = decodeBrushImage(bytes.subarray(pngStart, pngEnd));
+          rawTipPng = bytes.slice(pngStart, pngEnd);
+          const im = decodeBrushImage(rawTipPng);
           tip = { w: im.width, h: im.height, rgba: im.rgba };
         } catch (e) {
+          rawTipPng = null;
           warnings.push('第 ' + (brushes.length + 1) + ' 支笔刷图像解码失败（可能为 JPEG 纹理）');
         }
       }
@@ -967,11 +1058,15 @@
         textureDepth: texDepth,
         grainStrength: texDepth > 0 ? Math.max(0.1, Math.min(0.8, texDepth)) : 0.35,
         wetEdgesOn: wetOn,
-        wetEdgesAmount: wetOn ? Math.max(0, Math.min(1, 1 - wetStrengthRaw)) : 0,
+        wetEdgesAmount: (o[101] !== undefined || wetOn) ? Math.max(0, Math.min(1, 1 - wetStrengthRaw)) : 0,
+        _bruWetStrengthField: o[101] !== undefined,
         /* 【第232轮·field-matrix】f129 源有字段就还原值（哪怕 f100 关着）——写侧「源有就写」靠它取值。
            旧实现 wetOn=false 时置 0，f129 的源值（eye 0.92）在重建时被写成 1。 */
         wetEdgesDepth: (o[129] !== undefined || wetOn) ? Math.max(0, Math.min(1, 1 - wetDepthRaw)) : 0,
         _bruWetDepthField: o[129] !== undefined,
+        _bruHollowAlpha: Number.isFinite(o[81]) ? o[81] : undefined,
+        _bruF135: Number.isFinite(o[135]) ? o[135] : undefined,
+        _bruF136: Number.isFinite(o[136]) ? o[136] : undefined,
         smudgeOn: mixOn,
         /* 【第232轮·field-matrix】f104 源有字段就还原值（哪怕 f103 关着）。旧实现 mixOn=false 时置 0，
            f104 的源值（eye 0.01）在重建时被写成 1。 */
@@ -1017,25 +1112,36 @@
         source: 'bru',
         bruVersion: version
       };
+      /* 【第297轮（作者：Lead）】f9（小宽度）对**所有**笔刷都记下来。
+         以前只在「无笔尖图」分支里读，有笔尖的笔刷（珠宝装饰 79 支里 77 支）读不到 f9，
+         brushset 往返回来就只能按 sizePx×minSizeRatio 重算（真机落库 smallWidth 5/7/6 → 87.45/34.47/43.45）。
+         读出来不会改直接转换的输出：写侧只在「源值优先」时才用它（`_bruNativeSmallWidthFromSource`）。 */
+      if (Number.isFinite(o[9]) && o[9] >= 0) brush._bruNativeSmallWidth = o[9];
       if (!tip && (brush.bruProceduralTip || brush.oldTexId)) {
         brush._bruProceduralOmissions = NATIVE_TIP_DEFAULT_FIELDS.filter(field => o[field] === undefined);
-        if (Number.isFinite(o[9]) && o[9] >= 0) brush._bruNativeSmallWidth = o[9];
       }
+      if (rawTipPng) brush._rawTipPng = rawTipPng;
       if (textureBytes) brush._rawBruTexture = textureBytes;
       if (grainRgba) brush._grainRgba = grainRgba;
+      if (subHeader && subHeader.hasSub && (subHeader.shapeLen === 0 || subHeader.shapeLen === 0xffffffff) &&
+          (subHeader.builtinTip || (subHeader.grainLen > 0 && subHeader.grainLen !== 0xffffffff))) {
+        brush._subBuiltinTip = !!subHeader.builtinTip;
+        if (embeddedTips.length) embeddedTips[0].isSubGrain = true;
+      }
       if (embeddedTips.length) {
         brush.embeddedTips = embeddedTips;
+        const firstSubTip = embeddedTips.find(function (t) { return !t.isSubGrain; }) || null;
         const hasLink = !!(brush.bruLinkTemplate || brush.bruDualRefUuid || brush.bruDualEnabled);
-        if (hasLink && !brush.dualTip) {
+        if (hasLink && !brush.dualTip && firstSubTip) {
           brush.dualOn = brush.bruDualEnabled !== false;
-          brush.dualTip = embeddedTips[0];
+          brush.dualTip = firstSubTip;
           const subName = (brush.bruLinkInfo && brush.bruLinkInfo.name) || '';
           brush.dualSubName = subName;
           brush.dualBrush = Object.assign({}, brush.dualBrush || {}, {
             enabled: brush.dualOn,
             name: subName,
             blend: brush.bruDualBlendMode,
-            diameter: embeddedTips[0].w
+            diameter: firstSubTip.w
           });
         }
       }
@@ -1100,9 +1206,15 @@
     const firstTexSize = firstTextureLen === 0xffffffff ? 0 : firstTextureLen;
     let pos = BODY_START + firstMetaLen + firstTipSize + firstTexSize;
     if (firstMetaLen > 0 && BODY_START + firstMetaLen <= bytes.length) {
+      const firstSubHdr = {
+        hasSub: bytes[rec + 0x6a] === 1,
+        builtinTip: util.u32(bytes, rec + 0x6b) === 1,
+        shapeLen: util.u32(bytes, rec + 0x73),
+        grainLen: util.u32(bytes, rec + 0x77)
+      };
       pushBrush(BODY_START, BODY_START + firstMetaLen, BODY_START + firstMetaLen,
         Math.min(bytes.length, BODY_START + firstMetaLen + firstTipSize),
-        undefined, Math.min(bytes.length, firstEnd || bytes.length), firstTexSize);
+        undefined, Math.min(bytes.length, firstEnd || bytes.length), firstTexSize, firstSubHdr);
       if (firstEnd && firstEnd > pos && firstEnd <= bytes.length) pos = firstEnd;
     }
 
@@ -1140,8 +1252,14 @@
       }
       // A valid end may also cover an embedded sub-tip PNG after the main.
       if (endOff < expectEnd || endOff > bytes.length) endOff = expectEnd;
+      const subHdr = {
+        hasSub: bytes[pos + 0x1c] === 1,
+        builtinTip: util.u32(bytes, pos + 0x1d) === 1,
+        shapeLen: util.u32(bytes, pos + 0x25),
+        grainLen: util.u32(bytes, pos + 0x29)
+      };
       const pngStart = metaStart + metaLen;
-      pushBrush(metaStart, pngStart, pngStart, Math.min(bytes.length, pngStart + img1Len), undefined, endOff, img2Len);
+      pushBrush(metaStart, pngStart, pngStart, Math.min(bytes.length, pngStart + img1Len), undefined, endOff, img2Len, subHdr);
       pos = endOff > pos ? endOff : Math.min(bytes.length, pngStart + img1Len + img2Len);
     }
     if (!brushes.length) throw new Error('.bru 中没有找到可用笔刷');
@@ -1154,19 +1272,24 @@
       const candidates = brushes.filter(function (b) { return b !== primary; });
       const samePackage = candidates.filter(function (b) { return b.pkgId === primary.bruDualRefUuid; });
       const pool = samePackage.length ? samePackage : candidates;
-      const linked = pool.find(function (b) { return embedded.oldTexId && b.oldTexId === embedded.oldTexId; }) ||
-        pool.find(function (b) { return b.name === embedded.name; }) ||
+      const linked = pool.find(function (b) { return embedded.oldTexId && !/^ps\d+$/i.test(embedded.oldTexId) && b.oldTexId === embedded.oldTexId; }) ||
+        pool.find(function (b) { return embedded.name && embedded.name !== '未命名' && b.name === embedded.name; }) ||
         candidates.find(function (b) { return b.bruUuid === primary.bruDualRefUuid; });
-      const embeddedTip = (primary.embeddedTips && primary.embeddedTips[0]) || primary.dualTip || null;
+      const subTipEntry = (primary.embeddedTips && primary.embeddedTips.find(function (t) { return !t.isSubGrain; })) || null;
+      const embeddedTip = subTipEntry || primary.dualTip || null;
       const sub = Object.assign({}, linked || {}, embedded, {
         // Record-local embedded pixels are authoritative; a same-named brush
         // elsewhere in the pack must not replace them.
         tip: embeddedTip || (linked ? linked.tip : null), dualOn: false, dualTip: undefined,
         bruDualRefUuid: null, bruLinkTemplate: null, _rawMeta: undefined
       });
+      if (!subTipEntry && primary._subBuiltinTip && /^ps\d+$/i.test(embedded.oldTexId || '')) {
+        sub.bruBuiltinTipRef = embedded.oldTexId;
+      }
       primary.dualOn = primary.bruDualEnabled === undefined
-        ? !!(embeddedTip || (linked && linked.tip)) : primary.bruDualEnabled;
+        ? !!(embeddedTip || sub.bruBuiltinTipRef || (linked && linked.tip)) : primary.bruDualEnabled;
       primary.dualTip = sub.tip;
+      primary.dualSubName = sub.name || primary.dualSubName;
       primary.dualSubBrush = sub;
       primary.dualBrush = Object.assign({}, sub, {
         enabled: primary.dualOn, diameter: sub.sizePx, spacing: sub.spacingPct,

@@ -584,6 +584,39 @@
             };
             wr.appendChild(fullBtn);
           }
+        } else if (state.shapeLib && state.shapeLib.size && rec.brushes &&
+                   rec.brushes.some(function (b) { return b && !b.tip && b.bundledShapePath; })) {
+          /* 【第287轮】图库**已经加载**，但里面没有这几张：
+               Procreate 内置笔刷（Pelion / Huntsman / Shearwater 之类）的 Shape.png 只在
+               Procreate App 里，导出的 brushset 只留引用（Procreate_Library/xxx_Shape.png）。
+               内置图库 292 张里没有任何 *_Shape.png —— 所以「再下载一次图库」永远补不上。
+               这里给的是真能补上的动作：把缺的 Shape.png 放进图库文件夹，重新挂一次。 */
+          const missNames = rec.brushes.filter(function (b) { return b && !b.tip && b.bundledShapePath; })
+            .map(function (b) { return String(b.bundledShapePath).split(/[\\/]/).pop(); });
+          const uniqMiss = missNames.filter(function (v, i) { return missNames.indexOf(v) === i; });
+          const note = document.createElement('div');
+          note.className = 'hint';
+          note.style.marginTop = '6px';
+          note.textContent = '图库已加载（' + state.shapeLib.size + ' 张），但这 ' + uniqMiss.length +
+            ' 张不在里面：' + uniqMiss.slice(0, 4).join('、') + (uniqMiss.length > 4 ? ' 等' : '') +
+            ' —— 它们是 Procreate 内置笔刷自带的形状，笔刷包里只存了引用。' +
+            '在 Procreate 里把这几支笔刷「导出」再转一次（导出的包会带 Shape.png），' +
+            '或把 Shape.png 放进图库文件夹后重新挂载，都能补回真笔尖。';
+          wr.appendChild(document.createElement('br'));
+          wr.appendChild(note);
+          const fixBtn = document.createElement('button');
+          fixBtn.type = 'button';
+          fixBtn.className = 'btn ghost';
+          fixBtn.style.marginTop = '8px';
+          fixBtn.textContent = '选择图库文件夹（放入缺的 Shape.png）';
+          fixBtn.onclick = function (ev) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            const dirInput = $('#shapeLibDirInput');
+            if (dirInput) dirInput.click();
+            else { const zi = $('#shapeLibInput'); if (zi) zi.click(); }
+          };
+          wr.appendChild(fixBtn);
         }
         card.appendChild(wr);
       }
@@ -2773,7 +2806,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.147';
+const APP_VERSION = '2.8.149';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;

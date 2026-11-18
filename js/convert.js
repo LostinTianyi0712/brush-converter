@@ -538,6 +538,26 @@
       if (b.tipSource === 'synth') delete b.tipSource;
       count++;
     });
+    result.brushes.forEach(function (b) {
+      if (!b || b.source !== 'bru' || !b.dualSubBrush || b.dualSubBrush.tip) return;
+      const sub = b.dualSubBrush;
+      const key = builtinTipKey(sub);
+      if (!key) return;
+      const raw = lib ? lib.get(key) : null;
+      const file = key.startsWith('textures/') ? key.slice('textures/'.length) : key + '.png';
+      const pngBytes = raw ? b64ToBytes(raw) : resMap && resMap.get(file);
+      if (!(pngBytes instanceof Uint8Array)) return;
+      let image;
+      try { image = png.decode(pngBytes); } catch (e) { return; }
+      const tipObj = { w: image.width, h: image.height, rgba: png.toMaskRgba(image.rgba) };
+      sub.tip = tipObj;
+      sub._tipFromBuiltin = sub.oldTexId;
+      b.dualTip = tipObj;
+      if (b.dualBrush) {
+        b.dualBrush.tip = tipObj;
+        b.dualBrush._tipFromBuiltin = sub.oldTexId;
+      }
+    });
     return count;
   }
 
@@ -1012,6 +1032,41 @@
       const exact = Number(brush._bruSubSizePx);
       if (exact > 0 && Math.round(exact) === sec.sizePx) sec.sizePx = exact;
       if (typeof brush._bruSubName === 'string' && brush._bruSubName) sec.name = brush._bruSubName.slice(0, 60);
+    }
+    /* 【第297轮（作者：Lead）】brushset 往返的副笔两件套：
+       ① 副笔纹理资源 id（f6）——Procreate 的 Sub01 没有纹理位，源值只存在 brushConvBruExtra 里。
+          以前这里不接，f121 子消息里就没有 f6，DB 的副笔 texPath 被清空 → 副笔那层是纯色（用户看到的均匀色块）。
+          注意不能只靠 `info.texAssetId`：makeBru 的 f6 链要求 hasTexture，而副笔的 hasTexture 恒为 false，
+          所以显式打 _bruForcedTexId 让写侧绕过这条门。 */
+    if (typeof brush._bruSubTexId === 'string' && brush._bruSubTexId) {
+      sec.texAssetId = brush._bruSubTexId;
+      sec._bruForcedTexId = true;
+    }
+    /* ② 副笔原生小宽度 f9：不带回去会按 sizePx×minSizeRatio 重算（第296轮 7 → 43.45）。 */
+    {
+      const nw = Number.isFinite(brush._bruSubNativeSmallWidth) ? brush._bruSubNativeSmallWidth
+        : (sub && Number.isFinite(sub._bruNativeSmallWidth) ? sub._bruNativeSmallWidth : undefined);
+      if (Number.isFinite(nw) && nw >= 0 && nw <= 5000) { sec._bruNativeSmallWidth = nw; sec._bruNativeSmallWidthFromSource = true; }
+    }
+    /* ③ 副笔子消息的字段存在性：写侧据此不凭空补 f29/f32/f33/f35/f80/f119/f120。 */
+    if (Array.isArray(brush._bruSubFieldSet) && brush._bruSubFieldSet.length) {
+      const ab = bruAbsentFields(brush._bruSubFieldSet);
+      if (ab) sec._bruAbsentFields = ab;
+    }
+    {
+      const subBuiltin = brush._bruSubBuiltinTipRef || (sub && (sub.bruBuiltinTipRef || sub._bruBuiltinTipRef));
+      if (typeof subBuiltin === 'string' && subBuiltin) {
+        sec.oldTexId = subBuiltin;
+        sec._bruForceBuiltinTipRef = true;
+      } else if (typeof brush._bruSubOldTexId === 'string' && brush._bruSubOldTexId && !sec.oldTexId) {
+        sec.oldTexId = brush._bruSubOldTexId;
+      }
+      if (Number.isFinite(brush._bruSubF135)) sec._bruF135 = brush._bruSubF135;
+      if (Number.isFinite(brush._bruSubF136)) sec._bruF136 = brush._bruSubF136;
+      if (brush._bruSubTipRaw && brush._bruSubTipRaw.length) {
+        sec._rawTipPng = brush._bruSubTipRaw;
+        sec._bruForceRawTipPng = true;
+      }
     }
     const primary = Object.assign({}, brush, {
       bruUuid: priUuid,
@@ -1506,6 +1561,135 @@
     return scaleBruSubSizeInPlace(out, f121.off, f121.off + f121.len, ratio) ? out : meta;
   }
 
+  /* 【第296轮（作者：Lead）】从原始 meta 里读 f7（笔尖图名字）——判据必须是源文件里的真值。 */
+  function readMetaField7(meta) {
+    if (!meta || !meta.length) return null;
+    try {
+      let i = 0;
+      const n = meta.length;
+      const rv = function () { let v = 0, sh = 0; for (;;) { if (i >= n) return -1; const x = meta[i++]; v += (x & 127) * Math.pow(2, sh); if (!(x & 128)) return v; sh += 7; if (sh > 63) return -1; } };
+      while (i < n) {
+        const tag = rv(); if (tag < 0) break;
+        const f = Math.floor(tag / 8), w = tag % 8;
+        if (w === 0) { if (rv() < 0) break; }
+        else if (w === 5) i += 4;
+        else if (w === 1) i += 8;
+        else if (w === 2) {
+          const len = rv(); if (len < 0 || i + len > n) break;
+          if (f === 7) {
+            let out = '';
+            for (let k = i; k < i + len; k++) out += String.fromCharCode(meta[k]);
+            return out;
+          }
+          i += len;
+        } else break;
+      }
+    } catch (e) { /* ignore */ }
+    return null;
+  }
+
+  /* 【第297轮（作者：Lead）】源 BRU 记录的字段号集合（顶层 / f121 副笔子消息各一份）。
+     用途：brushset 只能带「有 Procreate 对等位的参数」，源里**压根没有**的字段（f29/f32/f33/f35/f80/f87/f119/f120/f158）
+     在转回 BRU 时会被写侧按默认值凭空写出——实测第296轮 C（brushset 往返）主笔多出 f33=100/f35=51，
+     App 里「亮度 51 / 对比度 100」把纹理明暗差压平，这就是用户看到的「均匀色块」。
+     记下存在性，转回时只写源里真有的字段，语义与原生「不写=取缺省」一致。 */
+  function bruFieldNumberSet(meta) {
+    if (!meta || !meta.length) return undefined;
+    /* 注意：不能用 pbScan——那个扫描器只登记 w=2/5（它服务的是「原位改字节」的场景），
+       varint 字段（f5/f16/f19/f28/f31/f33/f35/f36/f41/f53/f59/f65/f67/f79/f80/f82/f90/f91/f95/f96/f97/f115/f128）
+       全都不在里面。存在性判定必须**所有 wire type 都记**，否则会把「源里明明有 f33」判成没有。 */
+    const out = [];
+    const n = meta.length;
+    let i = 0;
+    const rv = function () {
+      let v = 0, sh = 0;
+      for (;;) {
+        if (i >= n) return -1;
+        const x = meta[i++];
+        v += (x & 127) * Math.pow(2, sh);
+        if (!(x & 128)) return v;
+        sh += 7;
+        if (sh > 63) return -1;
+      }
+    };
+    while (i < n) {
+      const tag = rv(); if (tag < 0) break;
+      const f = Math.floor(tag / 8), w = tag % 8;
+      if (w === 0) { if (rv() < 0) break; }
+      else if (w === 5) { if (i + 4 > n) break; i += 4; }
+      else if (w === 1) { if (i + 8 > n) break; i += 8; }
+      else if (w === 2) { const len = rv(); if (len < 0 || i + len > n) break; i += len; }
+      else break;
+      if (out.indexOf(f) < 0) out.push(f);
+    }
+    return out.length ? out : undefined;
+  }
+  function bruSubFieldNumberSet(meta) {
+    if (!meta || !meta.length) return undefined;
+    const f121 = pbScan(meta, 0, meta.length).filter(function (x) { return x.f === 121 && x.w === 2; })[0];
+    if (!f121) return undefined;
+    return bruFieldNumberSet(meta.subarray(f121.off, f121.off + f121.len));
+  }
+  /* 写侧对这些字段有「不写 = 取缺省」的约定，因此可以安全地按源存在性省略。
+     只登记这一类；f8/f9/f12 这种必写字段永远不进这张表。 */
+  const BRU_OPTIONAL_FIELDS = [29, 32, 33, 35, 51, 65, 80, 83, 87, 95, 115, 119, 120, 158];
+  function bruAbsentFields(fieldSet) {
+    if (!Array.isArray(fieldSet) || !fieldSet.length) return undefined;
+    const have = new Set(fieldSet);
+    const out = BRU_OPTIONAL_FIELDS.filter(function (f) { return !have.has(f); });
+    return out.length ? out : undefined;
+  }
+  /* 该字段在源 BRU 里是否「本来就没有」——只对 BRU_OPTIONAL_FIELDS 内的字段成立。 */
+  function hasAbsent(brush, field) {
+    if (!brush || BRU_OPTIONAL_FIELDS.indexOf(field) < 0) return false;
+    if (Array.isArray(brush._bruAbsentFields) && brush._bruAbsentFields.indexOf(field) >= 0) return true;
+    if (Array.isArray(brush._bruFieldSet) && brush._bruFieldSet.length) return brush._bruFieldSet.indexOf(field) < 0;
+    return false;
+  }
+  /* 把源字段集合挂到 brushset 条目上（procreate.js 的 brushConvBruExtra 会写进 archive）。 */
+  function attachBruFieldSets(b) {
+    if (!b || b.source !== 'bru' || !b._rawMeta) return b;
+    let out = b;
+    if (out._bruExportFieldSet === undefined) {
+      const fs1 = bruFieldNumberSet(out._rawMeta);
+      if (fs1) out = Object.assign({}, out, { _bruExportFieldSet: fs1 });
+    }
+    if (out._bruExportSubFieldSet === undefined) {
+      const fs2 = bruSubFieldNumberSet(out._rawMeta);
+      if (fs2) out = Object.assign({}, out, { _bruExportSubFieldSet: fs2 });
+    }
+    return out;
+  }
+
+  /* 【第297轮（作者：Lead）】副笔纹理 PNG。
+     源 BRU 的副笔记录尾部有**两张**内嵌图：副笔尖 + 副笔纹理（第295轮已把「两张都写回」修进 bruEmbeddedSubPng）。
+     但走 brushset 往返时，Only Sub01 的形状能过去，第二张图无处存——第296轮真机 C 组实测
+     `embeddedTotal` 2→1、`dual.texAssetId` 丢失、DB 副笔 texPath 被清空，副笔那层就成了纯色块。
+     这里的关键事实（第296轮报告 §③-1）：**副笔纹理与主纹理常常是同一张图**
+     （珠宝装饰 10 支全部 md5=6961E380，而主纹理块在往返里一直保留着）。
+     所以只要 Extra 记下的 subTexId 与本次写出的主纹理 md5 相同，就把主纹理字节原样追加成第二张内嵌 PNG：
+       · 同 md5 才拼，绝不造像素；
+       · 顺序与原生一致（先副笔尖，后副笔纹理）；
+       · f121 里副笔的 f6/f7 由 bru.js 按 sub.texId / embeddedSubPng 计算，与本函数自洽。 */
+  function subEmbeddedPngFor(brush, textureBytes) {
+    let base = brush.embeddedSubPng || bruEmbeddedSubPng(brush);
+    if (base && base.length && brush._bruSubTipRaw && brush._bruSubTipRaw.length && !brush._bruSubBuiltinTipRef) {
+      base = new Uint8Array(brush._bruSubTipRaw);
+    }
+    const wantId = brush._bruSubTexId ? String(brush._bruSubTexId).toUpperCase() : '';
+    if (!wantId || !textureBytes || !textureBytes.length) return base;
+    const needSubGrain = Number(brush._bruSubEmbeddedCount) >= 2 || !!brush._bruSubHasGrainPng;
+    if (!needSubGrain) return base;
+    if (util.md5(textureBytes).toUpperCase() !== wantId) return base;
+    const tips = brush.embeddedTips || [];
+    if (tips.length >= 2 || (tips.length === 1 && tips[0] && tips[0].isSubGrain)) return base;
+    if (!base || !base.length) return new Uint8Array(textureBytes);
+    const out = new Uint8Array(base.length + textureBytes.length);
+    out.set(base, 0);
+    out.set(textureBytes, base.length);
+    return out;
+  }
+
   function makeBru(brush, opts) {
     opts = opts || {};
     brush = angleControlAliases(brush);
@@ -1616,7 +1800,7 @@
     const keepNoShape = !!(brush.bruProceduralTip && !bakingDual && (nativeProcedural || bridgeTipUnchanged));
     const builtinRef = builtinTipKey(brush);
     const bridgeBuiltin = !!(builtinRef && bridgeExtra && (bridgeExtra.builtinTipRef === builtinRef || brush._tipFromBuiltin === brush.oldTexId));
-    const keepBuiltinTip = !!(!bakingDual && bridgeBuiltin && bridgeTipUnchanged);
+    const keepBuiltinTip = !!(!bakingDual && ((bridgeBuiltin && bridgeTipUnchanged) || brush._bruForceBuiltinTipRef));
     let textureBaked = false;
     if (brush.source !== 'bru' && brush.hasTexture && opts.noTextureBake !== true && !texMatchId) {
       const texture = textureGray(brush);
@@ -1664,7 +1848,7 @@
     // Put coverage into dark RGB only when the source BRU used f42.
     // With f42 off, BRU reads alpha and would otherwise lose soft edges.
     let encodeRgba = rgba;
-    if (brush.source !== 'bru' && brush._bruExtra && brush.bruShapeRgbOpacity === true) {
+    if (brush.source !== 'bru' && brush._bruExtra && brush.bruShapeRgbOpacity === true && brush._bruRgbOpacityDark !== false) {
       encodeRgba = new Uint8Array(rgba.length);
       for (let i = 0; i < rgba.length; i += 4) {
         const a = rgba[i + 3];
@@ -1676,7 +1860,14 @@
       /* _keepTipRgb：第290轮焦边描边的深色副笔，靠笔尖自身 RGB（f38「颜色」）画出深框，不能规整成白 */
       encodeRgba = png.toMaskRgba(rgba);
     }
-    const pngBytes = png.encode(w, h, encodeRgba);
+    const canRestoreTipRaw = !bakingDual && !textureBaked && (opts.sizeScale || 1) === 1 && (
+      (brush._bruTipRaw && brush._bruTipRaw.length && bridgeTipUnchanged &&
+        (!brush._bruTipShapeHash || (brush._rawShape && util.md5(brush._rawShape) === brush._bruTipShapeHash))) ||
+      (brush._rawTipPng && brush._rawTipPng.length && brush._bruForceRawTipPng)
+    );
+    const pngBytes = canRestoreTipRaw
+      ? new Uint8Array(brush._bruTipRaw || brush._rawTipPng)
+      : png.encode(w, h, encodeRgba);
     const sizeScale = opts.sizeScale || 1;
     let sizePx = (brush.sizePx || 100) * sizeScale;
     if (!isFinite(sizePx) || sizePx <= 0) sizePx = Math.max(4, Math.max(w, h));
@@ -1755,9 +1946,24 @@
          在「从内置库取到笔尖像素」（restoreHsjTips）时才赋值；本例源 oldTexId 是 32 字符 md5，
          builtinTipKey 判不出内置名 → 恒 undefined → 条件恒假 → 修了等于没修（verify238 实测）。
          现在只要求：来自 BRU 往返 + 源里有 f7，就沿用源名。 */
-      texId: keepNoShape ? '' : ((brush.source === 'bru' || !!brush._bruExtra) && brush.oldTexId && (!bridgeBuiltin || keepBuiltinTip) &&
-        opts.fidelity !== false && !opts.forceRebuild
-        ? brush.oldTexId : util.md5(pngBytes).toUpperCase()),
+      /* 【第296轮（作者：Lead）】f7 必须与**实际写出的 PNG 字节**一致：App 就是拿 f7 去
+         textures/ 里找图（第179轮实测：原生 oldTexId 逐字节等于内嵌 PNG 的 md5）。以前 BRU 源
+         与往返源一律沿用 oldTexId，可写出口每次都会 png.encode() 重新编码，字节和 md5 都变了
+         → f7 指向一张不存在的图，App 找不到笔尖/副笔图只能回退，用户看到「转换后还是不行」。
+         规则：oldTexId 是 32 位 md5（内容指纹）→ 一律换成新 pngBytes 的 md5；
+              oldTexId 不是 md5（App 内置资源占位名，如 psN/ptN）→ 保持原名，App 从自己库取。 */
+      texId: keepNoShape ? '' : (function () {
+        const oldId = brush.oldTexId || '';
+        const keepNative = ((brush.source === 'bru' || !!brush._bruExtra) && oldId && (!bridgeBuiltin || keepBuiltinTip) && opts.fidelity !== false && !opts.forceRebuild) || (!!brush._bruForceBuiltinTipRef && !!oldId);
+        /* 判据用**源 meta 里的真 f7**（oldTexId 可能来自别处，第296轮实测 #11/#14 的 oldTexId=ps22
+           而原生 f7 其实是 32 位 md5）：源 f7 是 md5 → 一律换成本次写出的 PNG md5；
+           源 f7 是内置占位名（psN/ptN）→ 保持原名，App 从自己库里取。 */
+        const rawF7 = readMetaField7(brush._rawMeta);
+        const src = rawF7 || oldId;
+        const srcIsMd5 = /^[0-9a-f]{32}$/i.test(src);
+        if (keepNative && !srcIsMd5) return src;
+        return util.md5(pngBytes).toUpperCase();
+      })(),
       sizePx,
       /* 【第195轮】优先用公开字段 maxSizePx（BRU 解析侧现在会回填 f12），再用私有 _rawMaxWidth 兜底。
          旧写法只认 _rawMaxWidth，导致 maxSizePx=800 的笔刷被压到 500，f12/f135/f136 全部失真。 */
@@ -1767,9 +1973,20 @@
       spacingPct,
       opacity: densityOpacity !== null ? densityOpacity : (brush.opacity === undefined ? 1 : brush.opacity),
       minSizeRatio: usePressure ? (brush.minSizeRatio === undefined ? 0.1 : brush.minSizeRatio) : 1,
-      _bruNativeSmallWidth: (keepNoShape || keepBuiltinTip) && bridgeTipUnchanged && opts.pressure === undefined &&
-        sizeScale === 1 && brush.sizePx === bridgeExtra.sizePx && brush.minSizeRatio === bridgeExtra.nativeMinSizeRatio
-        ? bridgeExtra.nativeSmallWidth : undefined,
+      _bruNativeSmallWidth: brush._bruNativeSmallWidthFromSource && sizeScale === 1 ? brush._bruNativeSmallWidth
+        : ((keepNoShape || keepBuiltinTip) && bridgeTipUnchanged && opts.pressure === undefined &&
+          sizeScale === 1 && brush.sizePx === bridgeExtra.sizePx && brush.minSizeRatio === bridgeExtra.nativeMinSizeRatio
+          ? bridgeExtra.nativeSmallWidth : undefined),
+      /* 【第297轮】源字段存在性（brushset 往返时由 brushConvBruExtra 带回）：
+         写侧据此不再把「源里没有的字段」按默认值补出来。 */
+      _bruAbsentFields: (function () {
+        const fromSet = bruAbsentFields(brush._bruFieldSet);
+        const fromExtra = Array.isArray(brush._bruAbsentFields) ? brush._bruAbsentFields : null;
+        if (!fromSet && !fromExtra) return undefined;
+        const out = [];
+        (fromSet || []).concat(fromExtra || []).forEach(function (f) { if (out.indexOf(f) < 0) out.push(f); });
+        return out.length ? out : undefined;
+      })(),
       minOpacityRatio: usePressure ? (brush.minOpacityRatio === undefined ? 0.25 : brush.minOpacityRatio) : 1,
       bruSmallAlpha: useOriginalMinOpacity ? bruPressure.minOpacity : undefined,
       pressure: usePressure,
@@ -1816,6 +2033,9 @@
          烘焙输出再写 f6 会让 App 叠加/引用一份不该存在的纹理；无像素的 UUID 是空引用（224 轮不出墨）。 */
       texAssetId: (match && match.keepNativeId && brush.texAssetId) ? brush.texAssetId
         : (texMatchId || texAssetId
+           /* 【第297轮】副笔（f121 子记录）显式带回的源 f6：副笔 hasTexture 恒 false，
+              下面那条 hasTexture 闸门永远过不去，所以这条必须排在它前面。 */
+           || (brush._bruForcedTexId && brush.texAssetId ? String(brush.texAssetId) : undefined)
            || (brush.source === 'bru' && brush.texAssetId)   // BRU 同格式重建：沿袭源 f6（227 轮口径；ptN 无像素、路径型悬空引用均照旧）
            || (((brush.hasTexture && !textureBaked && !opts.noTextureBake) && brush.texAssetId && (/^pt/i.test(String(brush.texAssetId)) || customTexture)) ? brush.texAssetId : undefined)
            || (opts && opts.texAssetId)),
@@ -1849,8 +2069,18 @@
 
          实测「还行」就是这样变得看不出墨。 */
 
-      textureBrightness: match && match.custom && !brush._nativeTexFromBru ? Math.max(0, Math.min(100, 51 + (brush.textureBrightness || 0))) : bruTexBrightness(brush),
-      textureContrast: match && match.custom && !brush._nativeTexFromBru ? Math.max(0, Math.min(200, 100 + (brush.textureContrast || 0))) : bruTexContrast(brush),
+      /* 【第297轮】源里压根没有 f33/f35 时不写（原生语义：不写 = 取缺省 0）。
+         bruTexBrightness/Contrast 在 undefined 时会返回中性值 51/100，专供「Procreate/ABR 源」；
+         brushset 往返回来的笔刷如果源 BRU 本来没有这两个字段，再由这里补 51/100 就等于把纹理明暗差压平
+         （第296轮真机 C 组：亮度 51 / 对比度 100，笔迹变成均匀实心）。 */
+      textureBrightness: (function () {
+        if (hasAbsent(brush, 35)) return undefined;
+        return match && match.custom && !brush._nativeTexFromBru ? Math.max(0, Math.min(100, 51 + (brush.textureBrightness || 0))) : bruTexBrightness(brush);
+      })(),
+      textureContrast: (function () {
+        if (hasAbsent(brush, 33)) return undefined;
+        return match && match.custom && !brush._nativeTexFromBru ? Math.max(0, Math.min(200, 100 + (brush.textureContrast || 0))) : bruTexContrast(brush);
+      })(),
       textureDepth: effectiveTextureDepth,
       taperOn: brush.taperOn,
       /* 【第279轮】锥度起笔/收笔长度（f75/f76）**不进写侧**：BRU→BRU 由 `_rawUnknown` 原样透传
@@ -1865,10 +2095,14 @@
          （f59/f77/f78/f87/f104/f109——源里出现过的字段不再因开关关闭而消失）。 */
       _bruScatterCountField: brush._bruScatterCountField === true,
       _bruSmudgeAmountField: brush._bruSmudgeAmountField === true,
+      _bruWetStrengthField: brush._bruWetStrengthField === true,
       _bruWetDepthField: brush._bruWetDepthField === true,
       _bruF109: brush._bruF109,
       _bruF87Raw: brush._bruF87Raw,
       _bruF31Field: brush._bruF31Field === true,
+      _bruHollowAlpha: brush._bruHollowAlpha,
+      _bruF135: sizeScale === 1 && (!bridgeExtra || brush.sizePx === bridgeExtra.sizePx) ? brush._bruF135 : undefined,
+      _bruF136: sizeScale === 1 && (!bridgeExtra || brush.sizePx === bridgeExtra.sizePx) ? brush._bruF136 : undefined,
       taperSize: brush.taperSize,
       taperOpacity: brush.taperOpacity,
       wetEdgesOn: brush.wetEdgesOn,
@@ -1908,7 +2142,7 @@
          副笔尖 PNG 却只在 embeddedTips 里（解码后的像素），以前没人写回 → 重转后副笔没有图。
          焦边描边的深色副笔（只有内嵌、包里没有独立副笔条目）重转一次框就没了；楠/轻舟的内嵌副图也一并被丢。
          按像素重编码写回（RGB 原样，BRU 源不走白遮罩）。 */
-      embeddedSubPng: brush.embeddedSubPng || bruEmbeddedSubPng(brush),
+      embeddedSubPng: subEmbeddedPngFor(brush, customTexture),
       bruLinkTemplate: brush.source === 'bru' ? scaleBruLinkTemplate(brush.bruLinkTemplate, brush.sizePx > 0 ? sizePx / brush.sizePx : 1) : brush.bruLinkTemplate,
       dualBlendMode: brush.dualBlendMode === undefined ? (brush.dualBrush && brush.dualBrush.blend) : brush.dualBlendMode,
       bruDualBlendMode: brush.bruDualBlendMode,
@@ -1922,6 +2156,33 @@
       _rawUnknown: brush._rawUnknown,
       _rawOriginalName:brush._rawState && brush._rawState.name
     };
+    /* 【第297轮（作者：Lead）】显式改动优先于「源里没有」：用户/调用方改过的字段一律写出去，
+       不能因为「源 BRU 本来没有 f29/f35/f80/f115」就把改动吞掉
+       （`bru_version_contract_test.js` 的「eye 改参数」用例锁的就是这一条）。
+       对比基线取解析时的快照：BRU 源是 `_rawState`，brushset 源是 `_rawNormalized`。 */
+    {
+      const absentIn = meta._bruAbsentFields;
+      if (absentIn && absentIn.length) {
+        const base = brush._rawState || brush._rawNormalized || {};
+        const EDIT_KEYS = {
+          textureInverted: [29], bruShapeInverted: [32], textureContrast: [33], textureBrightness: [35],
+          flowPct: [51], minFlowRatio: [51], colorPerTip: [65], smoothingStrength: [80],
+          bruRotationMode: [115], bruDualEnabled: [119]
+        };
+        const keep = absentIn.slice();
+        Object.keys(EDIT_KEYS).forEach(function (k) {
+          /* 只在快照里**确实记过这个键**时才判定「改过」：快照缺键说明解析时本来就没这个语义，
+             此时 meta 里的 false/0 只是 convert 侧兜底，不能当成用户改动（否则 f32/f51 会被全量补写）。 */
+          if (!Object.prototype.hasOwnProperty.call(base, k)) return;
+          if (meta[k] === base[k]) return;
+          EDIT_KEYS[k].forEach(function (f) {
+            const at = keep.indexOf(f);
+            if (at >= 0) keep.splice(at, 1);
+          });
+        });
+        meta._bruAbsentFields = keep.length ? keep : undefined;
+      }
+    }
     if(meta._rawMeta){
       const old=brush._rawState||{},fields=new Set();
       const mapping={name:[3],pkgId:[2],sizePx:[8,9,12,50,135,136],spacingPct:[17],opacity:[13,14],minSizeRatio:[9,50],minOpacityRatio:[14],
@@ -3092,7 +3353,8 @@
       delete b._rawArchive; delete b._rawBrushState; delete b._rawGrainState;
     }
     if (b.name !== names[i]) b = Object.assign({}, b, { name: names[i] });
-    return procreateExportTip(b, opts);
+    /* 【第297轮】源 BRU 的字段存在性随 brushset 一起带走（转回时决定「该不该写」）。 */
+    return attachBruFieldSets(procreateExportTip(b, opts));
   }
 
   /* 【第285轮】收尾：写 brushset 容器 + 纹理/未知字段告警（原后半段原样搬移） */

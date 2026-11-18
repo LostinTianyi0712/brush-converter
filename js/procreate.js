@@ -193,6 +193,33 @@
     return null;
   }
 
+  /* 【第287轮】缺图提示统一出口。
+     起因（真实用户反馈）：图库明明已加载（卡片上已有「图库补回」标签），提示却仍是
+     「缺少内置笔尖原图 Procreate_Library/Pelion_Shape.png；…跨软件圆头仅为近似」，
+     用户只能理解成「下载图库没生效」。真因是**内置图库 292 张里没有任何 *_Shape.png**——
+     Procreate 内置笔刷（Pelion / Huntsman / Shearwater 之类）的 Shape 只在 App 内，
+     导出包里只留引用（Procreate_Library/xxx_Shape.png）。所以必须把两种原因分开报：
+       库没装     → 去下载（现有按钮）
+       库在场但没这张 → 下载一百次也没有，得从 Procreate 导出该笔刷，或把 Shape.png 放进图库文件夹
+     判定不需要新增字段：库是否非空、有没有引用、tip/shapeFromLibrary 是否已补上，提示点全都拿得到。 */
+  function missingShapeWarning(brush, withName, shapeResources) {
+    const p = brush && brush.bundledShapePath;
+    const prefix = withName ? String((brush && brush.name) || '未命名') + ': ' : '';
+    if (!p) {
+      return prefix + (withName ? '没有可解码Shape图；跨软件圆头仅为近似'
+        : '该笔刷没有可解码Shape图；跨软件只能生成近似圆头，原笔尖未确认');
+    }
+    const libCount = shapeResources && typeof shapeResources.size === 'number' ? shapeResources.size : 0;
+    const backfilled = !!(brush && (brush.shapeFromLibrary || brush.tip));
+    if (libCount > 0 && !backfilled) {
+      return prefix + '缺少内置笔尖原图 ' + p + '：内置图库 ' + libCount + ' 张里没有这张' +
+        '（它是 Procreate 内置笔刷自带的形状，brushset 里只存了引用，没带图）。' +
+        '两个办法：① 在 Procreate 里把这几支笔刷选中「导出」再转（导出的包会带 Shape.png）；' +
+        '② 把它的 Shape.png 放进图库文件夹后重新挂一次图库';
+    }
+    return prefix + '缺少内置笔尖原图 ' + p + '；Procreate原生导出保留引用，跨软件圆头仅为近似';
+  }
+
   /* 【第272轮】事后补挂内置素材。
      适用于「先导入笔刷、后导入/下载素材库」的顺序：解析那一刻 shapeResources 还没到位，
      bundledShapePath / bundledGrainPath 解析不出像素，笔刷就被定型成「无笔尖 / 无纹理」，
@@ -573,6 +600,29 @@
       if (typeof ex.colorDynamicsOn === 'boolean') brush.colorDynamicsOn = ex.colorDynamicsOn;   // 只补被归档清零的那一侧
       if (Number.isFinite(ex.angle)) brush.angle = ex.angle;
       if (typeof ex.taperFields === 'boolean') brush._bruTaperFields = ex.taperFields;
+      /* 【第297轮（作者：Lead）】第297轮补的四项回读。
+         nativeSmallWidth 之前**只写不读**——Extra 里第231轮就存了，读侧漏了这一行，
+         于是 brushset 往返后 f9 退回 sizePx×minSizeRatio（珠宝装饰副笔 7 → 43.45、5 → 87.45，放大 5~17 倍）。 */
+      if (Number.isFinite(ex.nativeSmallWidth) && ex.nativeSmallWidth >= 0 && ex.nativeSmallWidth <= 5000) { brush._bruNativeSmallWidth = ex.nativeSmallWidth; brush._bruNativeSmallWidthFromSource = true; }
+      if (Number.isFinite(ex.subNativeSmallWidth) && ex.subNativeSmallWidth >= 0 && ex.subNativeSmallWidth <= 5000) { brush._bruSubNativeSmallWidth = ex.subNativeSmallWidth; }
+      if (typeof ex.subTexId === 'string' && ex.subTexId) brush._bruSubTexId = ex.subTexId;
+      if (Number.isFinite(ex.subEmbeddedCount)) brush._bruSubEmbeddedCount = ex.subEmbeddedCount;
+      if (Array.isArray(ex.fieldSet)) brush._bruFieldSet = ex.fieldSet.filter(function (v) { return Number.isFinite(v); });
+      if (Array.isArray(ex.subFieldSet)) brush._bruSubFieldSet = ex.subFieldSet.filter(function (v) { return Number.isFinite(v); });
+      if (typeof ex.rgbOpacityDark === 'boolean') brush._bruRgbOpacityDark = ex.rgbOpacityDark;
+      if (typeof ex.tipRaw === 'string' && ex.tipRaw) brush._bruTipRaw = b64ToBytes(ex.tipRaw);
+      if (typeof ex.tipShapeHash === 'string' && ex.tipShapeHash) brush._bruTipShapeHash = ex.tipShapeHash;
+      if (Number.isFinite(ex._bruHollowAlpha)) brush._bruHollowAlpha = ex._bruHollowAlpha;
+      if (ex.wetStrengthField) brush._bruWetStrengthField = true;
+      if (Number.isFinite(ex.wetEdgesAmount)) brush.wetEdgesAmount = ex.wetEdgesAmount;
+      if (Number.isFinite(ex.f135)) brush._bruF135 = ex.f135;
+      if (Number.isFinite(ex.f136)) brush._bruF136 = ex.f136;
+      if (Number.isFinite(ex.subF135)) brush._bruSubF135 = ex.subF135;
+      if (Number.isFinite(ex.subF136)) brush._bruSubF136 = ex.subF136;
+      if (typeof ex.subOldTexId === 'string' && ex.subOldTexId) brush._bruSubOldTexId = ex.subOldTexId;
+      if (typeof ex.subBuiltinTipRef === 'string' && ex.subBuiltinTipRef) brush._bruSubBuiltinTipRef = ex.subBuiltinTipRef;
+      if (ex.subHasGrainPng === true) brush._bruSubHasGrainPng = true;
+      if (typeof ex.subTipRaw === 'string' && ex.subTipRaw) brush._bruSubTipRaw = b64ToBytes(ex.subTipRaw);
     }
     if (brush._bruTexParams) {
       const tp = brush._bruTexParams;
@@ -675,7 +725,7 @@
       const b = readBrushFolder(entries, '', opts.shapeResources, entryByName, entries);
       if (b) {
         if (!b.name) b.name = baseName;
-        if (!b.tip) warnings.push(b.bundledShapePath ? '缺少内置笔尖原图 '+b.bundledShapePath+'；Procreate原生导出保留引用，跨软件圆头仅为近似' : '该笔刷没有可解码Shape图；跨软件只能生成近似圆头，原笔尖未确认');
+        if (!b.tip) warnings.push(missingShapeWarning(b, false, opts && opts.shapeResources));
         brushes.push(b);
       }
       return { brushes, warnings, kind: 'brush' };
@@ -721,7 +771,7 @@
           if (!b.name) b.name = /^[0-9A-Fa-f-]{20,}$/.test(folder) ? (setName + ' ' + autoIndex) : folder;
           // 整包组名：导出 .brushset 时写回 brushset.plist（否则会退回第一支笔刷名）
           b._brushsetName = setName;
-          if (!b.tip) warnings.push(b.name + ': ' + (b.bundledShapePath ? '缺少内置笔尖原图 '+b.bundledShapePath+'；Procreate原生导出保留引用，跨软件圆头仅为近似' : '没有可解码Shape图；跨软件圆头仅为近似'));
+          if (!b.tip) warnings.push(missingShapeWarning(b, true, opts && opts.shapeResources));
           brushes.push(b);
         }
       } catch (e) {
@@ -1176,7 +1226,7 @@
         hardness: brush.hardness, maxSizePx: brush.maxSizePx,
         scatterPct: brush.scatterPct, scatterCount: brush.scatterCount,
         antialiasLevel: brush.antialiasLevel,
-        wetEdgesOn: !!(brush.wetEdgesOn || brush.wetEdgesAmount),
+        wetEdgesOn: !!brush.wetEdgesOn,
         wetEdgesDepth: brush.wetEdgesDepth,
         shapeInverted: !!brush.bruShapeInverted || !!brush.shapeInverted,
         flowSmooth: !!brush.bruFlowSmooth,
@@ -1246,6 +1296,52 @@
         /* 【第238轮】f7 笔尖 id：App 的内置笔尖查找按源 id 来，重编码 Shape 的 md5 它认不出，
            查不到就回退实心方块（verify235 plain 组真机实锤）。源名与「是否内置名」必须一起带过去。 */
         oldTexId: brush.oldTexId, tipFromBuiltin: brush._tipFromBuiltin,
+        /* 【第297轮（作者：Lead）】brushset 往返保真的四个缺口（第296轮真机 C 组实测）：
+           ① 源 BRU 的字段存在性（fieldSet/subFieldSet）——不带过去，转回时 f29/f32/f33/f35 等
+              会被按默认值凭空写出，App 里「亮度 51 / 对比度 100」把纹理明暗差压平；
+           ② 副笔的纹理资源 id（f6）——Procreate 的 Sub01 没有纹理位，不带过去 f121 里就没有 f6，
+              副笔那层在画世界里没有纹理（DB texPath 被清空）；
+           ③ 副笔的原生小宽度（f9）——不带过去会按 sizePx×minSizeRatio 重算，放大 5~17 倍。 */
+        fieldSet: brush._bruExportFieldSet,
+        subFieldSet: brush._bruExportSubFieldSet,
+        subTexId: brush.dualBrush && brush.dualBrush.texAssetId ? String(brush.dualBrush.texAssetId) : undefined,
+        subNativeSmallWidth: (function () {
+          const d = brush.dualBrush;
+          if (!d) return undefined;
+          const v = Number(d._bruNativeSmallWidth);
+          return Number.isFinite(v) && v >= 0 && v <= 5000 ? v : undefined;
+        })(),
+        /* 源记录尾部的内嵌图张数：1 = 只有副笔尖，2 = 副笔尖 + 副笔纹理。
+           转回 BRU 时只在**源确实是两张**的情况下补第二张（否则等于凭空造一张图，字节面就不忠实了）。 */
+        subEmbeddedCount: Array.isArray(brush.embeddedTips) ? brush.embeddedTips.length : undefined,
+        subOldTexId: brush.dualBrush && brush.dualBrush.oldTexId ? String(brush.dualBrush.oldTexId) : undefined,
+        subBuiltinTipRef: brush.dualBrush && (brush.dualBrush._bruBuiltinTipRef || brush.dualBrush.bruBuiltinTipRef || (/^ps\d+$/i.test(brush.dualBrush.oldTexId || '') ? brush.dualBrush.oldTexId : undefined)),
+        subHasGrainPng: Array.isArray(brush.embeddedTips) && (brush.embeddedTips.length >= 2 || (brush.embeddedTips.length === 1 && !!(brush.embeddedTips[0] && brush.embeddedTips[0].isSubGrain))) ? true : undefined,
+        subTipRaw: (function () {
+          const st = Array.isArray(brush.embeddedTips) ? brush.embeddedTips.find(function (t) { return t && !t.isSubGrain; }) : null;
+          return st && st.raw && st.raw.length <= 262144 ? bytesToB64(st.raw) : undefined;
+        })(),
+        rgbOpacityDark: brush.bruShapeRgbOpacity ? (function (t) {
+          if (!t || !t.rgba) return false;
+          for (let i = 0; i < t.rgba.length; i += 4) if (t.rgba[i + 3] > 0 && (t.rgba[i] < 255 || t.rgba[i + 1] < 255 || t.rgba[i + 2] < 255)) return true;
+          return false;
+        })(brush.tip) : undefined,
+        tipRaw: (function (t, raw) {
+          if (!raw || !raw.length || raw.length > 1048576 || !t || !t.rgba) return undefined;
+          let hasRgb = false;
+          for (let i = 0; i < t.rgba.length; i += 4) {
+            if (t.rgba[i + 3] > 0 && (t.rgba[i] < 255 || t.rgba[i + 1] < 255 || t.rgba[i + 2] < 255)) { hasRgb = true; break; }
+          }
+          return hasRgb ? bytesToB64(raw) : undefined;
+        })(brush.tip, brush._rawTipPng),
+        tipShapeHash: (brush._rawTipPng && shapeBytes) ? util.md5(shapeBytes) : undefined,
+        _bruHollowAlpha: brush._bruHollowAlpha,
+        wetStrengthField: !!brush._bruWetStrengthField,
+        wetEdgesAmount: brush.wetEdgesAmount,
+        f135: brush._bruF135,
+        f136: brush._bruF136,
+        subF135: brush.dualBrush && Number.isFinite(brush.dualBrush._bruF135) ? brush.dualBrush._bruF135 : undefined,
+        subF136: brush.dualBrush && Number.isFinite(brush.dualBrush._bruF136) ? brush.dualBrush._bruF136 : undefined,
         /* 【第251轮】f97 渲染数量：brushset 没有承载位，回程取默认 1。
            App 里 2 = 同一笔分两次落墨（更柔、更有层次），1 = 一次全量落墨（更实更深）。
            珠宝装饰套 31/79 支是 2，丢了就会被看成「转换后颜色偏深」。 */
