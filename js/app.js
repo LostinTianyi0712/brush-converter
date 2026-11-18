@@ -600,8 +600,8 @@
           note.textContent = '图库已加载（' + state.shapeLib.size + ' 张），但这 ' + uniqMiss.length +
             ' 张不在里面：' + uniqMiss.slice(0, 4).join('、') + (uniqMiss.length > 4 ? ' 等' : '') +
             ' —— 它们是 Procreate 内置笔刷自带的形状，笔刷包里只存了引用。' +
-            '在 Procreate 里把这几支笔刷「导出」再转一次（导出的包会带 Shape.png），' +
-            '或把 Shape.png 放进图库文件夹后重新挂载，都能补回真笔尖。';
+            'Procreate 导出笔刷时只写引用、不打包这些像素（再导一次也一样），原图只在 Procreate 安装包的 ' +
+            'Procreate_Library/ 这组里：把它们放进图库文件夹并重新挂载图库就能补回真笔尖，拿不到就只能用合成圆头近似。';
           wr.appendChild(document.createElement('br'));
           wr.appendChild(note);
           const fixBtn = document.createElement('button');
@@ -2806,7 +2806,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.149';
+const APP_VERSION = '2.8.150';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;

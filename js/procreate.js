@@ -213,9 +213,9 @@
     const backfilled = !!(brush && (brush.shapeFromLibrary || brush.tip));
     if (libCount > 0 && !backfilled) {
       return prefix + '缺少内置笔尖原图 ' + p + '：内置图库 ' + libCount + ' 张里没有这张' +
-        '（它是 Procreate 内置笔刷自带的形状，brushset 里只存了引用，没带图）。' +
-        '两个办法：① 在 Procreate 里把这几支笔刷选中「导出」再转（导出的包会带 Shape.png）；' +
-        '② 把它的 Shape.png 放进图库文件夹后重新挂一次图库';
+        '（它是 Procreate 内置笔刷自带的形状，Procreate 导出笔刷时只写引用、不打包像素——' +
+        '所以再导一次也一样）。原图只在 Procreate 安装包里（Procreate_Library/ 这组 xxx_Shape.png）：' +
+        '取出来后放进图库文件夹并重新挂载图库就能补回；拿不到就只能用合成圆头近似';
     }
     return prefix + '缺少内置笔尖原图 ' + p + '；Procreate原生导出保留引用，跨软件圆头仅为近似';
   }
