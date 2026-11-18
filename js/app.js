@@ -534,7 +534,7 @@
           if (isApp) {
             const native = !!window.BrushNative;
             const desktop = !!window.BrushDesktop;
-            libBtn.textContent = native ? '下载内置图库（32MB，联网）' : (desktop ? '加载内置图库（程序目录或联网下载）' : '用内置图库补回真笔尖');
+            libBtn.textContent = native ? '下载内置图库（63MB，联网）' : (desktop ? '加载内置图库（程序目录或联网下载）' : '用内置图库补回真笔尖');
             libBtn.onclick = async function (ev) {
               ev.preventDefault();
               ev.stopPropagation();
@@ -543,8 +543,8 @@
               const r = await loadBundledShapeLib({
                 progressButton: libBtn,
                 onStart: function () {
-                  toast(native ? '正在下载内置笔尖图库（约 32MB，仅首次，需联网）…'
-                    : (desktop ? '先找程序目录的图库包，没有就联网下载（约 32MB）…' : '正在加载内置笔尖图库（约 32MB，仅首次）…'), 12000);
+                  toast(native ? '正在下载内置笔尖图库（约 63MB，仅首次，需联网）…'
+                    : (desktop ? '先找程序目录的图库包，没有就联网下载（约 63MB）…' : '正在加载内置笔尖图库（约 63MB，仅首次）…'), 12000);
                 }
               });
               libBtn.disabled = false;
@@ -559,7 +559,7 @@
               else { const zi = $('#shapeLibInput'); if (zi) zi.click(); }
             };
           } else {
-            libBtn.textContent = '没有图库包？一键下载并自动导入（32MB）';
+            libBtn.textContent = '没有图库包？一键下载并自动导入（63MB）';
             libBtn.onclick = async function (ev) {
               ev.preventDefault();
               ev.stopPropagation();
@@ -589,7 +589,7 @@
           /* 【第287轮】图库**已经加载**，但里面没有这几张：
                Procreate 内置笔刷（Pelion / Huntsman / Shearwater 之类）的 Shape.png 只在
                Procreate App 里，导出的 brushset 只留引用（Procreate_Library/xxx_Shape.png）。
-               内置图库 292 张里没有任何 *_Shape.png —— 所以「再下载一次图库」永远补不上。
+               内置图库来自 5.3.8，没有 5.4 的 Procreate_Library/*_Shape.png —— 所以「再下载一次图库」永远补不上。
                这里给的是真能补上的动作：把缺的 Shape.png 放进图库文件夹，重新挂一次。 */
           const missNames = rec.brushes.filter(function (b) { return b && !b.tip && b.bundledShapePath; })
             .map(function (b) { return String(b.bundledShapePath).split(/[\\/]/).pop(); });
@@ -2806,7 +2806,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.151';
+const APP_VERSION = '2.8.152';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;
@@ -3380,7 +3380,7 @@ const UPDATE_ENABLED = false;
       } else {
         full.disabled = false;
         full.textContent = full.dataset.label;
-        full.title = '高清图库约 216MB，手机空间紧张时用上面的 32MB 版';
+        full.title = '高清图库约 216MB，手机空间紧张时用上面的 63MB 版';
       }
     }
   }
@@ -3416,11 +3416,11 @@ const UPDATE_ENABLED = false;
     }
   }
   /* ===== 内置笔尖图库包（单独分发，不塞进安装包）=====
-     资源包来自 assets/shape-lib.zip（精简 512）或另做的「原图」包：292 张 Procreate IPA 内置 Shape。
+     资源包来自 assets/shape-lib.zip（精简 512）或另做的「原图」包：560 张 Procreate IPA 内置 Shape（5.3.8 基线 + 5.4.15 Procreate_Library）。
      桌面版启动时去程序目录找这个 zip（主进程读文件 → IPC 传字节），找不到就等用户手动选。
      内存策略见 loadShapeLibrary：只留原始字节，core 用到才解码。 */
   let bundledLoading = null;
-  /* 桌面版用户主动点过「删除图库」：记住这个选择，别下次启动又背地里下 32MB */
+  /* 桌面版用户主动点过「删除图库」：记住这个选择，别下次启动又背地里下 63MB */
   function shapeLibUserCleared() {
     try { return localStorage.getItem('shapeLibUserCleared') === '1'; } catch (e) { return false; }
   }
@@ -3442,7 +3442,7 @@ const UPDATE_ENABLED = false;
       } else if (/\.(png|jpe?g)$/i.test(base)) {
         map.set(base, e.data());
       }
-      // 一口气解完 292 张会把界面钉住：每 8 张让出一帧（安卓低端机尤其明显）
+      // 一口气解完 560 张会把界面钉住：每 8 张让出一帧（安卓低端机尤其明显）
       if ((i & 7) === 7) {
         if (onProgress) onProgress(i + 1, entries.length);
         await sleep(0);
@@ -3491,7 +3491,7 @@ const UPDATE_ENABLED = false;
       } catch (e) { /* 程序目录没有图库包：下面走联网下载 */ }
       // 用户点过「删除已下载的图库」：下次启动别再偷偷下 32MB，等他主动点下载/导入
       if (shapeLibUserCleared()) {
-        throw new Error('图库已删除：要用时点「下载图库包（32MB）」重新安装，或手动选图库文件');
+        throw new Error('图库已删除：要用时点「下载图库包（63MB）」重新安装，或手动选图库文件');
       }
     }
     if (typeof fetch === 'function') {
@@ -3529,7 +3529,7 @@ const UPDATE_ENABLED = false;
           if (shapeDlTick === downloadTick) shapeDlProgressStop();
           progressButton.textContent = '正在导入图库…';
         }
-        // 解包里 292 张图是安卓导入卡顿的大头：分片让出主线程，顺便把张数报在按钮上
+        // 解包里 560 张图是安卓导入卡顿的大头：分片让出主线程，顺便把张数报在按钮上
         const parsed = await shapeLibFromZipBytes(got.bytes, function (done, all) {
           if (progressButton && all) progressButton.textContent = '正在导入图库 ' + done + '/' + all + '…';
         });
@@ -3663,7 +3663,7 @@ const UPDATE_ENABLED = false;
     const undecodedNames = [];
     let converted = 0;
     let inputBytes = 0;
-    /* 关键：不要整包解成 RGBA 常驻（292 张原图 = 1GB+ 会直接崩）。
+    /* 关键：不要整包解成 RGBA 常驻（560 张原图 = 2GB+ 会直接崩）。
        PNG 与 baseline JPEG 只存原始字节，core 用到时才同步解码；
        只有 progressive JPEG 必须在这解一次，解完烘成灰度 PNG 存起来（同样不常驻 RGBA）。 */
     let hsjScriptBytes = null;
@@ -3930,7 +3930,7 @@ const UPDATE_ENABLED = false;
       zipName: 'Procreate内置笔尖图库_精简512.zip',
       label: '图库包 · 精简512（自动下载）',
       doneText: '图库包已下载并导入',
-      totalMB: 32,
+      totalMB: 63,
     },
     full: {
       key: 'full',
