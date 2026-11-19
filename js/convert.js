@@ -2806,7 +2806,7 @@
     }
     const hasNamed = groups.some(function (g) { return !!g.name; });
     const pat = selectAbrPatterns(brushList, opts);
-    const bytes = abr.writeAbrV6(items, { groups: hasNamed ? groups : null, patternBlock: pat.block, patternRecords: pat.records });
+    const bytes = abr.writeAbrV6(items, { groups: hasNamed ? groups : null, patternBlock: pat.block, patternRecords: pat.records, allowSubOneSpacing: !!opts.allowSubOneSpacing });
     if (pat.warning && !opts._patternWarned) { opts._patternWarned = true; console.warn(pat.warning); }
     return { bytes: bytes, count: items.length, meta: items, patternWarning: pat.warning || null, patternBytes: pat.bytes || 0 };
   }
@@ -2823,9 +2823,25 @@
     return abrPackFinalize(items, brushList, opts);
   }
 
-  /* 【第285轮】可取消的 ABR 整包：逐支 await 一次，UI 才有机会重绘/响应取消。
-     容器只写一次（writeAbrV6 是单次调用），所以取消点落在「每支笔刷之间」；
-     与同步版共用 abrPackPassthrough / abrPackItem / abrPackFinalize，输出字节完全一致。 */
+  async function abrPackFinalizeAsync(items, brushList, opts, hooks) {
+    const groups = [];
+    let cur = null;
+    for (const b of brushList) {
+      const g = b.group || '';
+      if (!cur || cur.name !== g) { cur = { name: g, count: 0 }; groups.push(cur); }
+      cur.count++;
+    }
+    const hasNamed = groups.some(function (g) { return !!g.name; });
+    const pat = selectAbrPatterns(brushList, opts);
+    const bytes = await abr.writeAbrV6Async(items,
+      { groups: hasNamed ? groups : null, patternBlock: pat.block, patternRecords: pat.records, allowSubOneSpacing: !!opts.allowSubOneSpacing },
+      { shouldAbort: hooks && hooks.shouldAbort, yieldTick: yieldTick });
+    if (pat.warning && !opts._patternWarned) { opts._patternWarned = true; console.warn(pat.warning); }
+    return { bytes: bytes, count: items.length, meta: items, patternWarning: pat.warning || null, patternBytes: pat.bytes || 0 };
+  }
+
+  /* 【第285轮 / 第304轮】可取消的 ABR 整包：逐支 await 且写容器阶段也走 writeAbrV6Async
+     （在 samp 编码、desc 编码与最终合包各阶段定期让出线程并检查 shouldAbort），输出与同步版逐字节一致。 */
   async function makeAbrPackAsync(brushList, opts, hooks) {
     opts = opts || {};
     hooks = hooks || {};
@@ -2848,7 +2864,7 @@
       items.push(abrPackItem(brushList[i], i, names, opts));
       if (hooks.onBrush) hooks.onBrush(i, total, names[i]);
     }
-    return abrPackFinalize(items, brushList, opts);
+    return await abrPackFinalizeAsync(items, brushList, opts, hooks);
   }
 
   /** Supported import route documented by Udonman/CELSYS: ABR, not renamed SUT. */
@@ -2864,7 +2880,8 @@
 
   /** Supported import route documented by Udonman/CELSYS: ABR, not renamed SUT. */
   function makeUdongmanPack(brushList, opts) {
-    const made = makeAbrPack(brushList, opts || {});
+    opts = opts || {};
+    const made = makeAbrPack(brushList, Object.assign({ allowSubOneSpacing: opts.allowSubOneSpacing !== false }, opts));
     made.format = 'abr';
     made.target = 'udongman';
     made.importGuide = [
@@ -3357,9 +3374,7 @@
     return attachBruFieldSets(procreateExportTip(b, opts));
   }
 
-  /* 【第285轮】收尾：写 brushset 容器 + 纹理/未知字段告警（原后半段原样搬移） */
-  function brushsetFinalize(list, opts) {
-    const bytes = procreate.writeBrushset(list, opts);
+  function brushsetWarnings(list) {
     /* 【第194轮】纹理丢失必须报出来。画世界 BRU 的 texAssetId 有两种形态：
          ptN（内置素材库能解）→ 现在会写进 Grain.png；
          32 位 UUID（画世界私有材质，库里没有）→ Grain.png 只能留空。
@@ -3379,7 +3394,21 @@
       warnings.push('纹理：' + noTex.length + ' 支笔刷引用的画世界私有材质（32 位 UUID）不在内置素材库中，' +
         'Grain.png 已留空（' + sample + (noTex.length > 3 ? ' 等' : '') + '）——这会让它们在 Procreate 里缺少纹理质感');
     }
-    return { bytes: bytes, count: list.length, warnings: warnings };
+    return warnings;
+  }
+
+  /* 【第285轮】收尾：写 brushset 容器 + 纹理/未知字段告警（原后半段原样搬移） */
+  function brushsetFinalize(list, opts) {
+    const bytes = procreate.writeBrushset(list, opts);
+    return { bytes: bytes, count: list.length, warnings: brushsetWarnings(list) };
+  }
+
+  async function brushsetFinalizeAsync(list, opts, hooks) {
+    const bytes = await procreate.writeBrushsetAsync(list, opts, {
+      shouldAbort: hooks && hooks.shouldAbort,
+      yieldTick: yieldTick
+    });
+    return { bytes: bytes, count: list.length, warnings: brushsetWarnings(list) };
   }
 
   function makeProcreateBrushset(brushList, opts) {
@@ -3396,8 +3425,8 @@
     return brushsetFinalize(list, opts);
   }
 
-  /* 【第285轮】可取消的 brushset 整包：逐支 await 一次，UI 才有机会重绘/响应取消；
-     与同步版共用 brushsetFgBgDyn / brushsetItem / brushsetFinalize，输出字节完全一致。 */
+  /* 【第285轮 / 第304轮】可取消的 brushset 整包：逐支 await 且写容器阶段也走 writeBrushsetAsync
+     + zip.writeAsync（每支 writeBrush 与 ZIP 条目压缩均可中断），输出与同步版逐字节一致。 */
   async function makeProcreateBrushsetAsync(brushList, opts, hooks) {
     opts = opts || {};
     hooks = hooks || {};
@@ -3415,7 +3444,7 @@
       list.push(brushsetItem(brushList[i], i, names, opts, fgBgDynOpt));
       if (hooks.onBrush) hooks.onBrush(i, total, names[i]);
     }
-    return brushsetFinalize(list, opts);
+    return await brushsetFinalizeAsync(list, opts, hooks);
   }
 
   function bytesToB64(bytes) {
@@ -4877,6 +4906,34 @@ Write-Host 'restart MediBang Paint Pro'
     return msgs;
   }
 
+  /* 【第302轮（作者：Claude）R302-04】Procreate「Apple Pencil → 压力」自定义曲线的报告口径。
+     brushset/brush：原样或写回；Krita / MyPaint：尺寸、不透明度两条按曲线形状近似；其它目标与其余曲线：丢失。 */
+  const PRESSURE_CURVE_LABELS = {
+    dynamicsPressureSizeCurve: '尺寸', dynamicsPressureOpacityCurve: '不透明度', dynamicsPressureHueCurve: '色相',
+    dynamicsPressureSaturationCurve: '饱和度', dynamicsPressureBrightnessCurve: '亮度', dynamicsPressureSecondaryColorCurve: '副色',
+    dynamicsPressureBleedCurve: '渗色', dynamicsPressureShapeRoundnessCurve: '圆度', dynamicsPressureTransferModulationCurve: '流量调制',
+    dynamicsPressurePlotJitterCurve: '散布', dynamicsPressurePlotJitterLongitudinalCurve: '纵向散布', dynamicsPressurePlotSpacingJitter: '间距抖动',
+    dynamicsPressureStampCountCurve: '数量', dynamicsPressureStampCountJitterCurve: '数量抖动', dynamicsPressureShapeScatterCurve: '旋转散布',
+    dynamicsPressureSizeJitterCurve: '尺寸抖动', dynamicsPressureOpacityJitterCurve: '不透明度抖动', dynamicsPressureHueJitterCurve: '色相抖动',
+    dynamicsPressureShapeRoundessVerticalJitterCurve: '圆度纵向抖动', dynamicsPressureGrainDepthCurve: '纹理深度',
+    dynamicsPressureGrainDepthJitterCurve: '纹理深度抖动', dynamicsPressureGrainMovementCurve: '纹理移动', dynamicsPressureGrainScaleCurve: '纹理缩放',
+    dynamicsPressureGrainZoomCurve: '纹理缩放(zoom)', dynamicsPressureSmudgePullCurve: '涂抹拉力', dynamicsPressureWetPullCurve: '湿混拉力',
+    dynamicsPressureCharge: '湿混载色', dynamicsPressureDilutionCurve: '湿混稀释', dynamicsPressureAttackCurve: '湿混起笔',
+    dynamicsPressureGradeCurve: '湿混层次', dynamicsPressureBlurCurve: '湿混模糊'
+  };
+  function pressureCurveReport(b, target) {
+    const curves = b && b.procreatePressureCurves;
+    if (!curves || typeof curves !== 'object') return [];
+    return Object.keys(curves).sort().map(function (key) {
+      const label = '压感曲线·' + (PRESSURE_CURVE_LABELS[key] || key);
+      const sizeOrOpacity = key === 'dynamicsPressureSizeCurve' || key === 'dynamicsPressureOpacityCurve';
+      if (target === 'brushset' || target === 'brush') return { kept: true, text: label + '：原生结构' };
+      if (sizeOrOpacity && target === 'kbundle') return { kept: false, text: label + '：近似（Krita 传感器曲线，只换形状）' };
+      if (sizeOrOpacity && target === 'myb') return { kept: false, text: label + '：近似（MyPaint 压力输入折线）' };
+      return { kept: false, text: label + '：丢失（目标格式没有对应曲线）' };
+    });
+  }
+
   function brushLossReport(brushList, targets, opts) {
     const NL = String.fromCharCode(10);
     if (!Array.isArray(targets)) targets = [targets]; // 防呆：传字符串时按字符迭代会生成逐字符假报告
@@ -4978,6 +5035,10 @@ Write-Host 'restart MediBang Paint Pro'
           else if (/^(原样|原生|参数映射)/.test(status)) { has.push(entry); keptTotal++; }
           else { lost.push(entry); lostTotal++; }
         }
+        /* 【第302轮（作者：Claude）R302-04】Procreate 自定义压感曲线：以前不读，这里逐条说清去向 */
+        pressureCurveReport(b, target).forEach(function (e) {
+          if (e.kept) { has.push(e.text); keptTotal++; } else { lost.push(e.text); lostTotal++; }
+        });
         lines.push('  ' + (i + 1) + '. ' + (b.name || '未命名'));
         /* 【第190轮】内置纹理库补位要在参数报告里明说：只有 textureGray 带
            builtinTexture 时才加这一行；源文件自带像素（_patternPixels / grain 等）
@@ -5144,15 +5205,27 @@ Write-Host 'restart MediBang Paint Pro'
     if (brush._rawGobrush && brush._rawGobrush.length && rawBrushUnchanged(brush, opts) && opts.noTextureBake !== true) {
       return { bytes: new Uint8Array(brush._rawGobrush), fileName:fileName, uuid:brush.gopaintUuid, count: 1, passthrough: true };
     }
-    /* 【第269轮】改过参数的原生 .gobrush 会走重建：容器里那 330KB 原生块（资源记录里的
-       高分辨率 shape/grain 与 brush_<uuid>.info 的原始载荷）不进重建流程，输出只剩
-       我们合成的几十 KB；UUID 也会换新（App 里等于多出一支新笔刷）。
-       这不是「猜」出来的——`_probe/fmt-audit.js` 的 patch 路径（真实样本
-       `楷书_202610192140_29210.gobrush`，只把尺寸乘 1.15）量到：
-       brush_<uuid>.info 352794B → 19711B、shape 703B → 206B、
-       propertiesMinSize.max 306 → 1600、uuid 变。
-       现状没法在原文件上原位改写（`.info` 里的参数/属性块重建逻辑仍走模板），
-       所以至少要**明说**，不能让用户以为只是「改了个尺寸」。 */
+    /* 【第303轮】改过参数的原生 .gobrush 优先原位改写：未改笔尖/纹理图且未 forceRebuild 时，
+       直接原位改写主 brush_<uuid>.info 里的 0xb0 参数块与 0xc0 属性块，逐字节保住 0xd0
+       高分辨率资源载荷、副笔刷 .info、滑块上下限元数据（0x15）与原 UUID，不再整份重建。 */
+    const canPatchNative = !!(
+      brush._rawGobrush && brush._rawGobrush.length &&
+      !opts.forceRebuild && opts.fidelity !== false &&
+      opts.noTextureBake !== true && opts.grainMode !== 'tip' &&
+      !brush.flipX && !brush.flipY && !brush.textureInverted &&
+      !(brush.angle && Math.abs(brush.angle % 360) > 0.001) &&
+      !(brush.roundness !== undefined && brush.roundness < 99.5) &&
+      (!brush._rawTipState || brush._rawTipState === util.brushFingerprint({ tip: brush.tip })) &&
+      (!brush._rawGrainState || brush._rawGrainState === util.brushFingerprint({ grain: brush.grain }))
+    );
+    if (canPatchNative) {
+      const patched = gobrushWrite.makeGobrush(brush, Object.assign({}, opts, { _patchNative: true }));
+      if (patched && patched.nativePatched) {
+        return { bytes: patched.bytes, fileName: fileName, uuid: patched.uuid, count: 1, nativePatched: true };
+      }
+    }
+    /* 仅当确实无法原位改写而走整份重建（如 forceRebuild、改动了笔尖/纹理/翻转/旋转，
+       或原 .info 结构异常）时，才发出整份重建告警。 */
     const rebuildingNative = !!(brush._rawGobrush && brush._rawGobrush.length);
     const nativeWarnings = rebuildingNative ? ['天生会画：改过参数的原生 .gobrush 会整份重建——' +
       '容器内原始资源（brush_*.info 原始载荷、高分辨率 shape/grain）不保留，' +
@@ -5185,18 +5258,23 @@ Write-Host 'restart MediBang Paint Pro'
         brushList.every(function (b, i) { return b._rawGoGroup === rawGroup && b._rawGoIndex === i && rawBrushUnchanged(b, opts); })) {
       return { bytes: new Uint8Array(rawGroup.bytes), fileName:fileName, count: brushList.length, passthrough: true };
     }
-    const made = gobrushWrite.makeGobrushes(brushList, Object.assign({}, opts, {groupName:groupName}),
-      function (b) { return makeGoPaintBrush(b, opts); });
-    const out = { bytes: made.bytes, fileName:fileName, count: made.count };
-    /* 组内只要有一支是「改过的原生笔刷」，整包就带着同一句告警上去（别只埋在单支里） */
-    const childWarnings = [];
-    for (const b of (brushList || [])) {
-      if (b && b._rawGobrush && b._rawGobrush.length && !rawBrushUnchanged(b, opts)) {
-        childWarnings.push('天生会画：整包里有改过的原生笔刷，重建会丢掉它们各自的 brush_*.info 原始载荷与高分辨率 shape/grain，UUID 也会换新');
-        break;
+    let rebuiltNative = false;
+    const made = gobrushWrite.makeGobrushes(brushList, Object.assign({}, opts, {
+      groupName: groupName,
+      _rawGroupBytes: (rawGroup && groupName === rawGroup.name) ? rawGroup.bytes : undefined,
+      _rawGroupName: rawGroup ? rawGroup.name : undefined
+    }), function (b) {
+      const r = makeGoPaintBrush(b, opts);
+      if (b && b._rawGobrush && b._rawGobrush.length && !r.passthrough && !r.nativePatched) {
+        rebuiltNative = true;
       }
+      return r;
+    });
+    const out = { bytes: made.bytes, fileName:fileName, count: made.count };
+    /* 组内只有存在「无法原位改写而走整份重建的原生笔刷」时才带告警 */
+    if (rebuiltNative) {
+      out.warnings = ['天生会画：整包里有改过的原生笔刷，重建会丢掉它们各自的 brush_*.info 原始载荷与高分辨率 shape/grain，UUID 也会换新'];
     }
-    if (childWarnings.length) out.warnings = childWarnings;
     return out;
   }
 
@@ -5204,12 +5282,21 @@ Write-Host 'restart MediBang Paint Pro'
   function makeGoPaintSet(brushList, opts) {
     const files = [];
     const names = uniqueNames(brushList);
+    const warnings = [];
+    const seenWarn = new Set();
     for (let i = 0; i < brushList.length; i++) {
       const b = brushList[i];
       const made = makeGoPaintBrush(b, opts);
       files.push({ name: names[i] + '.gobrush', data: made.bytes });
+      if (made.warnings && made.warnings.length) {
+        for (const w of made.warnings) {
+          if (!seenWarn.has(w)) { seenWarn.add(w); warnings.push(w); }
+        }
+      }
     }
-    return { files: files, count: files.length };
+    const out = { files: files, count: files.length };
+    if (warnings.length) out.warnings = warnings;
+    return out;
   }
 
   function uniqueNames(brushes) {

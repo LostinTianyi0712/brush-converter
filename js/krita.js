@@ -624,10 +624,10 @@
       ['PressureSize', 'string', cdata(pressureSize ? 'true' : 'false')],
       ['PressureOpacity', 'string', cdata(pressureOpacity ? 'true' : 'false')],
       ['PressureSpacing', 'string', cdata('false')],
-      ['SizeSensor', 'string', curve],
+      ['SizeSensor', 'string', sensorCurveCdata(brush, 'dynamicsPressureSizeCurve', curve)],
       ['SizeUseCurve', 'string', cdata('true')],
       ['SizeValue', 'string', cdata(pressureSize ? num(Math.max(0.01, Math.min(1, brush.minSizeRatio === undefined ? 0.2 : brush.minSizeRatio)), 0.2) : '1')],
-      ['OpacitySensor', 'string', curve],
+      ['OpacitySensor', 'string', sensorCurveCdata(brush, 'dynamicsPressureOpacityCurve', curve)],
       ['OpacityUseCurve', 'string', cdata('true')],
       ['requiredBrushFile', 'string', cdata('')],
       ['requiredBrushFilesList', 'string', cdata('')]
@@ -663,6 +663,25 @@
     return { w: w, h: h, data: gray };
   }
 
+  /* 【第302轮（作者：Claude）R302-04】Procreate「压力 → 尺寸 / 不透明度」自定义曲线 → Krita 传感器曲线。
+     Procreate 曲线点按原生顺序存（两端点在前），Krita 要求按 x 升序的 "x,y;x,y;"。
+     只换曲线形状；最小尺寸仍由 SizeValue 承担（与改动前一致），所以是近似映射。没有 Procreate 曲线时返回 null，调用方保持直线。 */
+  function procreateSensorCurveInner(brush, nativeKey) {
+    const all = brush && brush.procreatePressureCurves;
+    const pts = all && all[nativeKey];
+    if (!Array.isArray(pts) || pts.length < 2) return null;
+    const ok = pts.filter(function (p) { return Array.isArray(p) && isFinite(p[0]) && isFinite(p[1]); })
+      .map(function (p) { return [Math.max(0, Math.min(1, p[0])), Math.max(0, Math.min(1, p[1]))]; })
+      .sort(function (a, b) { return a[0] - b[0]; });
+    if (ok.length < 2) return null;
+    const fmt = function (v) { return String(Math.round(v * 1e6) / 1e6); };
+    return '<!DOCTYPE params> <params id="pressure"> <curve>' + ok.map(function (p) { return fmt(p[0]) + ',' + fmt(p[1]) + ';'; }).join('') + '</curve> </params> ';
+  }
+  function sensorCurveCdata(brush, nativeKey, fallback) {
+    const inner = procreateSensorCurveInner(brush, nativeKey);
+    return inner ? '<![CDATA[' + inner + ']]>' : fallback;
+  }
+
   /* Preset XML using a procedural circle/ellipse mask (no external resource). */
   function circlePresetXml(brush) {
     const diameter = Math.max(1, Math.min(4000, brush.sizePx || 40));
@@ -694,10 +713,10 @@
       ['PressureSize', 'string', cdata(pressureSize ? 'true' : 'false')],
       ['PressureOpacity', 'string', cdata(pressureOpacity ? 'true' : 'false')],
       ['PressureSpacing', 'string', cdata('false')],
-      ['SizeSensor', 'string', curve],
+      ['SizeSensor', 'string', sensorCurveCdata(brush, 'dynamicsPressureSizeCurve', curve)],
       ['SizeUseCurve', 'string', cdata('true')],
       ['SizeValue', 'string', cdata((pressureSize ? Math.max(0.01, Math.min(1, brush.minSizeRatio === undefined ? 0.2 : brush.minSizeRatio)) : 1).toFixed(3))],
-      ['OpacitySensor', 'string', curve],
+      ['OpacitySensor', 'string', sensorCurveCdata(brush, 'dynamicsPressureOpacityCurve', curve)],
       ['OpacityUseCurve', 'string', cdata('true')],
       ['requiredBrushFile', 'string', cdata('')],
       ['requiredBrushFilesList', 'string', cdata('')]
@@ -732,10 +751,10 @@
       ['PressureSize', 'string', cdata(pressureSize ? 'true' : 'false')],
       ['PressureOpacity', 'string', cdata(pressureOpacity ? 'true' : 'false')],
       ['PressureSpacing', 'string', cdata('false')],
-      ['SizeSensor', 'string', curve],
+      ['SizeSensor', 'string', sensorCurveCdata(brush, 'dynamicsPressureSizeCurve', curve)],
       ['SizeUseCurve', 'string', cdata('true')],
       ['SizeValue', 'string', cdata(pressureSize ? '0.200' : '1')],
-      ['OpacitySensor', 'string', curve],
+      ['OpacitySensor', 'string', sensorCurveCdata(brush, 'dynamicsPressureOpacityCurve', curve)],
       ['OpacityUseCurve', 'string', cdata('true')],
       ['requiredBrushFile', 'string', cdata(gbrName)],
       ['requiredBrushFilesList', 'string', cdata(gbrName)]
@@ -835,6 +854,11 @@
     xml = setParam(xml,'SizeValue',(pressureSize ? Math.max(0.01, Math.min(1, brush.minSizeRatio === undefined ? 0.2 : brush.minSizeRatio)) : 1).toFixed(3));
     xml = setParam(xml,'PressureOpacity',String(pressureOpacity));
     xml = setParam(xml,'OpacityUseCurve',String(pressureOpacity));
+    /* 【第302轮（作者：Claude）R302-04】模板自带的 SizeSensor 曲线（0,0.49;1,1）换成源 Procreate 曲线 */
+    const sizeCurve = pressureSize ? procreateSensorCurveInner(brush, 'dynamicsPressureSizeCurve') : null;
+    if (sizeCurve) xml = setParam(xml, 'SizeSensor', sizeCurve);
+    const opacityCurve = pressureOpacity ? procreateSensorCurveInner(brush, 'dynamicsPressureOpacityCurve') : null;
+    if (opacityCurve) xml = setParam(xml, 'OpacitySensor', opacityCurve);
     xml = setParam(xml,'ColorRateValue',Math.max(0, Math.min(1, brush.smudgeOn ? (brush.smudgeAmount === undefined ? 0.3 : brush.smudgeAmount) : 0)).toFixed(3));
     if (brush.scatterOn) {
       xml = setParam(xml, 'ScatterValue', Math.max(0, Math.min(10, (brush.scatterPct || 0) / 100)).toFixed(3));

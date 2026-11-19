@@ -173,7 +173,7 @@
           else if (t2 === 0x14) group = textAt(body, at, to);
           else if (t2 === 0x15 && l2 === 4) max = le32(body, at) | 0;
           else if (t2 === 0x16 && l2 === 4) min = le32(body, at) | 0;
-          else if (t2 === 0x18 && l2 === 4) value = le32(body, at);
+          else if (t2 === 0x18 && l2 === 4) value = le32(body, at) | 0;
           else if (t2 === 0x20 && l2 > 1) curve = textAt(body, at, to);
           q = to;
         }
@@ -448,6 +448,9 @@
       'smudgeOn', 'smudgeAmount', 'smudgeSize', 'smudgeOpacity',
       'wetEdgesOn', 'wetEdgesAmount', 'burntEdgesAmount', 'smoothingStrength'
     ].forEach(function (k) { brush.gopaintPropBase[k] = brush[k]; });
+    // 第303轮：记录原始笔尖/纹理指纹，供写侧判断参数改动时是否可原位改写 .info（保住 0xd0 原生资源与 UUID）
+    brush._rawTipState = util.brushFingerprint({ tip: brush.tip });
+    brush._rawGrainState = util.brushFingerprint({ grain: brush.grain });
     return { brush: brush, snapshot: snapshot, warnings: warnings };
   }
 

@@ -120,52 +120,46 @@
     return { date, time };
   }
 
-  /* Write zip: files: [{name, data: Uint8Array}] */
-  function write(files) {
-    const chunks = [];
-    const central = [];
-    let offset = 0;
-    const now = dosDateTime(new Date());
-    for (const f of files) {
-      const nameBytes = util.utf8Encode(f.name);
-      const crc = util.crc32(f.data);
-      const comp = zlib.deflateRaw(f.data, 9);
-      const useDeflate = comp.length < f.data.length;
-      const data = useDeflate ? comp : f.data;
-      const method = useDeflate ? 8 : 0;
-      const local = new Uint8Array(30 + nameBytes.length);
-      const dv = new DataView(local.buffer);
-      dv.setUint32(0, 0x04034b50, true);
-      dv.setUint16(4, 20, true);
-      dv.setUint16(6, 0x0800, true); // utf8
-      dv.setUint16(8, method, true);
-      dv.setUint16(10, now.time, true);
-      dv.setUint16(12, now.date, true);
-      dv.setUint32(14, crc, true);
-      dv.setUint32(18, data.length, true);
-      dv.setUint32(22, f.data.length, true);
-      dv.setUint16(26, nameBytes.length, true);
-      dv.setUint16(28, 0, true);
-      local.set(nameBytes, 30);
-      chunks.push(local, data);
-      const cen = new Uint8Array(46 + nameBytes.length);
-      const cv = new DataView(cen.buffer);
-      cv.setUint32(0, 0x02014b50, true);
-      cv.setUint16(4, 20, true);
-      cv.setUint16(6, 20, true);
-      cv.setUint16(8, 0x0800, true);
-      cv.setUint16(10, method, true);
-      cv.setUint16(12, now.time, true);
-      cv.setUint16(14, now.date, true);
-      cv.setUint32(16, crc, true);
-      cv.setUint32(20, data.length, true);
-      cv.setUint32(24, f.data.length, true);
-      cv.setUint16(28, nameBytes.length, true);
-      cv.setUint32(42, offset, true);
-      cen.set(nameBytes, 46);
-      central.push(cen);
-      offset += local.length + data.length;
-    }
+  function makeZipEntry(f, now, offset) {
+    const nameBytes = util.utf8Encode(f.name);
+    const crc = util.crc32(f.data);
+    const comp = zlib.deflateRaw(f.data, 9);
+    const useDeflate = comp.length < f.data.length;
+    const data = useDeflate ? comp : f.data;
+    const method = useDeflate ? 8 : 0;
+    const local = new Uint8Array(30 + nameBytes.length);
+    const dv = new DataView(local.buffer);
+    dv.setUint32(0, 0x04034b50, true);
+    dv.setUint16(4, 20, true);
+    dv.setUint16(6, 0x0800, true); // utf8
+    dv.setUint16(8, method, true);
+    dv.setUint16(10, now.time, true);
+    dv.setUint16(12, now.date, true);
+    dv.setUint32(14, crc, true);
+    dv.setUint32(18, data.length, true);
+    dv.setUint32(22, f.data.length, true);
+    dv.setUint16(26, nameBytes.length, true);
+    dv.setUint16(28, 0, true);
+    local.set(nameBytes, 30);
+    const cen = new Uint8Array(46 + nameBytes.length);
+    const cv = new DataView(cen.buffer);
+    cv.setUint32(0, 0x02014b50, true);
+    cv.setUint16(4, 20, true);
+    cv.setUint16(6, 20, true);
+    cv.setUint16(8, 0x0800, true);
+    cv.setUint16(10, method, true);
+    cv.setUint16(12, now.time, true);
+    cv.setUint16(14, now.date, true);
+    cv.setUint32(16, crc, true);
+    cv.setUint32(20, data.length, true);
+    cv.setUint32(24, f.data.length, true);
+    cv.setUint16(28, nameBytes.length, true);
+    cv.setUint32(42, offset, true);
+    cen.set(nameBytes, 46);
+    return { local, data, cen, size: local.length + data.length };
+  }
+
+  function finalizeZip(chunks, central, offset) {
     const cdStart = offset;
     let cdSize = 0;
     for (const c of central) { chunks.push(c); cdSize += c.length; }
@@ -178,6 +172,58 @@
     ev.setUint32(16, cdStart, true);
     chunks.push(eocd);
     return util.concat(chunks);
+  }
+
+  /* Write zip: files: [{name, data: Uint8Array}] */
+  function write(files) {
+    const chunks = [];
+    const central = [];
+    let offset = 0;
+    const now = dosDateTime(new Date());
+    for (const f of files) {
+      const e = makeZipEntry(f, now, offset);
+      chunks.push(e.local, e.data);
+      central.push(e.cen);
+      offset += e.size;
+    }
+    return finalizeZip(chunks, central, offset);
+  }
+
+  /* 【第304轮】可取消的异步 ZIP 写出：与 write(files) 共用 makeZipEntry/finalizeZip，
+     逐字节输出完全一致；每若干条目或大条目让出主线程并检查 shouldAbort，避免大包写容器卡死取消按钮。 */
+  async function writeAsync(files, hooks) {
+    hooks = hooks || {};
+    const tick = hooks.yieldTick || function () { return new Promise(function (r) { setTimeout(r, 0); }); };
+    const chunks = [];
+    const central = [];
+    let offset = 0;
+    const now = dosDateTime(new Date());
+    for (let i = 0; i < files.length; i++) {
+      if (hooks.shouldAbort && hooks.shouldAbort()) {
+        const err = new Error('已取消');
+        err.code = 'ABORTED';
+        throw err;
+      }
+      const f = files[i];
+      if (i > 0 && ((i & 3) === 0 || (f.data && f.data.length > 32768))) {
+        await tick();
+        if (hooks.shouldAbort && hooks.shouldAbort()) {
+          const err = new Error('已取消');
+          err.code = 'ABORTED';
+          throw err;
+        }
+      }
+      const e = makeZipEntry(f, now, offset);
+      chunks.push(e.local, e.data);
+      central.push(e.cen);
+      offset += e.size;
+    }
+    if (hooks.shouldAbort && hooks.shouldAbort()) {
+      const err = new Error('已取消');
+      err.code = 'ABORTED';
+      throw err;
+    }
+    return finalizeZip(chunks, central, offset);
   }
 
   /* Write a zip the way 天生会画/GoPaint writes .gobrush archives:
@@ -249,7 +295,7 @@
     return util.concat(chunks);
   }
 
-  const api = { isZip, read, write, writeGopaint };
+  const api = { isZip, read, write, writeAsync, writeGopaint };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { zip: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

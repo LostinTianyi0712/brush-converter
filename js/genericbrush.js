@@ -27,7 +27,7 @@
       name: name,
       tip: null,
       sizePx: clamp(sizePx || 40, 1, 4000),
-      spacingPct: clamp(spacingPct || 25, 1, 1000),
+      spacingPct: clamp((spacingPct === undefined || !isFinite(spacingPct)) ? 25 : spacingPct, 1, 1000),
       opacity: clamp(opacity === undefined ? 1 : opacity, 0, 1),
       hardness: clamp(hardness === undefined ? 0.8 : hardness, 0, 1),
       angle: 0,
@@ -208,7 +208,8 @@
   function writePainter(brushes, categoryName) {
     const parts = ['<?xml version="1.0"?>', '<brushcategory name="' + esc(categoryName || 'BrushConv') + '" version="1">'];
     for (const b of brushes) {
-      parts.push('  <brush name="' + esc(b.name) + '" size="' + Math.round(b.sizePx || 40) + '" spacing="' + Math.round(b.spacingPct || 25)
+      const sp = b.spacingPct === undefined ? 25 : b.spacingPct;
+      parts.push('  <brush name="' + esc(b.name) + '" size="' + Math.round(b.sizePx || 40) + '" spacing="' + Math.round(sp)
         + '" opacity="' + Math.round((b.opacity === undefined ? 1 : b.opacity) * 100) + '" hardness="' + Math.round((b.hardness === undefined ? 0.8 : b.hardness) * 100) + '"/>');
     }
     parts.push('</brushcategory>');
@@ -219,7 +220,7 @@
     const z = isNode ? require('./zip.js') : root.BC.zip;
     const files = [];
     const json = { name: packName || 'BrushConv', type: 'brushconv.medibang', brushes: brushes.map(function (b) {
-      return { name: b.name, size: Math.round(b.sizePx || 40), spacing: Math.round(b.spacingPct || 25),
+      return { name: b.name, size: Math.round(b.sizePx || 40), spacing: Math.round(b.spacingPct === undefined ? 25 : b.spacingPct),
         opacity: b.opacity === undefined ? 1 : b.opacity, hardness: b.hardness === undefined ? 0.8 : b.hardness };
     }) };
     files.push({ name: 'brushes/setting.json', data: util.utf8Encode(JSON.stringify(json, null, 2)) });
@@ -254,7 +255,7 @@
       format: 'brushconv.ipcfg',
       name: brush.name || 'brush',
       size: Math.round(brush.sizePx || 40),
-      spacing: Math.round(brush.spacingPct || 25),
+      spacing: Math.round(brush.spacingPct === undefined ? 25 : brush.spacingPct),
       opacity: brush.opacity === undefined ? 1 : Number(brush.opacity.toFixed(3)),
       hardness: brush.hardness === undefined ? 0.8 : Number(brush.hardness.toFixed(3)),
       roundness: brush.roundness === undefined ? 100 : Math.round(brush.roundness),

@@ -204,9 +204,14 @@
      判定不需要新增字段：库是否非空、有没有引用、tip/shapeFromLibrary 是否已补上，提示点全都拿得到。 */
   /* 【第300轮】Procreate_Library/ 前缀的引用来自 Procreate 5.4 及以上的内置库。
      单看「库里没有」还不足以解释「为什么我的内置图库也没有」——本工具这份图库是从 5.3.8 提的，
-     5.3.8 的 622 个资源里既没有 Procreate_Library 这个前缀，也没有 Pelion 这批新笔刷。 */
-  const NEWER_LIB_HINT = '注意：Procreate_Library/ 前缀是 Procreate 5.4 及以上的内置资源命名——' +
-    '本工具内置图库取自 5.3.8（该版本无此前缀、也无 Pelion 这批新笔刷），所以「再下载一次图库」同样补不上。';
+     5.3.8 的 622 个资源里既没有 Procreate_Library 这个前缀，也没有 Pelion 这批新笔刷。
+     【第302轮（作者：Claude）R302-02】第301轮后精简图库已并入 5.4.15 的 Procreate_Library，
+     「图库取自 5.3.8、再下载也补不上」对精简图库不再成立。还会缺图的只剩两种：挂的是原图图库包
+     （仍只有 5.3.8 资源），或笔刷来自比 5.4.15 更新的 Procreate。 */
+  const NEWER_LIB_HINT = '注意：Procreate_Library/ 前缀是 Procreate 5.4 及以上的内置资源命名。' +
+    '精简内置图库已收录 Procreate 5.4.15 的这组图，仍然缺图通常是两种情况：' +
+    '① 挂的是「原图图库包」（目前只有 5.3.8 的资源）——改用精简图库即可补上；' +
+    '② 笔刷来自比 5.4.15 更新的 Procreate，新增的内置图图库里还没有。';
 
   function missingShapeWarning(brush, withName, shapeResources) {
     const p = brush && brush.bundledShapePath;
@@ -524,6 +529,8 @@
       jitterSecondary: nv('jitterSecondary'),
       jitterStrokeSecondary: nv('jitterStrokeSecondary'),
       blendMode: params.blendMode,
+      _procreateBlendExt: readBlendExt(params),
+      procreatePressureCurves: readPressureCurves(params),
       _params: params,
       _bruPressure: readBruPressure(params),
       _nativeDualFromBru: params.brushConvNativeDual === '1',
@@ -917,7 +924,7 @@
     const sc = stampMax / Math.max(tipW, tipH);
     const sw = Math.max(1, Math.round(tipW * sc)), sh = Math.max(1, Math.round(tipH * sc));
     const stamp = png.resize(tip.rgba, tipW, tipH, sw, sh);
-    const spacing = Math.max(0.05, Math.min(1, (opts.spacingPct || 10) / 100));
+    const spacing = Math.max(0.05, Math.min(1, (opts.spacingPct === undefined ? 10 : opts.spacingPct) / 100));
     const step = Math.max(1.5, sw * spacing);
     const alpha = Math.max(0, Math.min(1, opts.opacity === undefined ? 1 : opts.opacity));
     for (let x = 8; x < W - 8; x += step) {
@@ -1087,6 +1094,70 @@
   const PROCREATE_TEXTURE_SCALE_MAX = 4;
   const PROCREATE_EPOCH = 978307200; // 2001-01-01T00:00:00Z（NSDate 纪元）
 
+  /* 【第302轮（作者：Claude）R302-01】混合模式成对字段。
+     version 4 档案（Procreate 5.4.15 内置 394 支 + 吹石2026 24 支）每种混合都存两份，且永远相等；
+     唯一例外是新值超出旧枚举（如 34），旧字段写 19 当退路。version 2 老档案（鱼鱼鱼）没有新字段。
+     以前我们只写旧字段，新建档案的新字段留模板默认值、补丁档案的新字段保持源值——原生没有这种组合。
+     「新字段才是生效值」是按文件规律推断的，没上 iPad 实测。 */
+  const BLEND_TWINS = [
+    { tag: 'main', legacy: ['blendMode', 'extendedBlend'], ext: 'extendedBlend2' },
+    { tag: 'grain', legacy: ['grainBlendMode'], ext: 'grainBlendModeExtended' },
+    { tag: 'dual', legacy: ['dualBlendMode'], ext: 'dualBlendModeExtended' },
+    { tag: 'burnt', legacy: ['burntEdgesBlendMode'], ext: 'burntEdgesBlendModeExtended' }
+  ];
+  /** 读端：只记「新值与旧值不同」的那几组（如 19/34），往返时据此把 34 写回去。 */
+  function readBlendExt(params) {
+    let out;
+    BLEND_TWINS.forEach(function (t) {
+      const lv = params[t.legacy[0]], ev = params[t.ext];
+      if (typeof lv === 'number' && typeof ev === 'number' && isFinite(ev) && ev !== lv) {
+        (out = out || {})[t.tag] = { legacy: lv, ext: ev };
+      }
+    });
+    return out;
+  }
+  /** 写端：以旧字段为准补齐同组字段。旧值没被改动（仍等于源旧值）时沿用源新值。
+      has(key) 为假的字段不写（补丁 version 2 档案时用）。 */
+  function syncBlendTwins(target, ext, has) {
+    BLEND_TWINS.forEach(function (t) {
+      const v = target[t.legacy[0]];
+      if (typeof v !== 'number' || !isFinite(v)) return;
+      t.legacy.slice(1).forEach(function (k) { if (!has || has(k)) target[k] = v; });
+      const keep = ext && ext[t.tag];
+      if (!has || has(t.ext)) target[t.ext] = keep && keep.legacy === v ? keep.ext : v;
+    });
+  }
+
+  /* 【第302轮（作者：Claude）R302-04】「Apple Pencil → 压力」各项的自定义曲线（ValkyrieMagnitudinalCurve）。
+     5.4.15 内置 394 支里 119 支带本地样本没见过的 19 个曲线字段（涂抹拉力、载色、稀释、起笔……），
+     以前全部不读：强制重建 brushset 时被模板的直线覆盖，转别的格式时静默丢掉。
+     这里只收「不是 (0,0)-(1,1) 直线」的曲线，键名保持原生字段名（写回时直接用），点按原生顺序保存
+     （原生顺序是两端点在前、中间点在后；用的时候再按 x 排序）。 */
+  const PRESSURE_CURVE_RE = /^dynamicsPressure[A-Za-z]*Curve$|^dynamicsPressureCharge$|^dynamicsPressurePlotSpacingJitter$/;
+  function parseCurvePoint(s) {
+    const m = /^\{\s*(-?[\d.eE+-]+)\s*,\s*(-?[\d.eE+-]+)\s*\}$/.exec(String(s));
+    if (!m) return null;
+    const x = Number(m[1]), y = Number(m[2]);
+    return isFinite(x) && isFinite(y) ? [x, y] : null;
+  }
+  function readPressureCurves(params) {
+    let out;
+    Object.keys(params || {}).forEach(function (key) {
+      if (!PRESSURE_CURVE_RE.test(key)) return;
+      const v = params[key];
+      const raw = v && v.points && Array.isArray(v.points['NS.objects']) ? v.points['NS.objects'] : null;
+      if (!raw || raw.length < 2 || raw.length > 64) return;
+      const pts = raw.map(parseCurvePoint);
+      if (pts.some(function (p) { return !p; })) return;
+      const linear = pts.length === 2 && pts.some(function (p) { return p[0] === 0 && p[1] === 0; }) &&
+        pts.some(function (p) { return p[0] === 1 && p[1] === 1; });
+      if (linear) return;
+      (out = out || {})[key] = pts;
+    });
+    return out;
+  }
+  function curvePointText(p) { return '{' + p[0].toFixed(6) + ', ' + p[1].toFixed(6) + '}'; }
+
   function archiveParams(brush, opts) {
     const D = defaultsApi.defaults();
     const sizeParams = sizeArchiveParams(brush);
@@ -1196,6 +1267,18 @@
       if(fgBgDynOverride > 0 && (key === 'jitterSecondary' || key === 'jitterStrokeSecondary')) return;
       params[nativeFields[key]]=brush[key];
     });
+    // 【第302轮（作者：Claude）R302-01】新字段跟着旧字段走，见 BLEND_TWINS
+    syncBlendTwins(params, brush._procreateBlendExt);
+    // 【第302轮（作者：Claude）R302-04】源里的自定义压感曲线写回（新建档案原本只有模板直线）
+    const curves = brush.procreatePressureCurves;
+    if (curves && typeof curves === 'object') {
+      Object.keys(curves).forEach(function (key) {
+        const pts = curves[key];
+        if (!PRESSURE_CURVE_RE.test(key) || !Array.isArray(pts) || pts.length < 2) return;
+        if (!pts.every(function (p) { return Array.isArray(p) && isFinite(p[0]) && isFinite(p[1]); })) return;
+        params[key] = { points: { 'NS.objects': pts.map(curvePointText) } };
+      });
+    }
     // 真实画笔的 creationDate 是 NSDate 秒；没有它就少一个 Procreate 自己会写的字段
     params.creationDate = { 'NS.time': Math.round((Date.now() / 1000 - PROCREATE_EPOCH) * 1000) / 1000 };
     return params;
@@ -1486,6 +1569,14 @@
       Object.assign(changes,{paintOpacity:params.paintOpacity,maxOpacity:params.maxOpacity,minOpacity:params.minOpacity});
     }
     if(extraChanges)Object.assign(changes,extraChanges);
+    /* 【第302轮（作者：Claude）R302-01】改了旧混合字段就同步新字段；源档案没有的新字段（version 2）不凭空加。 */
+    const twinChanged=BLEND_TWINS.filter(t=>changes[t.legacy[0]]!==undefined);
+    if(twinChanged.length){
+      const raw=plist.unarchive(brush._rawArchive)||{},has=k=>Object.prototype.hasOwnProperty.call(raw,k),sub={};
+      twinChanged.forEach(t=>{sub[t.legacy[0]]=changes[t.legacy[0]];});
+      syncBlendTwins(sub,brush._procreateBlendExt,has);
+      Object.assign(changes,sub);
+    }
     return bplist.patchKeyedArchive(brush._rawArchive,changes);
   }
 
@@ -1637,6 +1728,40 @@
     return zip.write(files);
   }
 
+  /* 【第304轮】可取消的异步 brushset 容器写出：每支笔刷 writeBrush 之间让出主线程并检查
+     shouldAbort，最后走 zip.writeAsync；与 writeBrushset 逐字节一致。 */
+  async function writeBrushsetAsync(brushList, opts, hooks) {
+    opts = opts || {};
+    hooks = hooks || {};
+    const tick = hooks.yieldTick || function () { return new Promise(function (r) { setTimeout(r, 0); }); };
+    const checkAbort = function () {
+      if (hooks.shouldAbort && hooks.shouldAbort()) {
+        const err = new Error('已取消');
+        err.code = 'ABORTED';
+        throw err;
+      }
+    };
+    const files = [];
+    const uuids = [];
+    for (let i = 0; i < brushList.length; i++) {
+      checkAbort();
+      await tick();
+      checkAbort();
+      const brush = brushList[i];
+      const uuid = proUuid();
+      uuids.push(uuid);
+      const folder = uuid + '/';
+      zip.read(writeBrush(brush, opts)).forEach(function (e) {
+        files.push({ name: folder + e.name, data: e.data() });
+      });
+    }
+    if (!files.length) throw new Error('没有可写入 Procreate 的笔刷（都缺少笔尖图像）');
+    checkAbort();
+    const setName = opts.setName || opts.name || (brushList[0] && brushList[0]._brushsetName) || (brushList[0] && brushList[0].name) || 'Procreate Brushes';
+    files.push({ name: 'brushset.plist', data: buildBrushsetPlist(setName, uuids) });
+    return await zip.writeAsync(files, hooks);
+  }
+
   function proUuid() {
     const hex = '0123456789ABCDEF';
     const b = util.randomBytes(16);
@@ -1656,7 +1781,7 @@
     return s;
   }
 
-  const api = { isProcreate, parse, parseAsync, writeBrush, writeBrushset, buildArchive, shapePng, thumbPng, unchanged, secondaryBrush: secondaryBrush, attachBundledAssets };
+  const api = { isProcreate, parse, parseAsync, writeBrush, writeBrushset, writeBrushsetAsync, buildArchive, shapePng, thumbPng, unchanged, secondaryBrush: secondaryBrush, attachBundledAssets };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { procreate: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

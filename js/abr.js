@@ -858,6 +858,15 @@
     return b;
   }
 
+  function clampAbrSpacing(v, allowSubOne) {
+    if (v === undefined) return 25;
+    const n = Number(v);
+    // PS 对 Spcn=0 的处理等于「间距关闭」：≤0 一律钳到 1%；
+    // 0 < n < 1 时默认（PS 口径）钳到 1%，允许亚 1% 间距的目标（如 CSP/优动漫）保留至 0.01%。
+    if (!isFinite(n) || n <= 0) return 1;
+    return Math.max(allowSubOne ? 0.01 : 1, Math.min(1000, n));
+  }
+
   function buildDualObjc(o) {
     o = o || {};
     const blendMap = { normal: 'Nrml', darken: 'Drkn', multiply: 'Mltp', colorburn: 'CBrn', linearburn: 'lBrn', lighten: 'Lghn', screen: 'Scrn', colordodge: 'Cldg', hardmix: 'hMix', overlay: 'Ovrl', softlight: 'SftL', hardlight: 'HrdL', difference: 'Diff', exclusion: 'Xclu' };
@@ -869,7 +878,7 @@
       _descItem('Angl', 'UntF', _descUntF('#Ang', o.angle || 0)),
       _descItem('Rndn', 'UntF', _descUntF('#Prc', o.roundness === undefined ? 100 : o.roundness)),
       _descItem('Nm  ', 'TEXT', _descText(o.name || '第二支笔刷')),
-      _descItem('Spcn', 'UntF', _descUntF('#Prc', o.spacing === undefined ? 25 : Math.max(1, Math.min(1000, o.spacing)))),
+      _descItem('Spcn', 'UntF', _descUntF('#Prc', clampAbrSpacing(o.spacing, !!o.allowSubOneSpacing))),
       _descItem('Intr', 'bool', _descBool(true)),
       _descItem('flipX', 'bool', _descBool(!!o.flipX)),
       _descItem('flipY', 'bool', _descBool(!!o.flipY)),
@@ -1191,7 +1200,7 @@
     return patches;
   }
 
-  function writeAbrV6(items, optsFromArgs) {
+  function createAbrV6Builder(items, optsFromArgs) {
     if (!items || !items.length) throw new Error('没有可写入 ABR 的笔刷');
     const valid = [];
     for (const it of items) {
@@ -1216,14 +1225,18 @@
        这里按 uuid 去重，避免把同一份笔尖写 2~N 次（个人用.abr 实测重复 180 条 / 42.8MB）。 */
     const sampledUuids = new Set();
     const presets = [];
-    for (const it of valid) {
+    let sampBlock = null;
+    const presetObjs = [];
+
+    function encodeSample(idx) {
+      const it = valid[idx];
       const uuid = it.uuid || (it.rawSample && it.rawPreset ? util.utf8Decode(it.rawSample.subarray(1, 37)) : allocateUuid());
       /* 【第287轮 R270-02】源 preset 走 patch 路径、而源本身**没有** samp 条目时，不要凭空合成一条位图样本。
        * 典型的 computedBrush（PS「计算画笔」，如 个人用.abr 的 22 支「尖角」）：源里 desc 是 computedBrush、
        * 没有 sampledData 引用，samp 里也没有它的条目；我们按 tip 合成一条 500×500 灰度图，实测让样本从
        * 0B 涨到 250KB 量级（整包 41396B → 258056B），而这条样本**没有任何 desc 指向它**，纯属死重。
        * 判据由 convert.js 给出（noSample = 保留原 preset + 源无 rawSample + 笔尖未改），这里只管照办。 */
-      if (it.noSample) { presets.push({ it, uuid }); continue; }
+      if (it.noSample) { presets.push({ it, uuid }); return; }
       // 原样样本：直接复用源 ABR 的采样条目字节（只重算长度派生字段），
       // 用于“部分导出也保留 PS 原版特性”
       const sampleKey = String(uuid).toLowerCase();
@@ -1301,37 +1314,40 @@
       }
       presets.push({ it, uuid });
     }
-    // 需要时补齐源文件里"被引用到的"其它采样（dualBrush 的第二个笔尖等）
-    const seenUuid = {};
-    for (const it of valid) {
-      const b = it.rawSample;
-      if (b && b.length >= 37) seenUuid[String.fromCharCode.apply(null, b.subarray(1, 37)).toLowerCase()] = true;
-    }
-    for (const it of valid) {
-      const uuids = it.keepSampleUuids || [];
-      const map = it.sampleMap || null;
-      for (const u of uuids) {
-        if (!u || !map) continue;
-        const key = String(u).toLowerCase();
-        if (seenUuid[key]) continue;
-        const body = map.get(key);
-        if (!body || body.length < 320) continue;
-        seenUuid[key] = true;
-        const copy = new Uint8Array(body);
-        const pad3 = ((copy.length + 3) & ~3) - copy.length;
-        sampParts.push(util.concat([_u32be(copy.length), copy, new Uint8Array(pad3)]));
+
+    function finishSamples() {
+      // 需要时补齐源文件里"被引用到的"其它采样（dualBrush 的第二个笔尖等）
+      const seenUuid = {};
+      for (const it of valid) {
+        const b = it.rawSample;
+        if (b && b.length >= 37) seenUuid[String.fromCharCode.apply(null, b.subarray(1, 37)).toLowerCase()] = true;
       }
+      for (const it of valid) {
+        const uuids = it.keepSampleUuids || [];
+        const map = it.sampleMap || null;
+        for (const u of uuids) {
+          if (!u || !map) continue;
+          const key = String(u).toLowerCase();
+          if (seenUuid[key]) continue;
+          const body = map.get(key);
+          if (!body || body.length < 320) continue;
+          seenUuid[key] = true;
+          const copy = new Uint8Array(body);
+          const pad3 = ((copy.length + 3) & ~3) - copy.length;
+          sampParts.push(util.concat([_u32be(copy.length), copy, new Uint8Array(pad3)]));
+        }
+      }
+      const sampData = util.concat(sampParts);
+      sampBlock = _block8('samp', sampData);
     }
-    const sampData = util.concat(sampParts);
-    const sampBlock = _block8('samp', sampData);
 
     // descriptor block
-    const presetObjs = [];
-    for (const p of presets) {
+    function encodePreset(idx) {
+      const p = presets[idx];
       const it = p.it;
       if (it.rawPreset && !(it.rawPatchPaths && it.rawPatchPaths.length)) {
         presetObjs.push(util.concat([_ascii4('Objc'), new Uint8Array(it.rawPreset)]));
-        continue;
+        return;
       }
       const diameter = it.sizePx || Math.max(it.w, it.h);
       // sampledBrush + sampledData is what makes Photoshop use the actual
@@ -1342,8 +1358,8 @@
         _descItem('Rndn', 'UntF', _descUntF('#Prc', it.roundness === undefined ? 100 : it.roundness)),
         _descItem('Nm  ', 'TEXT', _descText(it.name || '')),
         // PS 对 Spcn=0 的处理等于「间距关闭」：描边只在路径锚点盖章、实画断续。
-        // PS UI 有效区间 1–1000%，这里钳位（第90轮无 shape 笔刷实测发现）。
-        _descItem('Spcn', 'UntF', _descUntF('#Prc', it.spacingPct === undefined ? 25 : Math.max(1, Math.min(1000, it.spacingPct)))),
+        // 默认钳位 1–1000%；allowSubOneSpacing=true（如 CSP/优动漫）保留 0.01–1000%（≤0 仍钳到 1%）。
+        _descItem('Spcn', 'UntF', _descUntF('#Prc', clampAbrSpacing(it.spacingPct, !!(optsFromArgs && optsFromArgs.allowSubOneSpacing)))),
         _descItem('Intr', 'bool', _descBool(true)),
         _descItem('flipX', 'bool', _descBool(!!it.brushFlipX)),
         _descItem('flipY', 'bool', _descBool(!!it.brushFlipY)),
@@ -1440,7 +1456,8 @@
         dualObjc = buildDualObjc(Object.assign({}, it.dualInfo || {}, {
           uuid: it._dualUuidResolved || it.dualUuid,
           name: it.dualName, diameter: it.dualDiameter || (it.dualInfo && it.dualInfo.diameter) || it.sizePx,
-          blend: it.dualBlend
+          blend: it.dualBlend,
+          allowSubOneSpacing: !!(optsFromArgs && optsFromArgs.allowSubOneSpacing)
         }));
       }
       presetItems.push(
@@ -1561,69 +1578,123 @@
         presetObjs.push(util.concat([_ascii4('Objc'),desc.patchDescriptor(it.rawPreset,patches)]));
       }else presetObjs.push(util.concat([_ascii4('Objc'), preset]));
     }
-    const descItems = util.concat([
-      _descItem('Brsh', 'VlLs', util.concat([_u32be(presetObjs.length)].concat(presetObjs)))
-    ]);
-    // root: format version 16, "1" header variant, empty class name, class id 'null'
-    const descData = util.concat([
-      _u32be(16),
-      _u32be(1),
-      _u16be(0),
-      _u32be(0),
-      _ascii4('null'),
-      _u32be(1),
-      descItems
-    ]);
-    const descBlock = _block8('desc', descData);
-    // 源 ABR 有纹理图案时，原样带上 patt 块（否则描述符里的 Txtr 引用会悬空）
-    // 外部 patternRef 只影响对应笔刷；同包里其他笔刷仍可能引用生成图案。
-    const wantTex = valid.some(function (it) { return it.psTexture && !it.patternRef; });
-    // 优先级：源文件自带的图案块（描述符里的 Txtr 引用能对得上）> 自己生成的 256×256 颗粒图案
-    let pattData = null;
-    const srcPatt = (optsFromArgs && optsFromArgs.patternBlock) ||
-      (valid[0] && valid[0]._pattBlock) || null;
-    const recList = (optsFromArgs && optsFromArgs.patternRecords) || null;
-    if (recList && recList.length) {
-      let total2 = 0;
-      for (const r of recList) total2 += r.data.length;
-      const merged = new Uint8Array(total2);
-      let off = 0;
-      for (const r of recList) { merged.set(r.data, off); off += r.data.length; }
-      pattData = merged;
-    } else if (srcPatt) pattData = new Uint8Array(srcPatt);
-    if (!pattData && wantTex) {
-      const rec = buildPatternRecord(11);
-      if (rec) pattData = rec;
-    }
-    const pattBlock = (pattData && pattData.length) ? _block8('patt', pattData) : new Uint8Array(0);
 
-    // phry(hierarchy)：分组 = Grup{Nm} + 若干 preset{} + groupEnd{} 扁平 token 流
-    const groups = (optsFromArgs && optsFromArgs.groups) || [];
-    let hierItems = null;
-    if (groups.length) {
-      const toks = [];
-      for (const g of groups) {
-        const cnt = Math.max(0, g.count | 0);
-        if (g.name) {
-          toks.push(_descObjc('', 'Grup', [_descItem('Nm  ', 'TEXT', _descText(g.name))]));
+    function finishContainer() {
+      const descItems = util.concat([
+        _descItem('Brsh', 'VlLs', util.concat([_u32be(presetObjs.length)].concat(presetObjs)))
+      ]);
+      // root: format version 16, "1" header variant, empty class name, class id 'null'
+      const descData = util.concat([
+        _u32be(16),
+        _u32be(1),
+        _u16be(0),
+        _u32be(0),
+        _ascii4('null'),
+        _u32be(1),
+        descItems
+      ]);
+      const descBlock = _block8('desc', descData);
+      // 源 ABR 有纹理图案时，原样带上 patt 块（否则描述符里的 Txtr 引用会悬空）
+      // 外部 patternRef 只影响对应笔刷；同包里其他笔刷仍可能引用生成图案。
+      const wantTex = valid.some(function (it) { return it.psTexture && !it.patternRef; });
+      // 优先级：源文件自带的图案块（描述符里的 Txtr 引用能对得上）> 自己生成的 256×256 颗粒图案
+      let pattData = null;
+      const srcPatt = (optsFromArgs && optsFromArgs.patternBlock) ||
+        (valid[0] && valid[0]._pattBlock) || null;
+      const recList = (optsFromArgs && optsFromArgs.patternRecords) || null;
+      if (recList && recList.length) {
+        let total2 = 0;
+        for (const r of recList) total2 += r.data.length;
+        const merged = new Uint8Array(total2);
+        let off = 0;
+        for (const r of recList) { merged.set(r.data, off); off += r.data.length; }
+        pattData = merged;
+      } else if (srcPatt) pattData = new Uint8Array(srcPatt);
+      if (!pattData && wantTex) {
+        const rec = buildPatternRecord(11);
+        if (rec) pattData = rec;
+      }
+      const pattBlock = (pattData && pattData.length) ? _block8('patt', pattData) : new Uint8Array(0);
+
+      // phry(hierarchy)：分组 = Grup{Nm} + 若干 preset{} + groupEnd{} 扁平 token 流
+      const groups = (optsFromArgs && optsFromArgs.groups) || [];
+      let hierItems = null;
+      if (groups.length) {
+        const toks = [];
+        for (const g of groups) {
+          const cnt = Math.max(0, g.count | 0);
+          if (g.name) {
+            toks.push(_descObjc('', 'Grup', [_descItem('Nm  ', 'TEXT', _descText(g.name))]));
+          }
+          for (let i = 0; i < cnt; i++) toks.push(_descObjc('', 'preset', []));
+          if (g.name) toks.push(_descObjc('', 'groupEnd', []));
         }
-        for (let i = 0; i < cnt; i++) toks.push(_descObjc('', 'preset', []));
-        if (g.name) toks.push(_descObjc('', 'groupEnd', []));
+        if (toks.length) {
+          hierItems = util.concat([_u32be(toks.length)].concat(toks.map(function (t) {
+            return util.concat([_ascii4('Objc'), t]);
+          })));
+        }
       }
-      if (toks.length) {
-        hierItems = util.concat([_u32be(toks.length)].concat(toks.map(function (t) {
-          return util.concat([_ascii4('Objc'), t]);
-        })));
-      }
+      /* 【第287轮 R270-02】没有具名分组时不写 phry 段。以前无条件写一条 43B 的空 hierarchy，
+       * 而源 ABR（如 星空笔刷.abr）里压根没有 phry —— 「改一个尺寸」导出的包就凭空多一段容器结构。
+       * 空 hierarchy 和「完全没有 phry」在 PS 里都是「未分组」，写它没有收益。 */
+      const phryBlock = hierItems ? _block8('phry', util.concat([
+        _u32be(16), _u32be(1), _u16be(0), _u32be(0), _ascii4('null'), _u32be(1),
+        _descItem('hierarchy', 'VlLs', hierItems)
+      ])) : new Uint8Array(0);
+      return util.concat([_u16be(6), _u16be(2), sampBlock, pattBlock, descBlock, phryBlock]);
     }
-    /* 【第287轮 R270-02】没有具名分组时不写 phry 段。以前无条件写一条 43B 的空 hierarchy，
-     * 而源 ABR（如 星空笔刷.abr）里压根没有 phry —— 「改一个尺寸」导出的包就凭空多一段容器结构。
-     * 空 hierarchy 和「完全没有 phry」在 PS 里都是「未分组」，写它没有收益。 */
-    const phryBlock = hierItems ? _block8('phry', util.concat([
-      _u32be(16), _u32be(1), _u16be(0), _u32be(0), _ascii4('null'), _u32be(1),
-      _descItem('hierarchy', 'VlLs', hierItems)
-    ])) : new Uint8Array(0);
-    return util.concat([_u16be(6), _u16be(2), sampBlock, pattBlock, descBlock, phryBlock]);
+
+    return { valid, presets, encodeSample, finishSamples, encodePreset, finishContainer };
+  }
+
+  function writeAbrV6(items, optsFromArgs) {
+    const b = createAbrV6Builder(items, optsFromArgs);
+    for (let i = 0; i < b.valid.length; i++) b.encodeSample(i);
+    b.finishSamples();
+    for (let i = 0; i < b.presets.length; i++) b.encodePreset(i);
+    return b.finishContainer();
+  }
+
+  /* 【第304轮】可取消的异步 ABR v6 容器写出：与 writeAbrV6 共用 createAbrV6Builder，
+     逐字节一致；在 samp 编码、desc 编码与最终合包各阶段定期让出线程并检查 shouldAbort，
+     解决 500+ 支大包最后写容器数秒不可中断的问题。 */
+  async function writeAbrV6Async(items, optsFromArgs, hooks) {
+    hooks = hooks || {};
+    const tick = hooks.yieldTick || function () { return new Promise(function (r) { setTimeout(r, 0); }); };
+    const checkAbort = function () {
+      if (hooks.shouldAbort && hooks.shouldAbort()) {
+        const err = new Error('已取消');
+        err.code = 'ABORTED';
+        throw err;
+      }
+    };
+    checkAbort();
+    const b = createAbrV6Builder(items, optsFromArgs);
+    for (let i = 0; i < b.valid.length; i++) {
+      checkAbort();
+      if (i > 0 && ((i & 3) === 0 || (!b.valid[i].rawSample && !b.valid[i].noSample))) {
+        await tick();
+        checkAbort();
+      }
+      b.encodeSample(i);
+    }
+    checkAbort();
+    await tick();
+    checkAbort();
+    b.finishSamples();
+    for (let i = 0; i < b.presets.length; i++) {
+      checkAbort();
+      if (i > 0 && (i & 7) === 0) {
+        await tick();
+        checkAbort();
+      }
+      b.encodePreset(i);
+    }
+    checkAbort();
+    await tick();
+    checkAbort();
+    return b.finishContainer();
   }
 
   function buildPatternFile() {
@@ -1632,7 +1703,7 @@
     return new Uint8Array(rec);
   }
 
-  const api = { isAbr, parse, parseAsync, parseSampBlock, rleEncode, writeAbr, writeAbrV6, buildPatternFile, splitPatternBlock, maskFromRGBA };
+  const api = { isAbr, parse, parseAsync, parseSampBlock, rleEncode, writeAbr, writeAbrV6, writeAbrV6Async, buildPatternFile, splitPatternBlock, maskFromRGBA };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { abr: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

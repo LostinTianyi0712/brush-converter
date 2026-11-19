@@ -575,8 +575,8 @@
             fullBtn.className = 'btn ghost';
             fullBtn.style.marginTop = '8px';
             fullBtn.style.marginLeft = '8px';
-            fullBtn.title = '原图高清 216MB，GitHub 限速分 3 卷，浏览器自动下载合并；建议电脑端使用';
-            fullBtn.textContent = '或下载原图高清包（216MB）';
+            fullBtn.title = '原图高清 577MB，GitHub 限速分 8 卷，浏览器自动下载合并；建议电脑端使用';
+            fullBtn.textContent = '或下载原图高清包（577MB）';
             fullBtn.onclick = async function (ev) {
               ev.preventDefault();
               ev.stopPropagation();
@@ -590,6 +590,8 @@
                Procreate 内置笔刷（Pelion / Huntsman / Shearwater 之类）的 Shape.png 只在
                Procreate App 里，导出的 brushset 只留引用（Procreate_Library/xxx_Shape.png）。
                内置图库来自 5.3.8，没有 5.4 的 Procreate_Library/*_Shape.png —— 所以「再下载一次图库」永远补不上。
+               【第302轮（作者：Claude）R302-02】上面这句已过时：第301轮精简图库并入了 5.4.15 的 Procreate_Library；
+               原图图库包仍只有 5.3.8 资源。所以提示里补一句「挂原图包的改用精简图库」。
                这里给的是真能补上的动作：把缺的 Shape.png 放进图库文件夹，重新挂一次。 */
           const missNames = rec.brushes.filter(function (b) { return b && !b.tip && b.bundledShapePath; })
             .map(function (b) { return String(b.bundledShapePath).split(/[\\/]/).pop(); });
@@ -601,7 +603,8 @@
             ' 张不在里面：' + uniqMiss.slice(0, 4).join('、') + (uniqMiss.length > 4 ? ' 等' : '') +
             ' —— 它们是 Procreate 内置笔刷自带的形状，笔刷包里只存了引用。' +
             'Procreate 导出笔刷时只写引用、不打包这些像素（再导一次也一样），原图只在 Procreate 安装包的 ' +
-            'Procreate_Library/ 这组里：把它们放进图库文件夹并重新挂载图库就能补回真笔尖，拿不到就只能用合成圆头近似。';
+            'Procreate_Library/ 这组里：把它们放进图库文件夹并重新挂载图库就能补回真笔尖，拿不到就只能用合成圆头近似。' +
+            '（精简内置图库已收录 Procreate 5.4.15 的这组图；如果你挂的是「原图图库包」，它目前只有 5.3.8 的资源，改用精简图库即可。）';
           wr.appendChild(document.createElement('br'));
           wr.appendChild(note);
           const fixBtn = document.createElement('button');
@@ -2806,7 +2809,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.152';
+const APP_VERSION = '2.8.153';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;
@@ -3376,11 +3379,11 @@ const UPDATE_ENABLED = false;
         full.textContent = state.shapeLibPackKey === 'full' ? '高清图库已安装' : '高清图库包（先删除当前图库）';
         full.title = state.shapeLibPackKey === 'full'
           ? '已经在用原图高清图库，无需再下载'
-          : '已经装了图库（' + state.shapeLib.size + ' 张）。想换 216MB 高清版，先点下面「删除已下载的图库」，再点这里下载';
+          : '已经装了图库（' + state.shapeLib.size + ' 张）。想换 577MB 高清版，先点下面「删除已下载的图库」，再点这里下载';
       } else {
         full.disabled = false;
         full.textContent = full.dataset.label;
-        full.title = '高清图库约 216MB，手机空间紧张时用上面的 63MB 版';
+        full.title = '高清图库约 577MB，手机空间紧张时用上面的 63MB 版';
       }
     }
   }
@@ -3934,11 +3937,14 @@ const UPDATE_ENABLED = false;
     },
     full: {
       key: 'full',
-      parts: ['Procreate内置笔尖图库_原图.zip.part1', 'Procreate内置笔尖图库_原图.zip.part2', 'Procreate内置笔尖图库_原图.zip.part3'],
+      /* 【第302轮（作者：Claude）R302-03】并入 5.4.15 的 268 张原生分辨率图后 605,050,357B，切 8 卷（安卓端清理循环上限 8） */
+      parts: ['Procreate内置笔尖图库_原图.zip.part1', 'Procreate内置笔尖图库_原图.zip.part2', 'Procreate内置笔尖图库_原图.zip.part3',
+        'Procreate内置笔尖图库_原图.zip.part4', 'Procreate内置笔尖图库_原图.zip.part5', 'Procreate内置笔尖图库_原图.zip.part6',
+        'Procreate内置笔尖图库_原图.zip.part7', 'Procreate内置笔尖图库_原图.zip.part8'],
       zipName: 'Procreate内置笔尖图库_原图.zip',
       label: '图库包 · 原图高清（自动下载）',
       doneText: '原图图库包已下载并导入',
-      totalMB: 216,
+      totalMB: 577,
     },
   };
   /* 原生壳（安卓 file:///android_asset、Electron file://）相对路径都取不到站点资源，

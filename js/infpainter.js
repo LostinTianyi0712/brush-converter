@@ -87,7 +87,7 @@
     sizePx = clamp(sizePx, 1, 2000);
     let spacing = num(head, ['spacing'], 0.1);
     if (spacing > 0 && spacing <= 2) spacing = spacing * 100; // always a fraction -> percent
-    const spacingPct = clamp(spacing || 10, 1, 1000);
+    const spacingPct = clamp(isFinite(spacing) ? spacing : 10, 1, 1000);
     const opacityRaw = num(stroke, ['paint-opacity'], 1);
     const blendOpacity = num(stroke, ['blend-opacity'], 1);
     const opacity = clamp(opacityRaw * (blendOpacity > 0 ? Math.max(0.1, blendOpacity) : 1), 0, 1);
@@ -335,7 +335,8 @@
     const blendKeep = isFinite(srcBlendOpacity) && srcBlendOpacity > 0.001 ? clamp(srcBlendOpacity, 0.1, 1) : 1;
     props['stroke-properties']['blend-opacity'] = blendKeep;
     props['stroke-properties']['paint-opacity'] = clamp(opacityTarget / blendKeep, 0, 1);
-    props['head-properties']['spacing'] = Math.max(0.001, Math.min(2, (brush.spacingPct || 10) / 100));
+    const spacingPctVal = (brush.spacingPct === undefined || !isFinite(brush.spacingPct)) ? 10 : brush.spacingPct;
+    props['head-properties']['spacing'] = Math.max(0.001, Math.min(2, spacingPctVal / 100));
     props['head-properties']['softness'] = Math.max(0, Math.min(1, 1 - (brush.hardness === undefined ? 1 : brush.hardness)));
     props['head-properties']['angle'] = ((brush.angle || 0) * Math.PI / 180);
     props['head-properties']['flow'] = clamp(brush.flowPct === undefined ? 1 : brush.flowPct, 0, 1);

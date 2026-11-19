@@ -191,6 +191,37 @@
     return isFinite(lo) && isFinite(hi) && hi - lo > 1e-9;
   }
 
+  /* 【第302轮（作者：Claude）R302-04】Procreate 压感曲线工具：按 x 排序、折线求值、挑 ≤max 个采样点 */
+  function procreateCurve(brush, key) {
+    const all = brush && brush.procreatePressureCurves;
+    const pts = all && all[key];
+    if (!Array.isArray(pts) || pts.length < 2) return null;
+    const out = pts.filter(function (p) { return Array.isArray(p) && isFinite(p[0]) && isFinite(p[1]); })
+      .map(function (p) { return [clamp(p[0], 0, 1), clamp(p[1], 0, 1)]; })
+      .sort(function (a, b) { return a[0] - b[0]; });
+    return out.length >= 2 ? out : null;
+  }
+  function curveAt(pts, x) {
+    if (x <= pts[0][0]) return pts[0][1];
+    for (let i = 1; i < pts.length; i++) {
+      if (x <= pts[i][0]) {
+        const a = pts[i - 1], b = pts[i], span = b[0] - a[0];
+        return span > 1e-12 ? a[1] + (b[1] - a[1]) * (x - a[0]) / span : b[1];
+      }
+    }
+    return pts[pts.length - 1][1];
+  }
+  function curveXs(pts, max) {
+    let xs = [0].concat(pts.map(function (p) { return p[0]; }), [1]);
+    xs = xs.filter(function (x, i) { return xs.indexOf(x) === i; }).sort(function (a, b) { return a - b; });
+    if (xs.length > max) {
+      const keep = [];
+      for (let i = 0; i < max; i++) keep.push(xs[Math.round(i * (xs.length - 1) / (max - 1))]);
+      xs = keep.filter(function (x, i) { return keep.indexOf(x) === i; });
+    }
+    return xs;
+  }
+
   function dropCurve(settings, key) {
     const cur = settings[key];
     if (cur && typeof cur === 'object' && cur.inputs && cur.inputs.pressure) delete cur.inputs.pressure;
@@ -437,10 +468,23 @@
       tracking_noise: setting(0.0)
     };
     // pressure mapping for size / opacity
+    /* 【第302轮（作者：Claude）R302-04】源是 Procreate 且带自定义「压力 → 尺寸/不透明度」曲线时，
+       按曲线形状取点（最多 8 点，MyPaint 每条输入的上限），否则保持原来的直线。
+       语义按「最小值 + (1 - 最小值) × 曲线」近似，Procreate 曲线本身是平滑样条，这里按折线取样。 */
+    const sizeCurve = procreateCurve(brush, 'dynamicsPressureSizeCurve');
+    const opacityCurve = procreateCurve(brush, 'dynamicsPressureOpacityCurve');
     if (brush.pressureSize === undefined ? brush.pressure : brush.pressureSize) {
-      const lo = Math.log(Math.max(0.2, radius * Math.max(0.02, Math.min(1, brush.minSizeRatio === undefined ? 0.3 : brush.minSizeRatio))));
+      const minR = Math.max(0.02, Math.min(1, brush.minSizeRatio === undefined ? 0.3 : brush.minSizeRatio));
+      const lo = Math.log(Math.max(0.2, radius * minR));
       const hi = Math.log(radius);
-      if (hi > lo) {
+      if (sizeCurve && hi > lo) {
+        const floor = Math.exp(lo - hi);
+        settings.radius_logarithmic.inputs = {
+          pressure: curveXs(sizeCurve, 8).map(function (x) {
+            return [x, Math.log(Math.max(floor, minR + (1 - minR) * curveAt(sizeCurve, x)))];
+          })
+        };
+      } else if (hi > lo) {
         settings.radius_logarithmic.inputs = {
           pressure: [[0.0, lo-hi], [1.0, 0]]
         };
@@ -448,7 +492,15 @@
     }
     if (brush.pressureOpacity) {
       const lo = Math.max(0, Math.min(1, brush.minOpacityRatio === undefined ? 0.3 : brush.minOpacityRatio));
-      settings.opaque_multiply.inputs.pressure = [[0,0],[0.0001,lo],[0.5,1],[1,1]];
+      if (opacityCurve) {
+        /* 第一个点 (0,0) 是落笔门控（压力为 0 不出墨），保留 */
+        const xs = curveXs(opacityCurve, 7).map(function (x) { return x <= 0 ? 0.0001 : x; });
+        settings.opaque_multiply.inputs.pressure = [[0, 0]].concat(xs.map(function (x) {
+          return [x, Math.max(0, Math.min(1, lo + (1 - lo) * curveAt(opacityCurve, x)))];
+        }));
+      } else {
+        settings.opaque_multiply.inputs.pressure = [[0,0],[0.0001,lo],[0.5,1],[1,1]];
+      }
     }
     const doc = {
       comment: 'BrushConv exported MyPaint brush',

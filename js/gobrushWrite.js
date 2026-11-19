@@ -467,6 +467,222 @@
     return concat([new Uint8Array(head), tail]);
   }
 
+  /* 【第303轮】原生 .gobrush 原位改写：保留原始 brush_<uuid>.info 的 0xd0 资源块（高分辨率
+     shape/grain 等 330KB~2MB 载荷）、原始 UUID、全部滑块元数据上下限（0x15）、以及 ZIP 内
+     其余所有条目（包括双笔刷的副 brush_*.info 与原图 PNG），只原位更新 0xb0 参数块与 0xc0
+     属性块里的已改动字段。遇到非法/不完整结构返回 null，由上层安全退回整份重建。 */
+  function patchInfoInPlace(origInfo, uuid, name, size, opacity, extra) {
+    if (!origInfo || origInfo.length < 12) return null;
+    const le = function (b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; };
+    const tailLen = le(origInfo, 6);
+    const end = 10 + tailLen;
+    if (end > origInfo.length || end < 12) return null;
+    const parts = [];
+    let pos = 10;
+    let sawParam = false, sawProp = false;
+    while (pos + 6 <= end) {
+      if (pos + 2 === end && origInfo[pos] === 0xff && origInfo[pos + 1] === 0xff) break;
+      const tag = origInfo[pos], flag = origInfo[pos + 1];
+      const len = le(origInfo, pos + 2);
+      const recEnd = pos + 6 + len;
+      if (recEnd > end) return null;
+      const payload = origInfo.subarray(pos + 6, recEnd);
+      if (tag === 0 && flag === 0xb0) {
+        const subParts = [];
+        let q = 0;
+        while (q + 6 <= payload.length) {
+          const t2 = payload[q], f2 = payload[q + 1];
+          const l2 = le(payload, q + 2);
+          if (q + 6 + l2 > payload.length) return null;
+          let sp = payload.subarray(q + 6, q + 6 + l2);
+          if (t2 === 1 && uuid) sp = util.utf8Encode(uuid);
+          else if (t2 === 2) sp = util.utf8Encode(name);
+          else if ((t2 === 5 || t2 === 6 || t2 === 7) && extra && extra.sizeTouched) sp = s32(size);
+          else if (t2 === 8 && extra && extra.opacityTouched) sp = s32(opacity);
+          subParts.push(recordBytes(rec(t2, f2, sp)));
+          q += 6 + l2;
+        }
+        if (q !== payload.length) return null;
+        parts.push(recordBytes(rec(0, 0xb0, concat(subParts))));
+        sawParam = true;
+      } else if (tag === 0 && flag === 0xc0) {
+        let propBytes = new Uint8Array(payload);
+        if (extra && extra.pressureCurve && !extra.skipPressureCurve) {
+          propBytes = setPressureCurve(propBytes, extra.pressureCurve, false);
+          if (extra.pressureCurves) propBytes = setPressureCurve(propBytes, extra.pressureCurve, true, extra.pressureCurves);
+        }
+        const plan = extra && extra.propPlan
+          ? Object.assign({}, extra.propPlan, extra.prop18 || {})
+          : (extra && extra.prop18 ? extra.prop18 : null);
+        propBytes = applyPropPlan(propBytes, plan, extra ? extra.propRawBlock : null);
+        parts.push(recordBytes(rec(0, 0xc0, propBytes)));
+        sawProp = true;
+      } else {
+        // 0xd0 资源块及任何未知顶层记录：逐字节原样保留
+        parts.push(origInfo.subarray(pos, recEnd));
+      }
+      pos = recEnd;
+    }
+    if (!sawParam || !sawProp) return null;
+    if (pos < end) parts.push(origInfo.subarray(pos, end));
+    const tail = concat(parts);
+    const out = new Uint8Array(10 + tail.length + (origInfo.length - end));
+    out.set(origInfo.subarray(0, 6), 0);
+    out[6] = tail.length & 0xff;
+    out[7] = (tail.length >>> 8) & 0xff;
+    out[8] = (tail.length >>> 16) & 0xff;
+    out[9] = (tail.length >>> 24) & 0xff;
+    out.set(tail, 10);
+    if (end < origInfo.length) out.set(origInfo.subarray(end), 10 + tail.length);
+    return out;
+  }
+
+  function patchGobrushContainer(rawBytes, nativeUuid, name, size, opacity, extra) {
+    if (!rawBytes || !rawBytes.length || !zip.isZip(rawBytes)) return null;
+    let entries;
+    try { entries = zip.read(rawBytes).filter(function (e) { return !e.dir; }); } catch (e) { return null; }
+    if (!entries.length) return null;
+    let shapeUuid = '', grainUuid = '';
+    const infoIdxList = [];
+    for (let i = 0; i < entries.length; i++) {
+      const nm = entries[i].name;
+      if (/^shape_.*\.png$/i.test(nm)) shapeUuid = nm.replace(/^shape_/i, '').replace(/\.png$/i, '');
+      else if (/^grain_.*\.png$/i.test(nm)) grainUuid = nm.replace(/^grain_/i, '').replace(/\.png$/i, '');
+      else if (/^brush_.*\.info$/i.test(nm)) infoIdxList.push(i);
+    }
+    if (!infoIdxList.length) return null;
+    const wantUuid = nativeUuid || shapeUuid || grainUuid;
+    let primaryIdx = -1;
+    if (wantUuid) {
+      const targetName = ('brush_' + wantUuid + '.info').toLowerCase();
+      for (const idx of infoIdxList) {
+        if (entries[idx].name.toLowerCase() === targetName) { primaryIdx = idx; break; }
+      }
+    }
+    if (primaryIdx < 0) primaryIdx = infoIdxList[0];
+    const targetUuid = wantUuid || entries[primaryIdx].name.replace(/^brush_/i, '').replace(/\.info$/i, '');
+    const patchedInfo = patchInfoInPlace(entries[primaryIdx].data(), targetUuid, name, size, opacity, extra);
+    if (!patchedInfo) return null;
+    const outFiles = entries.map(function (e, i) {
+      return { name: e.name, data: i === primaryIdx ? patchedInfo : e.data() };
+    });
+    return { bytes: zip.writeGopaint(outFiles, targetUuid), name: name, uuid: targetUuid, nativePatched: true };
+  }
+
+  function extractGroupInfoFromRaw(rawGroupBytes) {
+    if (!rawGroupBytes || !rawGroupBytes.length || !zip.isZip(rawGroupBytes)) return null;
+    try {
+      const entries = zip.read(rawGroupBytes);
+      for (const e of entries) {
+        if (!e.dir && /^brushgroup\.info$/i.test(e.name)) {
+          const raw = e.data();
+          let uuid = '';
+          if (raw.length > 10) {
+            const le = function (b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; };
+            const end = Math.min(raw.length, 10 + le(raw, 6));
+            let i = 10;
+            while (i + 6 <= end) {
+              const t = raw[i], f = raw[i + 1], l = le(raw, i + 2);
+              if (i + 6 + l > end) break;
+              if (t === 0 && f === 0xa0) {
+                const pl = raw.subarray(i + 6, i + 6 + l);
+                let j = 0;
+                while (j + 6 <= pl.length) {
+                  const t2 = pl[j], f2 = pl[j + 1], l2 = le(pl, j + 2);
+                  if (j + 6 + l2 > pl.length) break;
+                  if (t2 === 1 && f2 === 0xa0) uuid = util.utf8Decode(pl.subarray(j + 6, j + 6 + l2)).trim();
+                  j += 6 + l2;
+                }
+              }
+              i += 6 + l;
+            }
+          }
+          return { data: raw, uuid: uuid };
+        }
+      }
+    } catch (e) { /* ignore and rebuild group info */ }
+    return null;
+  }
+
+  function populatePropPlan(brush, USER, spacing, opacity) {
+    const minAlphaRatio = (EXTRA.minOpacityRatio !== undefined) ? Math.max(0, Math.min(1, EXTRA.minOpacityRatio)) : 1;
+    const flow = (EXTRA.flowPct !== undefined) ? Math.round(EXTRA.flowPct * 100) : 100;
+    const depth = EXTRA.hasTexture
+      ? Math.round((EXTRA.textureDepth === undefined ? 0.5 : EXTRA.textureDepth) * 100) : 0;
+    const scatter = (EXTRA.scatter !== undefined && EXTRA.scatter !== null)
+      ? Math.max(0, Math.min(100, Math.round(EXTRA.scatter))) : 0;
+    const clamp01 = function (v, def) {
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : def;
+    };
+    const pctOf = function (v, def) { return Math.round(clamp01(v, def) * 100); };
+    const angleNorm = brush.angle === undefined ? undefined : (((Number(brush.angle) || 0) % 360) + 360) % 360;
+    const taperAny = [brush.taperOn, brush.taperSize, brush.taperOpacity, brush.taperStartLength, brush.taperEndLength]
+      .some(function (v) { return v !== undefined; });
+    const taperOn = !!brush.taperOn;
+    const taperHead = brush.taperStartLength !== undefined ? brush.taperStartLength : brush.taperSize;
+    const taperTail = brush.taperEndLength !== undefined ? brush.taperEndLength : brush.taperSize;
+    const smudgeKnown = brush.smudgeOn !== undefined;
+    const explicitProps = {
+      strokeSpacing: spacing,
+      propertiesMaxSize: EXTRA.maxSizePct,
+      propertiesMinSize: EXTRA.minSizePct,
+      propertiesMaxAlpha: opacity,
+      propertiesMinAlpha: Math.max(0, Math.round(opacity * minAlphaRatio)),
+      renderingFlow: Math.max(0, Math.min(100, flow)),
+      grainDepth: Math.max(0, Math.min(100, depth)),
+      grainScale: EXTRA.grainScale,
+      shapeScatter: scatter,
+      strokeJitter: Math.max(0, Math.min(200, Math.round(EXTRA.jitterPct || 0))),
+      strokeFallOff: Math.max(0, Math.min(100, Math.round(EXTRA.falloffPct || 0))),
+      pencilPressureSize: brush.pressureSize === undefined ? undefined : (brush.pressureSize ? 100 : 0),
+      pencilPressureAlpha: brush.pressureOpacity === undefined ? undefined : (brush.pressureOpacity ? 100 : 0),
+      pencilPressureFlow: brush.pressureOpacity === undefined ? undefined : (brush.pressureOpacity ? 100 : 0),
+      taperPressureHead: taperAny ? (taperOn ? pctOf(taperHead, 1) : 0) : undefined,
+      taperPressureTail: taperAny ? (taperOn ? pctOf(taperTail, 1) : 0) : undefined,
+      taperPressureSize: taperAny ? (taperOn ? pctOf(brush.taperSize, 1) : 0) : undefined,
+      taperPressureAlpha: taperAny ? (taperOn ? pctOf(brush.taperOpacity, 1) : 0) : undefined,
+      taperPressurePressure: taperAny ? (taperOn ? 100 : 0) : undefined,
+      shapeRotation: angleNorm === undefined ? undefined : (angleNorm === 0 ? 100 : 0),
+      shapeFixRollAngle: angleNorm === undefined ? undefined : (angleNorm === 0 ? 0 : 1),
+      propertiesSmudge: smudgeKnown
+        ? (brush.smudgeOn ? Math.round(SMUDGE_ANCHOR + (100 - SMUDGE_ANCHOR) * clamp01(brush.smudgeAmount, 0.5)) : SMUDGE_ANCHOR)
+        : undefined,
+      wetMixDilution: brush.wetEdgesOn && brush.wetEdgesAmount !== undefined ? pctOf(brush.wetEdgesAmount, 0.4) : undefined,
+      renderingWetEdges: brush.wetEdgesOn && brush.wetEdgesAmount !== undefined ? pctOf(brush.wetEdgesAmount, 0.4) : undefined,
+      renderingBurntEdges: Number(brush.burntEdgesAmount) > 0 ? pctOf(brush.burntEdgesAmount, 0) : undefined
+    };
+    const sizeFlag = (USER.sizeScale !== undefined && Number(USER.sizeScale) !== 1) ||
+      USER.maxSizePct !== undefined || USER.minSizeRatio !== undefined ||
+      (USER.canvasDpi !== undefined && Number(USER.canvasDpi) !== 300);
+    const propFlags = {
+      strokeSpacing: USER.spacingOverride > 0,
+      propertiesMaxSize: sizeFlag,
+      propertiesMinSize: sizeFlag,
+      propertiesMaxAlpha: USER.opacity !== undefined,
+      propertiesMinAlpha: USER.opacity !== undefined,
+      renderingFlow: USER.flowPct !== undefined,
+      grainDepth: USER.textureDepth !== undefined || USER.grainMode !== undefined,
+      grainScale: USER.grainScale !== undefined,
+      shapeScatter: USER.scatter !== undefined,
+      strokeJitter: USER.jitterPct !== undefined,
+      strokeFallOff: USER.falloffPct !== undefined
+    };
+    EXTRA.propPlan = buildPropPlan(brush, explicitProps, propFlags);
+    EXTRA.propRawBlock = (brush && brush.gopaintPropBlock) || null;
+    EXTRA.paramRaw = (brush && brush.gopaintParams) || null;
+    (function () {
+      const base = nativePropSource(brush) ? brush.gopaintPropBase : null;
+      EXTRA.sizeTouched = !base || sizeFlag ||
+        !samePropValue(base.sizePx, brush.sizePx) ||
+        !samePropValue(base.minSizeRatio, brush.minSizeRatio) ||
+        !samePropValue(base.gopaintMaxSizePct, brush.gopaintMaxSizePct);
+      EXTRA.opacityTouched = !base || USER.opacity !== undefined || !samePropValue(base.opacity, brush.opacity);
+    })();
+    EXTRA.skipPressureCurve = !!(nativePropSource(brush) && USER.pressureCurve === undefined &&
+      USER.pressureCurves === undefined && !brush.gopaintPressureCurve);
+  }
+
   function makeGobrush(brush, opts) {
     opts = opts || {};
     EXTRA = Object.assign({}, opts);
@@ -519,6 +735,17 @@
     EXTRA.minSizePct = minSizePct;
     const spacing = Math.max(1, Math.min(1000, Math.round(opts.spacingOverride > 0 ? opts.spacingOverride : (brush.spacingPct === undefined ? 25 : brush.spacingPct))));
     const opacity = Math.max(0, Math.min(100, Math.round((brush.opacity === undefined ? 1 : brush.opacity) * 100)));
+    // 第303轮：原生 .gobrush 未改笔尖/纹理图且未 forceRebuild 时，直接原位改写 brush_<uuid>.info，
+    // 跳过重新编码 shape/grain/snapshot 与模板重建，完整保住 0xd0 原生资源、副笔刷与原 UUID。
+    if (opts._patchNative && !opts.forceRebuild && brush._rawGobrush && brush._rawGobrush.length) {
+      if (EXTRA.grainScale === undefined && brush.source === 'gopaint' && brush.gopaintGrainScale > 0) {
+        EXTRA.grainScale = Math.round(brush.gopaintGrainScale);
+      }
+      if (EXTRA.grainScale !== undefined) EXTRA.grainScale = Math.max(1, Math.min(100, Math.round(Number(EXTRA.grainScale) || 25)));
+      populatePropPlan(brush, USER, spacing, opacity);
+      const patched = patchGobrushContainer(brush._rawGobrush, brush.gopaintUuid, name, size, opacity, EXTRA);
+      if (patched) return patched;
+    }
     const tip = limitImage(whiteShape(tipRgba(brush)), Math.max(1, Math.min(2048, opts.maxTipSize || 2048)));
     let grain = grainImage(brush);
     if (EXTRA.grainMode === 'tip') {
@@ -548,103 +775,8 @@
     const snapshot = renderSnapshot(tip, false, brush);
     const snapshotLight = renderSnapshot(tip, true, brush);
 
-    /* ── 属性回写计划（第282轮）─────────────────────────────────────────────
-       只有下面这张表里的属性是写侧「有专门映射」的：它们按映射算出一个值候选，
-       但**只有当用户真的动了对应字段（或调用方显式传了覆盖项）时才写这个候选**，
-       否则照抄源属性块里的值。表外的 100 多条属性一律照抄源值。
-       这张表同时也是「哪些属性不许被源值覆盖」的白名单——两个方向都钉死。 */
-    const minAlphaRatio = (EXTRA.minOpacityRatio !== undefined) ? Math.max(0, Math.min(1, EXTRA.minOpacityRatio)) : 1;
-    const flow = (EXTRA.flowPct !== undefined) ? Math.round(EXTRA.flowPct * 100) : 100;
-    const depth = EXTRA.hasTexture
-      ? Math.round((EXTRA.textureDepth === undefined ? 0.5 : EXTRA.textureDepth) * 100) : 0;
-    const scatter = (EXTRA.scatter !== undefined && EXTRA.scatter !== null)
-      ? Math.max(0, Math.min(100, Math.round(EXTRA.scatter))) : 0;
-    const clamp01 = function (v, def) {
-      const n = Number(v);
-      return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : def;
-    };
-    const pctOf = function (v, def) { return Math.round(clamp01(v, def) * 100); };
-    /* 朝向：角度已经由 withTipRGBA(..., {transform:true}) → bakeTipTransform 烘进 shape PNG 了，
-       所以这里不能再写 shapeRotationAngle / shapeCompression（会二次旋转 / 二次压缩）。
-       能做且必须做的是把「跟随笔迹方向」关掉：原生 5 支独立样本里，4 支楷书（固定 55.9°，
-       shapeRotationAngle=976037，shapeFixRollAngle=1）的 shapeRotation 全是 0，而 angle=0 的
-       调色刀/手信是 100 —— 这条相关性是原生数据本身给出来的，不是猜的。 */
-    const angleNorm = brush.angle === undefined ? undefined : (((Number(brush.angle) || 0) % 360) + 360) % 360;
-    const taperAny = [brush.taperOn, brush.taperSize, brush.taperOpacity, brush.taperStartLength, brush.taperEndLength]
-      .some(function (v) { return v !== undefined; });
-    const taperOn = !!brush.taperOn;
-    const taperHead = brush.taperStartLength !== undefined ? brush.taperStartLength : brush.taperSize;
-    const taperTail = brush.taperEndLength !== undefined ? brush.taperEndLength : brush.taperSize;
-    const smudgeKnown = brush.smudgeOn !== undefined;
-    const explicitProps = {
-      strokeSpacing: spacing,
-      propertiesMaxSize: EXTRA.maxSizePct,
-      propertiesMinSize: EXTRA.minSizePct,
-      propertiesMaxAlpha: opacity,
-      propertiesMinAlpha: Math.max(0, Math.round(opacity * minAlphaRatio)),
-      renderingFlow: Math.max(0, Math.min(100, flow)),
-      grainDepth: Math.max(0, Math.min(100, depth)),
-      grainScale: EXTRA.grainScale,
-      shapeScatter: scatter,
-      strokeJitter: Math.max(0, Math.min(200, Math.round(EXTRA.jitterPct || 0))),
-      strokeFallOff: Math.max(0, Math.min(100, Math.round(EXTRA.falloffPct || 0))),
-      /* 第2步：压感组。源没有这个概念（undefined）就不写，留源值/模板值。 */
-      pencilPressureSize: brush.pressureSize === undefined ? undefined : (brush.pressureSize ? 100 : 0),
-      pencilPressureAlpha: brush.pressureOpacity === undefined ? undefined : (brush.pressureOpacity ? 100 : 0),
-      // 压感不透明度同时决定「压感→流量」：原生楷书是纯尺寸压感（alpha=0 ⇒ flow=0），
-      // 调色刀是尺寸+流量（alpha=0 但 flow=100）——两者不能同时靠 alpha 推，见 report 第2步卡点。
-      pencilPressureFlow: brush.pressureOpacity === undefined ? undefined : (brush.pressureOpacity ? 100 : 0),
-      /* 第2步：锥度六件套。taperPressureTip 没有可反推的语义（原生 7 / 51 / 100 三种），不接。 */
-      taperPressureHead: taperAny ? (taperOn ? pctOf(taperHead, 1) : 0) : undefined,
-      taperPressureTail: taperAny ? (taperOn ? pctOf(taperTail, 1) : 0) : undefined,
-      taperPressureSize: taperAny ? (taperOn ? pctOf(brush.taperSize, 1) : 0) : undefined,
-      taperPressureAlpha: taperAny ? (taperOn ? pctOf(brush.taperOpacity, 1) : 0) : undefined,
-      taperPressurePressure: taperAny ? (taperOn ? 100 : 0) : undefined,
-      /* 第2步：朝向组（角度已烘图，只关「跟随方向」） */
-      shapeRotation: angleNorm === undefined ? undefined : (angleNorm === 0 ? 100 : 0),
-      shapeFixRollAngle: angleNorm === undefined ? undefined : (angleNorm === 0 ? 0 : 1),
-      /* 第3步：混色 / 湿边。锚点见 SMUDGE_ANCHOR；湿边只在「确实有湿边」时写，
-         关着的时候不写（100 到底是「关」还是「最强」没有真机标定，别把 199 支笔刷推歪）。 */
-      propertiesSmudge: smudgeKnown
-        ? (brush.smudgeOn ? Math.round(SMUDGE_ANCHOR + (100 - SMUDGE_ANCHOR) * clamp01(brush.smudgeAmount, 0.5)) : SMUDGE_ANCHOR)
-        : undefined,
-      wetMixDilution: brush.wetEdgesOn && brush.wetEdgesAmount !== undefined ? pctOf(brush.wetEdgesAmount, 0.4) : undefined,
-      renderingWetEdges: brush.wetEdgesOn && brush.wetEdgesAmount !== undefined ? pctOf(brush.wetEdgesAmount, 0.4) : undefined,
-      renderingBurntEdges: Number(brush.burntEdgesAmount) > 0 ? pctOf(brush.burntEdgesAmount, 0) : undefined
-    };
-    const sizeFlag = (USER.sizeScale !== undefined && Number(USER.sizeScale) !== 1) ||
-      USER.maxSizePct !== undefined || USER.minSizeRatio !== undefined ||
-      (USER.canvasDpi !== undefined && Number(USER.canvasDpi) !== 300);
-    const propFlags = {
-      strokeSpacing: USER.spacingOverride > 0,
-      propertiesMaxSize: sizeFlag,
-      propertiesMinSize: sizeFlag,
-      propertiesMaxAlpha: USER.opacity !== undefined,
-      propertiesMinAlpha: USER.opacity !== undefined,
-      renderingFlow: USER.flowPct !== undefined,
-      grainDepth: USER.textureDepth !== undefined || USER.grainMode !== undefined,
-      grainScale: USER.grainScale !== undefined,
-      shapeScatter: USER.scatter !== undefined,
-      strokeJitter: USER.jitterPct !== undefined,
-      strokeFallOff: USER.falloffPct !== undefined
-    };
-    EXTRA.propPlan = buildPropPlan(brush, explicitProps, propFlags);
-    EXTRA.propRawBlock = (brush && brush.gopaintPropBlock) || null;
-    EXTRA.paramRaw = (brush && brush.gopaintParams) || null;
-    /* 尺寸/不透明度这两组 tag 也一样：源没动就照抄源 tag（原生 t5=12 / t6=t7=34 三者可不等），
-       动了才三个一起按映射写。 */
-    (function () {
-      const base = nativePropSource(brush) ? brush.gopaintPropBase : null;
-      EXTRA.sizeTouched = !base || sizeFlag ||
-        !samePropValue(base.sizePx, brush.sizePx) ||
-        !samePropValue(base.minSizeRatio, brush.minSizeRatio) ||
-        !samePropValue(base.gopaintMaxSizePct, brush.gopaintMaxSizePct);
-      EXTRA.opacityTouched = !base || USER.opacity !== undefined || !samePropValue(base.opacity, brush.opacity);
-    })();
-    /* 原生样本本来没有压力曲线（模板「调色刀」也没有）时不要凭空塞一条默认直线，
-       否则「源没有 → 输出有」也是一处失真。其它来源维持原状（写默认直线）。 */
-    EXTRA.skipPressureCurve = !!(nativePropSource(brush) && USER.pressureCurve === undefined &&
-      USER.pressureCurves === undefined && !brush.gopaintPressureCurve);
+    /* ── 属性回写计划（第282轮 / 第303轮抽取为 populatePropPlan 供原位改写与整份重建共用）── */
+    populatePropPlan(brush, USER, spacing, opacity);
 
     const info = buildInfo(uuid, name, size, spacing, opacity, tip, grain, shapeBytes, grainBytes);
     const files = [
@@ -663,12 +795,14 @@
   function makeGobrushes(brushList, opts, writeBrush) {
     opts = opts || {};
     const groupName = String(opts.groupName || '').slice(0, 40) || '笔刷组';
-    const groupUuid = makeUuid();
+    const rawGroupInfo = (opts._rawGroupBytes && opts._rawGroupName === groupName)
+      ? extractGroupInfoFromRaw(opts._rawGroupBytes) : null;
+    const groupUuid = (rawGroupInfo && rawGroupInfo.uuid) || makeUuid();
     const files = [];
     const usedIds = new Set();
     for (let i = 0; i < brushList.length; i++) {
       let made = writeBrush ? writeBrush(brushList[i]) : makeGobrush(brushList[i], opts);
-      if (made.uuid && usedIds.has(made.uuid) && made.passthrough) {
+      if (made.uuid && usedIds.has(made.uuid) && (made.passthrough || made.nativePatched)) {
         // Duplicating a native brush needs a fresh identity, not template defaults.
         const oldUuid = made.uuid, uuid = makeUuid();
         const entries = zip.read(made.bytes).filter(e => !e.dir).map(e => ({
@@ -676,32 +810,35 @@
           data: /\.(info|json)$/i.test(e.name)
             ? patchUuid(new Uint8Array(e.data()), oldUuid, uuid) : e.data()
         }));
-        made = {bytes:zip.writeGopaint(entries, uuid), uuid:uuid};
+        made = { bytes: zip.writeGopaint(entries, uuid), uuid: uuid, passthrough: made.passthrough, nativePatched: made.nativePatched };
       }
       if (!made.uuid || usedIds.has(made.uuid)) made = makeGobrush(brushList[i], opts);
       usedIds.add(made.uuid);
       files.push({ name: made.uuid + '.gobrush', data: made.bytes });
     }
-    // brushgroup.info = u16(3,2,9) + u32(restLen) + [tag0 flagA0: [tag1 uuid][tag2 name][tag3 u32=0]]
-    const inner = [];
-    const pushRec = function (tag, payload) {
-      const b = [];
-      b.push(tag, 0xa0);
-      u32(b, payload.length);
-      return concat([new Uint8Array(b), new Uint8Array(payload)]);
-    };
-    inner.push(pushRec(1, util.utf8Encode(groupUuid)));
-    inner.push(pushRec(2, util.utf8Encode(groupName)));
-    inner.push(pushRec(3, new Uint8Array([0, 0, 0, 0])));
-    const body = concat(inner);
-    const outer = [];
-    outer.push(0, 0xa0);
-    u32(outer, body.length);
-    const groupInfo = concat([
-      new Uint8Array([3, 0, 2, 0, 9, 0]),
-      (function () { const b = []; u32(b, 6 + body.length); return new Uint8Array(b); })(),
-      new Uint8Array(outer), body
-    ]);
+    let groupInfo = rawGroupInfo ? rawGroupInfo.data : null;
+    if (!groupInfo) {
+      // brushgroup.info = u16(3,2,9) + u32(restLen) + [tag0 flagA0: [tag1 uuid][tag2 name][tag3 u32=0]]
+      const inner = [];
+      const pushRec = function (tag, payload) {
+        const b = [];
+        b.push(tag, 0xa0);
+        u32(b, payload.length);
+        return concat([new Uint8Array(b), new Uint8Array(payload)]);
+      };
+      inner.push(pushRec(1, util.utf8Encode(groupUuid)));
+      inner.push(pushRec(2, util.utf8Encode(groupName)));
+      inner.push(pushRec(3, new Uint8Array([0, 0, 0, 0])));
+      const body = concat(inner);
+      const outer = [];
+      outer.push(0, 0xa0);
+      u32(outer, body.length);
+      groupInfo = concat([
+        new Uint8Array([3, 0, 2, 0, 9, 0]),
+        (function () { const b = []; u32(b, 6 + body.length); return new Uint8Array(b); })(),
+        new Uint8Array(outer), body
+      ]);
+    }
     files.push({ name: 'brushgroup.info', data: groupInfo });
     return { bytes: zip.writeGopaint(files, groupUuid), groupName: groupName, count: brushList.length, groupUuid: groupUuid };
   }
