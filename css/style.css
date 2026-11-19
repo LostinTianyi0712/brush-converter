@@ -359,13 +359,26 @@ main {
 .file-head {
   display: flex;
   align-items: center;
+  /* 【第307轮】允许换行：badge + 两个 fmeta + 全选/清空/✕ 在 360px 屏上放不下一行，
+     以前 nowrap 会把最右边的 ✕ 挤出 .file-card 的 overflow:hidden 之外，看得见半个、点不到。 */
+  flex-wrap: wrap;
+  row-gap: 6px;
   padding: 12px 14px;
   border-bottom: 1px solid var(--line);
   background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
 }
 .file-head > * + * { margin-left: 10px; }
-.file-head .fname { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #0f172a; }
+.file-head .fname { font-weight: 600; flex: 1 1 180px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #0f172a; }
+/* 【第307轮】✕ 永远贴右：换行时也靠在可视区右边缘，不会被后续内容顶出去 */
+.file-head .remove { margin-left: auto; }
 .fmeta { color: var(--sub); font-size: 12px; white-space: nowrap; }
+/* 【第307轮】≤560px：文件名独占第一行，badge/元信息/按钮在下面自行折行，✕ 始终可见可点 */
+@media (max-width: 560px) {
+  .file-head { column-gap: 8px; row-gap: 6px; }
+  .file-head > * + * { margin-left: 0; }
+  .file-head .fname { flex: 1 1 100%; }
+  .file-head .remove { margin-left: auto; }
+}
 .badge {
   font-size: 11px;
   font-weight: 600;
