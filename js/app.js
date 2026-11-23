@@ -11,10 +11,10 @@
   const btnClear = $('#btnClear');
   const progressEl = $('#progress');
 
-  const state = { files: [], converting: false, activeJob: false, saving: false, cancelRequested: false,
+  const state = { files: [], converting: false, activeJob: false, saving: false, studioPreparing: false, cancelRequested: false,
     // #262 导入中也能「清空」：用 token 让正在跑的导入循环立即停手，不再把卡片塞回来
     importToken: 0, importing: 0, lastWarnings: [], searchQuery: '', filterKind: 'all' };
-  function isBusy() { return state.converting || state.activeJob || state.saving; }
+  function isBusy() { return state.converting || state.activeJob || state.saving || state.studioPreparing; }
   function isImporting() { return state.importing > 0; }
 
   const directoryControls = $('#saveDirectoryControls');
@@ -1757,9 +1757,9 @@
     progressEl.querySelector('.ptext').textContent = text || '';
   }
 
-  async function convertAllOnce(sink, force, recordsOverride) {
+  async function convertAllOnce(sink, force, recordsOverride, optionsOverride) {
     if (state.converting && !force) return;
-    const opts = getOpts();
+    const opts = optionsOverride || getOpts();
     // 分批转换只传入本批记录，不改 state.files：否则卡片列表会整体变成本批、
     // 勾选计数与进度条反复归零（#258）。
     const records = (recordsOverride || state.files).filter(r => r.brushes && r.brushes.some(b => b.enabled !== false));
@@ -1781,7 +1781,7 @@
     render();
     const outFiles = [];
     const failed = [];
-    const warnings = [];
+    const warnings = (opts.initialWarnings || []).slice();
     // 源文件没有 shape（笔尖/形状）图的笔刷：转出时需要明确提示（用户反馈：以前只阴在解析日志里）
     try {
       /* 库已经在手时，导出前再补挂一次：解析时机不该决定导出效果 */
@@ -2140,7 +2140,7 @@
               /* 【第281轮】整包导出改走**逐支 await** 的异步版本：
                  同一套建包逻辑（产出与同步版逐字节相同），但每支之间让出线程，取消按钮才点得动。
                  以前这里是一次同步重活，点取消要等整包算完才排得上队。 */
-              const bruOpts = Object.assign({}, coForPair, { dualBake: pairNote ? false : opts.dualBake, embedSubTip: opts.bruEmbed !== false });
+              const bruOpts = Object.assign({}, coForPair, { embedSubTip: opts.bruEmbed !== false });
               /* 【第290轮】先在这里展开「-描边版」，进度条按 packList[i] 取名才对得上（内核里的展开是幂等的） */
               noteBurntOutline(packList, bruOpts);
               if (BC.convert.expandBurntOutlineVariants) packList = BC.convert.expandBurntOutlineVariants(packList, bruOpts);
@@ -2537,7 +2537,7 @@
     }
   }
 
-  async function convertAll() {
+  async function convertAll(records, options) {
     if (isBusy()) return;
     state.activeJob = true;
     // Release the previous ZIP before allocating the next conversion output.
@@ -2545,7 +2545,8 @@
     renderResultPanel();
     updateConvertButton();
     try {
-      await convertAllBatches();
+      if (records) await convertAllOnce(null, false, records, options);
+      else await convertAllBatches();
     } catch (e) {
       pushLog('CONVERT ' + (e && e.message ? e.message : e));
       toast('转换失败：' + friendlyError(e && e.message ? e.message : e), 7000);
@@ -2809,7 +2810,7 @@
   })();
 
   /* ---------------- 首次打开公告弹窗 ---------------- */
-const APP_VERSION = '2.8.154';
+const APP_VERSION = '2.8.155';
 /* 检查更新总开关：2026-11-09 用户要求「暂时去掉」。代码全保留（版本比较、网盘入口、三端 openUrl），
    改回 true 即可整体恢复；放在文件顶部是为了避免 TDZ（加载期引用后声明的 const 会直接抛错）。 */
 const UPDATE_ENABLED = false;
@@ -2879,6 +2880,566 @@ const UPDATE_ENABLED = false;
     });
   })();
   initNotice();
+
+  function initBrushStudio() {
+    const convertTab = $('#workspaceConvert'), studioTab = $('#workspaceMake');
+    const menu = $('#workspaceMenu'), nav = $('#workspaceNav');
+    const shell = nav.parentElement, scrim = $('#workspaceScrim'), content = $('#workspaceContent');
+    const header = $('.topbar'), actions = $('.topbar .actions');
+    const narrowScreen = window.matchMedia('(max-width: 720px)');
+    const input = $('#studioFile'), drop = $('#studioDrop'), status = $('#studioStatus');
+    const pick = $('#studioPick'), queue = $('#studioQueue'), remove = $('#studioRemove');
+    const settings = $('#studioSettings'), add = $('#studioAdd'), format = $('#studioFormat'), packName = $('#studioPackName');
+    const tipLimit = $('#studioTipLimit'), exportButton = $('#studioExport'), cancel = $('#studioCancel');
+    const name = $('#studioName'), mask = $('#studioMask');
+    const tipCanvas = $('#studioTip'), sample = $('#studioStroke'), trial = $('#studioTrial');
+    const trialCtx = trial.getContext('2d'), sampleCtx = sample.getContext('2d');
+    const clear = $('#studioClear');
+    const parameterGroups = $('#studioParameterGroups');
+    // Each range defines its display range, initial value and scale to the brush model.
+    const parameters = {
+      sizePx: ['Size', '大小', 4, 160, 48, ' px'],
+      spacingPct: ['Spacing', '间距', 1, 200, 15, '%'],
+      opacity: ['Opacity', '不透明度', 1, 100, 100, '%', 100],
+      angle: ['Angle', '笔尖角度', -180, 180, 0, '°'],
+      roundness: ['Roundness', '圆度', 5, 100, 100, '%'],
+      hardness: ['Hardness', '硬度', 0, 100, 100, '%', 100],
+      flowPct: ['Flow', '流量', 0, 100, 100, '%', 100],
+      pressureSize: ['Pressure', '笔压控制大小'],
+      minSizeRatio: ['MinSize', '最小压感大小', 1, 100, 20, '%', 100, 'pressureSize'],
+      pressureOpacity: ['PressureOpacity', '笔压控制不透明度'],
+      minOpacityRatio: ['MinOpacity', '最小压感不透明度', 0, 100, 0, '%', 100, 'pressureOpacity'],
+      bruFlowSmooth: ['FlowSmooth', '流量平滑'],
+      sizeJitterPct: ['SizeJitter', '大小抖动', 0, 100, 0, '%'],
+      opacityJitterPct: ['OpacityJitter', '不透明度抖动', 0, 100, 0, '%'],
+      spacingJitterPct: ['SpacingJitter', '间距抖动', 0, 100, 0, '%'],
+      angleJitterDeg: ['AngleJitter', '旋转散布', 0, 180, 0, '°'],
+      scatterPct: ['Scatter', '位置散布', 0, 100, 0, '%'],
+      scatterBothAxes: ['ScatterBothAxes', '两轴散布'],
+      scatterCount: ['ScatterCount', '笔尖数量', 1, 10, 1, ''],
+      countJitterPct: ['CountJitter', '数量抖动', 0, 100, 0, '%'],
+      smoothingStrength: ['Smoothing', '平滑强度', 0, 100, 0, '%', 100],
+      falloffPct: ['Falloff', '笔迹衰减', 0, 100, 0, '%'],
+      taperOn: ['Taper', '启用锥度'],
+      taperStartLength: ['TaperStart', '起笔长度', 0, 100, 20, '%', 100, 'taperOn'],
+      taperEndLength: ['TaperEnd', '收笔长度', 0, 100, 30, '%', 100, 'taperOn'],
+      taperSize: ['TaperSize', '大小强度', 0, 100, 50, '%', 100, 'taperOn'],
+      taperOpacity: ['TaperOpacity', '不透明度强度', 0, 100, 50, '%', 100, 'taperOn']
+    };
+    const photoshopGroups = [
+      ['画笔笔尖形状', 'sizePx spacingPct angle roundness'],
+      ['形状动态', 'pressureSize minSizeRatio sizeJitterPct'],
+      ['散布', 'scatterPct scatterBothAxes scatterCount countJitterPct'],
+      ['传递与工具选项', 'opacity flowPct pressureOpacity minOpacityRatio opacityJitterPct'],
+      ['平滑', 'smoothingStrength']
+    ];
+    const formats = {
+      bru: { ext: 'bru', groups: [
+        ['笔尖与笔迹', 'sizePx spacingPct angle roundness opacity flowPct'],
+        ['压力', 'pressureSize minSizeRatio pressureOpacity minOpacityRatio bruFlowSmooth'],
+        ['随机与散布', 'sizeJitterPct spacingJitterPct angleJitterDeg scatterPct scatterCount countJitterPct'],
+        ['平滑', 'smoothingStrength']
+      ] },
+      abr: { ext: 'abr', groups: photoshopGroups },
+      tpl: { ext: 'tpl', groups: photoshopGroups },
+      brushset: { ext: 'brushset', groups: [
+        ['描边路径', 'spacingPct spacingJitterPct scatterPct falloffPct'],
+        ['形状', 'angle roundness angleJitterDeg scatterCount countJitterPct'],
+        ['属性', 'sizePx opacity'],
+        ['Apple Pencil', 'pressureSize minSizeRatio pressureOpacity minOpacityRatio'],
+        ['动态', 'sizeJitterPct opacityJitterPct'],
+        ['稳定性', 'smoothingStrength'],
+        ['锥度', 'taperOn taperStartLength taperEndLength taperSize taperOpacity']
+      ] },
+      gopaint_set: { ext: 'gobrushes', groups: [
+        ['描边路径', 'spacingPct scatterPct'], ['属性', 'sizePx opacity'], ['渲染', 'flowPct'],
+        ['压感', 'pressureSize minSizeRatio']
+      ] },
+      kbundle: { ext: 'bundle', groups: [
+        ['画笔笔尖', 'sizePx spacingPct angle roundness'], ['不透明度与流量', 'opacity flowPct pressureOpacity'],
+        ['大小', 'pressureSize minSizeRatio'], ['散布', 'scatterPct scatterCount']
+      ] },
+      painter: { ext: 'brushcategory', label: 'Corel Painter .brushcategory', groups: [
+        ['常规与大小', 'sizePx opacity'], ['间距与流量', 'spacingPct flowPct'],
+        ['笔尖形状', 'angle roundness hardness'], ['大小变化与散布', 'sizeJitterPct scatterPct']
+      ] }
+    };
+    const drafts = [];
+    let current = -1, material, tip, activeStroke, previewId = 0, exporting = false;
+    let sidebarOpen = false;
+
+    for (const option of $('#optTarget').options) {
+      const profile = formats[option.value];
+      if (profile) format.add(new Option(profile.label || option.textContent, option.value));
+    }
+    format.value = 'bru';
+
+    function syncDrawer() {
+      const modal = sidebarOpen && narrowScreen.matches;
+      content.inert = modal;
+      actions.inert = modal;
+      document.body.classList.toggle('workspace-drawer-open', modal);
+    }
+    function setMenu(open) {
+      sidebarOpen = open;
+      shell.classList.toggle('sidebar-open', open);
+      nav.inert = !open;
+      menu.setAttribute('aria-expanded', String(open));
+      syncDrawer();
+    }
+    function closeMenu() {
+      menu.focus();
+      setMenu(false);
+    }
+    menu.addEventListener('click', () => {
+      if (sidebarOpen) { closeMenu(); return; }
+      setMenu(true);
+      nav.querySelector('[aria-current="page"]').focus({ preventScroll: true });
+    });
+    scrim.addEventListener('click', closeMenu);
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && sidebarOpen && !event.defaultPrevented &&
+          !(event.target instanceof Element && event.target.closest('.modal-backdrop, #compareModal'))) {
+        event.preventDefault();
+        closeMenu();
+      }
+    });
+    if (narrowScreen.addEventListener) narrowScreen.addEventListener('change', syncDrawer);
+    else narrowScreen.addListener(syncDrawer);
+    function updateHeaderHeight() {
+      shell.style.setProperty('--workspace-header-height', header.getBoundingClientRect().height + 'px');
+    }
+    if (typeof ResizeObserver !== 'undefined') new ResizeObserver(updateHeaderHeight).observe(header);
+    else window.addEventListener('resize', updateHeaderHeight);
+    updateHeaderHeight();
+
+    function switchWorkspace(studio) {
+      if (narrowScreen.matches && sidebarOpen) closeMenu();
+      const conversion = $('#conversionWorkspace');
+      if (conversion.hidden === studio) return;
+      conversion.hidden = studio;
+      actions.hidden = studio;
+      $('#studioWorkspace').hidden = !studio;
+      document.body.classList.toggle('studio-open', studio);
+      (studio ? convertTab : studioTab).removeAttribute('aria-current');
+      (studio ? studioTab : convertTab).setAttribute('aria-current', 'page');
+      updateHeaderHeight();
+      window.scrollTo(0, 0);
+    }
+    convertTab.addEventListener('click', () => switchWorkspace(false));
+    studioTab.addEventListener('click', () => switchWorkspace(true));
+
+    function setStatus(message, error) {
+      status.textContent = message;
+      status.dataset.error = String(!!error);
+    }
+
+    function clearTrial() {
+      activeStroke = null;
+      trialCtx.clearRect(0, 0, trial.width, trial.height);
+      clear.disabled = true;
+    }
+    clear.addEventListener('click', clearTrial);
+
+    function parameterValue(draft, key) {
+      const descriptor = parameters[key];
+      const value = draft && draft.params[key];
+      return value === undefined ? (descriptor.length === 2 ? false : descriptor[4]) : value;
+    }
+
+    function makeBrush(draft, brushTip, profile) {
+      const brush = {
+        name: draft.name.trim() || draft.base, source: 'image', enabled: true, tip: brushTip,
+        angle: 0, pressureSize: false, pressureOpacity: false
+      };
+      for (const [, keys] of profile.groups) for (const key of keys.split(' ')) {
+        const [, , , , , , divisor, dependency] = parameters[key];
+        if (dependency && !parameterValue(draft, dependency)) continue;
+        const value = parameterValue(draft, key);
+        brush[key] = divisor ? value / divisor : value;
+      }
+      brush.pressure = brush.pressureSize || brush.pressureOpacity;
+      brush.scatterOn = brush.scatterPct > 0 || brush.scatterCount > 1;
+      return brush;
+    }
+
+    function newStroke(ctx, x, y, canvasScale, pressureValue) {
+      const brush = makeBrush(drafts[current], tip, formats[format.value]);
+      const scale = brush.sizePx * canvasScale / Math.max(tipCanvas.width, tipCanvas.height);
+      const w = tipCanvas.width * scale, h = tipCanvas.height * scale * (brush.roundness || 100) / 100;
+      const step = Math.max(1, brush.sizePx * brush.spacingPct / 100) * canvasScale;
+      let seed = 12345;
+      const random = () => (seed = (Math.imul(1664525, seed) + 1013904223) >>> 0) / 0x100000000;
+      const jitter = (amount, rand) => 1 - (amount || 0) / 100 * rand;
+      const minOpacity = format.value === 'bru'
+        ? Math.min(brush.opacity, brush.minOpacityRatio || 0) : brush.opacity * (brush.minOpacityRatio || 0);
+      const dab = (px, py, force) => {
+        const pressureScale = brush.pressureSize ? brush.minSizeRatio + (1 - brush.minSizeRatio) * force : 1;
+        const opacity = brush.pressureOpacity ? minOpacity + (brush.opacity - minOpacity) * force : brush.opacity;
+        const spread = brush.sizePx * canvasScale * (brush.scatterPct || 0) / 100;
+        const count = Math.max(1, Math.round((brush.scatterCount || 1) * jitter(brush.countJitterPct, random())));
+        for (let i = 0; i < count; i++) {
+          const factor = pressureScale * jitter(brush.sizeJitterPct, random());
+          if (factor === 0) continue;
+          const angle = brush.angle + (2 * random() - 1) * (brush.angleJitterDeg || 0);
+          ctx.save();
+          ctx.globalAlpha = opacity * (brush.flowPct === undefined ? 1 : brush.flowPct) * jitter(brush.opacityJitterPct, random());
+          ctx.translate(px + (brush.scatterBothAxes === false ? 0 : (random() - 0.5) * spread),
+            py + (random() - 0.5) * spread);
+          if (angle) ctx.rotate(angle * Math.PI / 180);
+          ctx.drawImage(tipCanvas, -w * factor / 2, -h * factor / 2, w * factor, h * factor);
+          ctx.restore();
+        }
+      };
+      let next = step;
+      dab(x, y, pressureValue);
+      return function (px, py, force) {
+        const dx = px - x, dy = py - y;
+        const distance = Math.hypot(dx, dy);
+        while (next <= distance) {
+          dab(x + dx * next / distance, y + dy * next / distance, force);
+          next += step * Math.max(0.25, jitter(brush.spacingJitterPct, random()));
+        }
+        next -= distance;
+        x = px; y = py;
+      };
+    }
+
+    function updateSample() {
+      sampleCtx.clearRect(0, 0, sample.width, sample.height);
+      if (!tip) return;
+      const scale = Math.min(1, 60 / parameterValue(drafts[current], 'sizePx'));
+      const draw = newStroke(sampleCtx, 34, sample.height / 2, scale, 0.25);
+      for (let x = 35; x <= sample.width - 34; x++) {
+        const t = (x - 34) / (sample.width - 68);
+        draw(x, sample.height / 2 + 17 * Math.sin(t * Math.PI * 2), 0.25 + 0.75 * Math.sin(t * Math.PI));
+      }
+    }
+
+    function syncParameters() {
+      const draft = drafts[current];
+      parameterGroups.querySelectorAll('input').forEach(control => {
+        const key = control.dataset.parameter;
+        const [, , , , , unit, , dependency] = parameters[key];
+        const value = parameterValue(draft, key);
+        if (control.type === 'checkbox') control.checked = value;
+        else {
+          control.value = value;
+          control.labels[0].querySelector('.studio-param-value').textContent = value + unit;
+          control.setAttribute('aria-valuetext', value + unit);
+        }
+        control.labels[0].hidden = !!dependency && !parameterValue(draft, dependency);
+      });
+    }
+
+    function updateFormat() {
+      const profile = formats[format.value];
+      parameterGroups.replaceChildren();
+      profile.groups.forEach(([title, keys], index) => {
+        const group = document.createElement('details');
+        const summary = document.createElement('summary');
+        const fields = document.createElement('div');
+        group.open = index === 0;
+        summary.textContent = title;
+        fields.className = 'studio-parameter-fields';
+        for (const key of keys.split(' ')) {
+          const [id, text, min, max] = parameters[key];
+          const field = document.createElement('label');
+          const control = document.createElement('input');
+          control.id = 'studio' + id;
+          control.dataset.parameter = key;
+          field.id = control.id + 'Field';
+          field.htmlFor = control.id;
+          if (min === undefined) {
+            field.className = 'studio-param-checkbox';
+            control.type = 'checkbox';
+            field.append(control, text);
+          } else {
+            const caption = document.createElement('span');
+            const readout = document.createElement('span');
+            field.className = 'opt';
+            control.type = 'range';
+            control.min = min; control.max = max;
+            readout.id = control.id + 'Value';
+            readout.className = 'studio-param-value';
+            readout.setAttribute('aria-hidden', 'true');
+            caption.append(text + ' ', readout);
+            field.append(caption, control);
+          }
+          fields.appendChild(field);
+        }
+        group.append(summary, fields);
+        parameterGroups.appendChild(group);
+      });
+      $('#studioFormatHint').textContent = '导出一个 .' + profile.ext + ' 笔刷组';
+      syncParameters();
+      updateSample();
+    }
+    format.addEventListener('change', updateFormat);
+    parameterGroups.addEventListener('input', event => {
+      const draft = drafts[current];
+      const control = event.target, key = control.dataset.parameter;
+      if (!draft || !key) return;
+      draft.params[key] = control.type === 'checkbox' ? control.checked : Number(control.value);
+      syncParameters();
+      updateSample();
+    });
+    name.addEventListener('input', () => {
+      const draft = drafts[current];
+      if (!draft) return;
+      draft.name = name.value;
+      queue.options[current].textContent = draft.name.trim() || draft.base;
+    });
+
+    function makeTip(image, mode) {
+      const { width, height, data } = image.pixels;
+      const useAlpha = mode === 'alpha' || (mode === 'auto' && image.transparent);
+      const gray = new Uint8Array(width * height);
+      let hasInk = false;
+      for (let i = 0; i < data.length; i += 4) {
+        let alpha = data[i + 3];
+        if (!useAlpha && alpha) {
+          const luminance = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+          alpha = Math.round(alpha * (1 - luminance / 255));
+        }
+        gray[i / 4] = alpha;
+        if (alpha) hasInk = true;
+      }
+      return hasInk ? { w: width, h: height, data: gray } : null;
+    }
+
+    function updateTip() {
+      if (!material) return;
+      activeStroke = null;
+      tip = makeTip(material, mask.value);
+      if (tip) {
+        const scale = Math.min(1, 256 / Math.max(tip.w, tip.h));
+        const w = Math.max(1, Math.round(tip.w * scale)), h = Math.max(1, Math.round(tip.h * scale));
+        const rgba = BC.convert.tipToRGBA({ tip: tip }).rgba;
+        tipToCanvas({ tip: { w: w, h: h, rgba: BC.png.resize(rgba, tip.w, tip.h, w, h) } }, tipCanvas);
+      } else tipCanvas.width = tipCanvas.height = 1;
+      const useAlpha = mask.value === 'alpha' || (mask.value === 'auto' && material.transparent);
+      setStatus(drafts[current].file.name + (tip
+        ? ' · ' + tip.w + ' × ' + tip.h + ' px · ' + (useAlpha ? '按透明度' : '提取深色')
+        : ' · 没有可用的笔尖像素，请切换提取方式或更换图片'), !tip);
+      syncControls();
+      updateSample();
+    }
+    mask.addEventListener('change', () => {
+      if (drafts[current]) drafts[current].mask = mask.value;
+      updateTip();
+    });
+
+    async function readMaterial(file, limit) {
+      const url = URL.createObjectURL(file);
+      try {
+        const img = new Image();
+        await new Promise((resolve, reject) => {
+          img.onload = resolve;
+          img.onerror = reject;
+          img.src = url;
+        });
+        const side = Math.max(img.naturalWidth, img.naturalHeight);
+        if (!side) throw new Error('空图片');
+        const scale = Math.min(1, limit / side);
+        const cv = document.createElement('canvas');
+        cv.width = Math.max(1, Math.round(img.naturalWidth * scale));
+        cv.height = Math.max(1, Math.round(img.naturalHeight * scale));
+        const ctx = cv.getContext('2d');
+        ctx.drawImage(img, 0, 0, cv.width, cv.height);
+        const pixels = ctx.getImageData(0, 0, cv.width, cv.height);
+        let transparent = false;
+        for (let i = 3; i < pixels.data.length; i += 4) {
+          if (pixels.data[i] < 255) { transparent = true; break; }
+        }
+        return { pixels: pixels, transparent: transparent };
+      } finally { URL.revokeObjectURL(url); }
+    }
+
+    function syncControls() {
+      pick.disabled = exporting;
+      queue.disabled = remove.disabled = exporting || !drafts.length;
+      format.disabled = tipLimit.disabled = packName.disabled = exporting;
+      settings.disabled = exporting || current < 0;
+      add.disabled = exporting || !tip;
+      exportButton.disabled = exporting || !drafts.length;
+      cancel.hidden = !exporting;
+    }
+
+    function renderQueue() {
+      queue.replaceChildren();
+      drafts.forEach((draft, i) => queue.add(new Option(draft.name.trim() || draft.base, i)));
+      queue.selectedIndex = current;
+      $('#studioCount').textContent = '笔刷列表 · ' + drafts.length + ' 支';
+      exportButton.textContent = drafts.length ? '制作并下载（' + drafts.length + ' 支）' : '制作并下载';
+      syncControls();
+    }
+
+    async function selectDraft(index) {
+      const id = ++previewId;
+      current = index;
+      queue.selectedIndex = index;
+      material = tip = null;
+      tipCanvas.width = tipCanvas.height = 1;
+      clearTrial();
+      syncControls();
+      const draft = drafts[index];
+      syncParameters();
+      if (!draft) {
+        name.value = '';
+        setStatus('导入图片开始制作');
+        updateSample();
+        return;
+      }
+      name.value = draft.name;
+      mask.value = draft.mask;
+      updateSample();
+      setStatus('正在读取 ' + draft.file.name);
+      try {
+        const image = await readMaterial(draft.file, Number(tipLimit.value));
+        if (id !== previewId) return;
+        material = image;
+        updateTip();
+      } catch (e) {
+        if (id === previewId) setStatus('无法读取「' + draft.file.name + '」，导出时将跳过', true);
+      }
+    }
+
+    function importMaterials(files) {
+      if (exporting) return;
+      const first = drafts.length;
+      const skipped = [];
+      for (const file of files) {
+        if (!/\.(png|jpe?g|webp)$/i.test(file.name) && !/^image\/(png|jpeg|webp)$/.test(file.type)) {
+          skipped.push(file.name);
+          continue;
+        }
+        const base = (file.name.replace(/\.[^.]+$/, '').trim() || '自制笔刷').slice(0, name.maxLength);
+        drafts.push({ file: file, base: base, name: base, mask: 'auto', params: {} });
+      }
+      if (skipped.length) toast('已跳过不支持的图片：' + skipped.join('、'));
+      if (first === drafts.length) return;
+      renderQueue();
+      selectDraft(first);
+    }
+
+    queue.addEventListener('change', () => selectDraft(queue.selectedIndex));
+    tipLimit.addEventListener('change', () => { if (current >= 0) selectDraft(current); });
+    remove.addEventListener('click', () => {
+      drafts.splice(current, 1);
+      current = Math.min(current, drafts.length - 1);
+      renderQueue();
+      selectDraft(current);
+    });
+    pick.addEventListener('click', () => input.click());
+    input.addEventListener('change', () => {
+      importMaterials(input.files);
+      input.value = '';
+    });
+    ['dragover', 'dragleave', 'drop'].forEach(type => drop.addEventListener(type, e => {
+      e.preventDefault();
+      drop.classList.toggle('over', type === 'dragover');
+      if (type !== 'drop') return;
+      e.stopPropagation();
+      importMaterials(e.dataTransfer.files);
+    }));
+
+    function trialPoint(e) {
+      const rect = trial.getBoundingClientRect();
+      const scale = trial.width / rect.width;
+      return { x: (e.clientX - rect.left) * scale, y: (e.clientY - rect.top) * trial.height / rect.height, scale: scale };
+    }
+    trial.addEventListener('pointerdown', e => {
+      if (!tip || activeStroke || e.button !== 0) return;
+      trial.setPointerCapture(e.pointerId);
+      const { x, y, scale } = trialPoint(e);
+      const force = e.pointerType === 'pen' ? e.pressure : 1;
+      activeStroke = { id: e.pointerId, draw: newStroke(trialCtx, x, y, scale, force) };
+      clear.disabled = false;
+    });
+    trial.addEventListener('pointermove', e => {
+      if (!activeStroke || activeStroke.id !== e.pointerId) return;
+      const { x, y } = trialPoint(e);
+      activeStroke.draw(x, y, e.pointerType === 'pen' ? e.pressure : 1);
+    });
+    ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(type => trial.addEventListener(type, e => {
+      if (activeStroke && activeStroke.id === e.pointerId) activeStroke = null;
+    }));
+
+    add.addEventListener('click', () => {
+      if (!tip || exporting) return;
+      if (isBusy() || isImporting()) { toast('请等待当前任务完成后再加入笔刷'); return; }
+      const draft = drafts[current];
+      const rec = makeRecord(draft.file.name, null, '');
+      rec.kind = 'image';
+      rec.kindLabel = '素材制笔';
+      rec.brushes = [makeBrush(draft, tip, formats[format.value])];
+      const search = $('#brushSearch');
+      search.value = '';
+      search.dispatchEvent(new Event('input'));
+      state.searchQuery = '';
+      $('#previewToolbar [data-filter="all"]').click();
+      switchWorkspace(false);
+      (sidebarOpen ? convertTab : menu).focus();
+      render();
+      toast('已加入「' + rec.brushes[0].name + '」，可选择目标格式后转换');
+    });
+
+    cancel.addEventListener('click', () => {
+      state.cancelRequested = true;
+      cancel.disabled = true;
+      cancel.textContent = '取消中…';
+    });
+    exportButton.addEventListener('click', async () => {
+      if (exporting || !drafts.length) return;
+      if (isBusy() || isImporting()) { toast('请等待当前任务完成后再制作'); return; }
+      const target = format.value, profile = formats[target];
+      const limit = Number(tipLimit.value);
+      const base = packName.value.trim() || '自制笔刷';
+      const brushes = [], warnings = [];
+      exporting = state.studioPreparing = true;
+      state.cancelRequested = false;
+      cancel.disabled = false;
+      cancel.textContent = '取消';
+      syncControls();
+      updateConvertButton();
+      try {
+        for (const [index, draft] of drafts.entries()) {
+          setProgress(index / drafts.length, '正在制作 ' + (index + 1) + '/' + drafts.length + '：' + draft.file.name);
+          try {
+            const image = index === current && material ? material : await readMaterial(draft.file, limit);
+            const brushTip = makeTip(image, draft.mask);
+            if (brushTip) brushes.push(makeBrush(draft, brushTip, profile));
+            else warnings.push(draft.file.name + '：没有可用的笔尖像素，已跳过');
+          } catch (e) {
+            warnings.push(draft.file.name + '：无法读取图片，已跳过');
+          }
+          if (state.cancelRequested) { toast('已取消制作'); return; }
+          await sleep(0);
+          if (state.cancelRequested) { toast('已取消制作'); return; }
+        }
+        if (!brushes.length) {
+          state.lastWarnings = warnings;
+          renderWarnings();
+          toast('没有可导出的笔刷，请检查列表里的图片和提取方式');
+          return;
+        }
+        state.studioPreparing = false;
+        await convertAll([{ name: base, baseName: base, kind: 'image', brushes: brushes }], {
+          target: target, tipSize: limit, prefix: '', goScatter: 'auto', pressureMode: 'auto',
+          textureMode: 'pattern', mode: 'pack', packOut: false, compareReport: false,
+          initialWarnings: warnings
+        });
+      } finally {
+        exporting = state.studioPreparing = false;
+        syncControls();
+        updateConvertButton();
+        setProgress(null);
+      }
+    });
+    updateFormat();
+  }
+  initBrushStudio();
 
   /* ---------------- events ---------------- */
   dz.addEventListener('click', () => { if (!isBusy()) fileInput.click(); });
@@ -2967,7 +3528,7 @@ const UPDATE_ENABLED = false;
     }
     else toast('当前环境不支持保存日志');
   });
-  btnConvert.addEventListener('click', convertAll);
+  btnConvert.addEventListener('click', () => convertAll());
   // 参数对比预览（转换前也能看）
   (function initCompare() {
     const btn = $('#btnCompare');
@@ -3347,6 +3908,7 @@ const UPDATE_ENABLED = false;
   document.addEventListener('drop', e => {
     e.preventDefault();
     if (dz.contains(e.target)) return;
+    if (!$('#studioWorkspace').hidden) { toast('把图片拖到素材导入框里'); return; }
     if (isBusy()) { toast('正在转换，完成后再添加文件'); return; }
     toast('把笔刷文件拖到上面的虚线框里');
   });

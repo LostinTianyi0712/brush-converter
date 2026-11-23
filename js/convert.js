@@ -101,16 +101,6 @@
     return sqlite.getTable(db, 'Variant');
   }
 
-  function sutVariantRowIndex(bytes, variantId) {
-    if (variantId === undefined || variantId === null) return -1;
-    const v = sutVariantTable(bytes);
-    if (!v) return -1;
-    for (let i = 0; i < v.rows.length; i++) {
-      if (String(v.rows[i].VariantID) === String(variantId)) return i;
-    }
-    return -1;
-  }
-
   function filterSutParams(params, columns, dropped) {
     const out = {};
     for (const k in params) {
@@ -120,13 +110,6 @@
     return out;
   }
 
-  function sameSutParams(a, b) {
-    const ka = Object.keys(a), kb = Object.keys(b);
-    if (ka.length !== kb.length) return false;
-    for (const k of ka) if (a[k] !== b[k]) return false;
-    return true;
-  }
-
   /* ---------- 写入口数值卫生（崩溃防护） ----------
      源文件可能畸形、截断或来自别的转换器，解析后得到 NaN / Infinity / 负值 /
      荒谬上限（例如 1e9 px 直径）。这些值一旦编进目标文件，目标软件读到就会
@@ -134,6 +117,7 @@
      ValkyrieStitcher 断言等都是这个路径）。
      这里只在「明显非法」时改动，合法值原样透传；各格式自己的上限钳制不变，
      钳制过的字段会挂在 _guardNotes 上，由写出口汇总成警告，不静默吞掉。 */
+  const MIN_TEXTURE_SCALE = 0.01;
   const GUARD_RULES = [
     // [字段, 默认值, 下限, 上限]
     ['sizePx', null, 0.1, 5000],          // null = 用笔尖尺寸兜底
@@ -160,7 +144,9 @@
        钳它的后果不是「数字变一点」：sanitizeBrushNumbers 会返回克隆对象，指纹随之变化，
        `rawBrushUnchanged` 立刻失效 —— 整包透传被跳过，变成整份重建，330KB 原生载荷全丢。
        实测证据：20 支的 `书法练习_*.gobrushes` 未改参数导出时 25.9MB → 14.6MB。 */
-    ['textureScale', 1, 0.01, 100, function (brush) {
+    ['textureScale', 1, MIN_TEXTURE_SCALE, 100, function (brush) {
+      // BRU 的 f24 用 float32，合法下限再读回时略小于 JS 的 0.01。
+      if (brush.source === 'bru' && brush.textureScale === Math.fround(MIN_TEXTURE_SCALE)) return true;
       /* 只放过「天生会画派生出来的有限值」（grainScale 上限 100 → 反推上限约 720px/纹理宽）：
          NaN / 越界值仍然回到通用钳制，别把保护一起丢掉。 */
       return !!(brush && brush.source === 'gopaint' && brush.gopaintGrainScale !== undefined &&
@@ -594,6 +580,13 @@
         '：文件结构可读，但字段语义尚未标定，本版不提供转换（可用 _testout/native153/sai2/saitdat_tool.js dump 查看字段）');
     } else if (kind === 'bru') {
       result = bru.parseBru(bytes);
+      result.brushes.forEach(function (b) {
+        const carried = readProcreateGrainChunk(b._rawTipPng);
+        if (carried) {
+          b._procreateGrainChunk = carried;
+          b._procreateGrainState = procreateGrainState(b);
+        }
+      });
       result.brushes = result.brushes.map(b => Object.assign({}, b, { source: 'bru' }));
       restoreHsjTips(result, opts);
       // #23（WorkBuddy 第106轮）：BRU f115（旋转方式）→ PS 角度控制源逆映射。
@@ -973,8 +966,7 @@
        （同一支笔：拆 = grain 0.0232，不拆（副笔烘进笔尖）= 0.0622，与源缩略图 0.0632 基本重合；
        把「双重笔刷」一关立刻回到 0.0625 —— 压平颗粒的就是辅助笔本身）。
        所以这类保持「副笔烘进笔尖 + 独立纹理层」，判据直接复用 grainLayerWillApply，避免两处口径漂移。 */
-    if (grainLayerWillApply(brush, opts)) return false;
-    return true;
+    return !grainLayerWillApply(brush, opts);
   }
 
   function buildBruDualPairBrushes(brush) {
@@ -1146,6 +1138,36 @@
     return Math.max(fromBru ? -200 : 0, Math.min(100, Math.round(abs * 100) / 100));
   }
 
+  function bruProcreateColor(brush) {
+    const raw = brush.source === 'procreate' && brush._params;
+    if (!raw) return null;
+    const ratio = v => {
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0;
+    };
+    const pressure = {
+      hue: ratio(raw.dynamicsPressureHue),
+      saturation: ratio(raw.dynamicsPressureSaturation),
+      brightness: ratio(raw.dynamicsPressureBrightness),
+      secondary: ratio(raw.dynamicsPressureSecondaryColor)
+    };
+    if (pressure.secondary <= 0.001) pressure.secondary = 0;
+    if (!pressure.hue && !pressure.saturation && !pressure.brightness && !pressure.secondary) return null;
+    // The shared brush model combines pressure and random color for older targets.
+    // BRU has separate controls, so take the random values from the source archive.
+    const before = brush._rawNormalized || {};
+    const random = (key, tip, stroke) => Object.prototype.hasOwnProperty.call(before, key) && brush[key] !== before[key]
+      ? brush[key] : Math.max(ratio(raw[tip]), ratio(raw[stroke]));
+    const hue = random('colorJitterHue', 'dynamicsJitterHue', 'dynamicsJitterStrokeHue');
+    const saturation = random('colorJitterSat', 'dynamicsJitterSaturation', 'dynamicsJitterStrokeSaturation');
+    const brightness = random('colorJitterVal', 'dynamicsJitterLightness', 'dynamicsJitterStrokeLightness');
+    const enabled = brush.colorDynamicsOn !== before.colorDynamicsOn && before.colorDynamicsOn !== undefined
+      ? brush.colorDynamicsOn : !!(hue || saturation || brightness || brush.colorJitterFgBg);
+    // Tilt and roll have no equivalent pressure slider in BRU.
+    const secondaryFallback = 0.5 * Math.max(ratio(raw.dynamicsTiltSecondaryColor), ratio(raw.dynamicsRollSecondaryColor));
+    return { pressure, hue, saturation, brightness, enabled, secondaryFallback };
+  }
+
   /* 从笔尖 alpha 轮廓估算硬边程度：纯二值边（只有 0/255）≈1，
      大面积半透明过渡（柔边圆笔）会显著降低。用于源笔刷没有 hardness 字段时，
      不要一律按 1（硬边）写 BRU。 */
@@ -1222,6 +1244,9 @@
     return { repeats:px.k };
   }
 
+  const BRU_MAX_SIZE_PX = 5000;
+  const BRU_AUTO_SPACING_PCT = 10;
+  const BRU_MIN_SPACING_PCT = 0.1;
   function bruIndependentTexture(brush, opts) {
     if (brush.source === 'bru' || !brush.hasTexture || opts.noTextureBake === true || opts.bruTexMatch === 'off' ||
         (opts.bruTexAsset && opts.bruTexAsset !== 'off')) return null;
@@ -1262,15 +1287,17 @@
       if (!brush._rawBruTexture || !/^[0-9a-f]{32}$/i.test(String(brush.texAssetId || ''))) return null;
       return { custom: true, keepNativeId: true, plain: plainForNative };
     }
+    // A BRU texture reference carries no rotation. Preserve rotated grain by baking.
+    if (brush.source === 'procreate' && Math.abs(Number(brush.textureRotation) || 0) > 1e-4) return null;
     const plain = textureGray(brush.textureInverted ? Object.assign({}, brush, { textureInverted:false }) : brush);
     if (!plain) return null;
     const lib = isNode ? require('./hsj-textures-lib.js') : (root.BC && root.BC.hsjTextureLib);
     const hit = lib && lib.matchKnown(plain.w, plain.h, plain.gray);
     if (hit) return { id:hit };
-    if (brush.source !== 'procreate' || Math.abs(Number(brush.textureRotation) || 0) > 1e-4) return null;
+    if (brush.source !== 'procreate') return null;
     // BRU's scale is relative to the bitmap width. Procreate's moving grain
     // uses the dab width as reference. Preserve the nominal tile size at export.
-    const scale = Math.max(1, Math.min(3000, (brush.sizePx || 100) * (opts.sizeScale || 1))) *
+    const scale = Math.max(1, Math.min(BRU_MAX_SIZE_PX, (brush.sizePx || 100) * (opts.sizeScale || 1))) *
       (brush.textureScale || 1) / plain.w;
     if (!(scale >= 0.01 && scale <= 20)) return null;
     if (brush.textureDepth >= 0.8 && regularDotGrain(plain)) return { custom:true, scale, plain };
@@ -1315,36 +1342,22 @@
     if (Number(brush.textureDepth) >= GRAIN_LAYER_MAX_SRC_DEPTH) return false;
     const sp = Number(brush.spacingPct);
     if (!(sp > 0 && sp <= GRAIN_LAYER_MAX_SPACING)) return false;
-    if (brush.dualOn && brush.dualTip && !brush.bruDualRefUuid && opts && opts.dualBake === false) return false;
+    if (opts && opts.spacingOverride > GRAIN_LAYER_MAX_SPACING) return false;
+    if (brush.dualOn && brush.dualTip && !brush.bruDualRefUuid && opts &&
+        (opts.dualBake === false || opts.noDualBake === true)) return false;
     if (brush.embeddedSubPng && brush.embeddedSubPng.length) return false;   // 记录内嵌副笔尖（makeBruEmbedded）
     return true;
   }
 
-  /* 「这支笔刷最终会不会写出独立纹理层」——收尾判据与 dualNeedsPair 共用，保证两处口径一致。
-     缓存用 WeakMap 而不是挂在 brush 上：`_` 前缀的临时字段会进 brushFingerprint，
-     而「原样透传」的判据正是拿它做基线，多一个键会让「没改过」被误判成「改过」。 */
-  const grainLayerMemo = (typeof WeakMap === 'function') ? new WeakMap() : null;
+  /* 用写出侧的匹配规则预测是否会走已标定的颗粒层。笔刷与选项可在下次导出前改变。 */
   function grainLayerWillApply(brush, opts) {
-    if (!brush) return false;
-    const key = [(opts && opts.bruGrainLayer) || '', opts && opts.fidelity === false ? '0' : '1',
-      opts && opts.dualBake === false ? '0' : '1', (opts && opts.sizeScale) || 1].join('|');
-    if (grainLayerMemo) {
-      const memo = grainLayerMemo.get(brush);
-      if (memo && memo.key === key) return memo.value;
-    }
-    let out = false;
-    if (grainLayerCandidate(brush, opts)) {
-      try {
-        const plain = textureGray(brush.textureInverted ? Object.assign({}, brush, { textureInverted: false }) : brush);
-        if (plain && grainHasPattern(plain)) {
-          const scale = Math.max(1, Math.min(3000, (brush.sizePx || 100) * ((opts && opts.sizeScale) || 1))) *
-            (brush.textureScale || 1) / plain.w;
-          out = scale >= GRAIN_LAYER_MIN_SCALE;
-        }
-      } catch (e) { out = false; }
-    }
-    if (grainLayerMemo) grainLayerMemo.set(brush, { key: key, value: out });
-    return out;
+    if (!brush.hasTexture || brush.source !== 'procreate') return false;
+    const normalized = sanitizeBrushNumbers(brush);
+    if (!grainLayerCandidate(normalized, opts)) return false;
+    try {
+      const match = bruIndependentTexture(normalized, opts || {});
+      return !!(match && match.grainLayer);
+    } catch (e) { return false; }
   }
 
   function bruTextureBytes(brush, match) {
@@ -1430,6 +1443,93 @@
   function rawVarintField(field, value) {
     const enc = function (n) { const o = []; while (n > 127) { o.push((n & 127) | 128); n = Math.floor(n / 128); } o.push(n); return o; };
     return new Uint8Array(enc(field * 8).concat(enc(value)));
+  }
+
+  // BRU limits metadata on subsequent records to 64 KiB. A private PNG chunk
+  // carries source assets without changing the decoded BRU tip or texture layer.
+  const PC_GRAIN_CHUNK = 'bcPG';
+  const PC_GRAIN_HEADER = 12;
+  const PC_GRAIN_ASSET_MAX = 32 * 1024 * 1024;
+
+  function procreateGrainPng(bytes) {
+    return bytes && bytes.length >= 45 && bytes.length <= PC_GRAIN_ASSET_MAX &&
+      png.isPng(bytes) && util.u32(bytes, 8) === 13 && util.ascii(bytes, 12, 4) === 'IHDR' &&
+      util.u32(bytes, 16) > 0 && util.u32(bytes, 16) <= 4096 &&
+      util.u32(bytes, 20) > 0 && util.u32(bytes, 20) <= 4096 &&
+      util.ascii(bytes, bytes.length - 8, 4) === 'IEND';
+  }
+
+  function readProcreateGrainChunk(bytes) {
+    if (!bytes || !png.isPng(bytes)) return null;
+    for (let at = 8; at + 12 <= bytes.length;) {
+      const size = util.u32(bytes, at);
+      const end = at + size + 12;
+      if (end > bytes.length || util.ascii(bytes, at + 4, 4) === 'IEND') return null;
+      if (util.ascii(bytes, at + 4, 4) === PC_GRAIN_CHUNK) {
+        const head = at + 8;
+        if (size < PC_GRAIN_HEADER || util.u32(bytes, head) !== 1) return null;
+        const paramsLength = util.u32(bytes, head + 4);
+        const grainLength = util.u32(bytes, head + 8);
+        const images = head + PC_GRAIN_HEADER + paramsLength;
+        const payloadEnd = end - 4;
+        if (paramsLength > 2048 || images + grainLength > payloadEnd) return null;
+        const grain = bytes.subarray(images, images + grainLength);
+        const shape = bytes.subarray(images + grainLength, payloadEnd);
+        if (!procreateGrainPng(grain) || (shape.length && !procreateGrainPng(shape)) ||
+            util.u32(bytes, payloadEnd) !== util.crc32(bytes, at + 4, payloadEnd)) return null;
+        try {
+          const params = procreate.grainArchiveScalars(JSON.parse(util.utf8Decode(bytes.subarray(head + PC_GRAIN_HEADER, images))));
+          if (params.grainDepth === undefined) return null;
+          return { grain, shape, params, chunk: bytes.subarray(at, end) };
+        } catch (e) { return null; }
+      }
+      at = end;
+    }
+    return null;
+  }
+
+  function writeProcreateGrainChunk(brush, unbakedTip) {
+    if (brush.source !== 'procreate' || brush._bruExtra || brush._bruTexParams || !procreateGrainPng(brush._rawGrain)) return null;
+    const params = procreate.grainArchiveScalars(brush._params);
+    params.grainDepth = brush.hasTexture ? (brush.textureDepth === undefined ? 0.6 : brush.textureDepth) : 0;
+    const data = util.utf8Encode(JSON.stringify(params));
+    let shape = new Uint8Array(0);
+    if (unbakedTip) {
+      const { w, h, rgba } = unbakedTip;
+      const gray = new Uint8Array(w * h);
+      for (let i = 0; i < gray.length; i++) gray[i] = rgba[i * 4 + 3];
+      shape = png.encodeGray(w, h, gray);
+    }
+    if (shape.length && !procreateGrainPng(shape)) return null;
+    const payloadLength = PC_GRAIN_HEADER + data.length + brush._rawGrain.length + shape.length;
+    const chunk = new Uint8Array(payloadLength + 12);
+    const view = new DataView(chunk.buffer);
+    view.setUint32(0, payloadLength);
+    chunk.set(util.utf8Encode(PC_GRAIN_CHUNK), 4);
+    view.setUint32(8, 1);
+    view.setUint32(12, data.length);
+    view.setUint32(16, brush._rawGrain.length);
+    chunk.set(data, 20);
+    chunk.set(brush._rawGrain, 20 + data.length);
+    chunk.set(shape, 20 + data.length + brush._rawGrain.length);
+    view.setUint32(chunk.length - 4, util.crc32(chunk, 4, chunk.length - 4));
+    return chunk;
+  }
+
+  function addProcreateGrainChunk(bytes, chunk) {
+    return util.concat([bytes.subarray(0, bytes.length - 12), chunk, bytes.subarray(bytes.length - 12)]);
+  }
+
+  function procreateGrainState(brush) {
+    const { tip, texAssetId, hasTexture, textureDepth, textureInverted, textureScale,
+      textureBrightness, textureContrast, textureRotation, bruTextureBlendMode, bruShapeInverted } = brush;
+    return util.brushFingerprint({ tip, texAssetId, hasTexture, textureDepth, textureInverted, textureScale,
+      textureBrightness, textureContrast, textureRotation, bruTextureBlendMode, bruShapeInverted });
+  }
+
+  function unchangedProcreateGrain(brush) {
+    const carried = brush._procreateGrainChunk;
+    return carried && brush._procreateGrainState === procreateGrainState(brush) ? carried : null;
   }
   function burntOutlineCandidate(brush, opts) {
     if (!brush || brush.source === 'bru' || brush._bruExtra) return false;
@@ -1801,10 +1901,18 @@
     const builtinRef = builtinTipKey(brush);
     const bridgeBuiltin = !!(builtinRef && bridgeExtra && (bridgeExtra.builtinTipRef === builtinRef || brush._tipFromBuiltin === brush.oldTexId));
     const keepBuiltinTip = !!(!bakingDual && ((bridgeBuiltin && bridgeTipUnchanged) || brush._bruForceBuiltinTipRef));
+    // Archive tone values are signed offsets. A brushset exported from BRU
+    // can carry absolute BRU values in the same normalized fields.
+    const grainTone = brush.source === 'procreate' && brush._params && !brush._bruTexParams && !brush._nativeTexFromBru
+      ? { brightness: Math.max(-100, Math.min(100, Number(brush.textureBrightness) || 0)),
+          contrast: Math.max(-100, Math.min(100, Number(brush.textureContrast) || 0)) }
+      : null;
     let textureBaked = false;
+    let unbakedTip;
     if (brush.source !== 'bru' && brush.hasTexture && opts.noTextureBake !== true && !texMatchId) {
       const texture = textureGray(brush);
       if (texture) {
+        if (brush.source === 'procreate' && procreateGrainPng(brush._rawGrain)) unbakedTip = { w, h, rgba };
         rgba = new Uint8Array(rgba);
         bakeTextureIntoRGBA(rgba, w, h, {
           _patternPixels: { w: texture.w, h: texture.h, mode: 1, data: texture.gray },
@@ -1812,8 +1920,9 @@
              导致「纹理缩放」在 BRU 路径上根本不生效（对着色世界就是这个路径）。 */
           textureScale: brush.textureScale,
           grainDepthMinimum: brush.grainDepthMinimum,
-          textureRotation: brush.textureRotation
-        }, brush.textureDepth === undefined ? 0.35 : brush.textureDepth);
+          textureRotation: brush.textureRotation,
+          textureRotationIsRadians: !!grainTone
+        }, brush.textureDepth === undefined ? 0.35 : brush.textureDepth, grainTone);
         textureBaked = true;
       }
     }
@@ -1845,10 +1954,14 @@
       }
       effectiveTextureDepth = Math.round((1 - uiDepth) * 10000) / 10000;
     }
-    // Put coverage into dark RGB only when the source BRU used f42.
-    // With f42 off, BRU reads alpha and would otherwise lose soft edges.
+    const nativeGrainJitter = brush.source === 'bru' ||
+      (brush._bruTexParams && Number.isFinite(brush._bruTexParams.depthJitter));
+    const mappedGrainTone = (texMatchId || texAssetId) && grainTone;
+    // Undo the dark encoding of older bridge shapes. New bridge masks already
+    // use positive coverage, and white RGB with that alpha preserves it.
     let encodeRgba = rgba;
-    if (brush.source !== 'bru' && brush._bruExtra && brush.bruShapeRgbOpacity === true && brush._bruRgbOpacityDark !== false) {
+    if (brush.source !== 'bru' && brush._bruExtra && brush.bruShapeRgbOpacity === true &&
+        !brush._bruExtra.rgbOpacityLightShape && brush._bruRgbOpacityDark !== false) {
       encodeRgba = new Uint8Array(rgba.length);
       for (let i = 0; i < rgba.length; i += 4) {
         const a = rgba[i + 3];
@@ -1865,9 +1978,23 @@
         (!brush._bruTipShapeHash || (brush._rawShape && util.md5(brush._rawShape) === brush._bruTipShapeHash))) ||
       (brush._rawTipPng && brush._rawTipPng.length && brush._bruForceRawTipPng)
     );
-    const pngBytes = canRestoreTipRaw
+    let pngBytes = canRestoreTipRaw
       ? new Uint8Array(brush._bruTipRaw || brush._rawTipPng)
       : png.encode(w, h, encodeRgba);
+        /* 【第340轮（作者：Lead）】`keepNoShape`（程序化笔尖、无 Shape.png）以前会连 Procreate 的
+       grain chunk 一起跳过 —— 缪斯之梦主笔正是这种（无 Shape、有 Grain.png），于是
+       brushset → BRU → brushset 回来「颗粒来源」空白。App 侧仍然按 noShape 用内置笔尖、
+       忽略这张 PNG，但 chunk 留在 PNG 上，我们自己的 parseBru 能读回来。 */
+    /* 【第340轮（作者：Lead）】`opts.procreateGrainBridge === false` 关闭 chunk 写出。
+       chunk 里是源 Grain.png 的原样副本，是 brushset → BRU → brushset 唯一能原图回写的途径，
+       但对「只想在画世界Pro 里用」的人是纯冗余：缪斯之梦 34 支转出 84MB，带上后 158MB。
+       默认仍然写（保住往返能力），要精简产物时显式关掉。 */
+    if ((!keepNoShape || procreateGrainPng(brush._rawGrain)) && !texMatchNoShape && opts.fidelity !== false &&
+        !opts.noTextureBake && opts.procreateGrainBridge !== false) {
+      const carried = brush.source === 'bru' && !canRestoreTipRaw && unchangedProcreateGrain(brush);
+      const chunk = carried ? carried.chunk : writeProcreateGrainChunk(brush, unbakedTip);
+      if (chunk) pngBytes = addProcreateGrainChunk(pngBytes, chunk);
+    }
     const sizeScale = opts.sizeScale || 1;
     let sizePx = (brush.sizePx || 100) * sizeScale;
     if (!isFinite(sizePx) || sizePx <= 0) sizePx = Math.max(4, Math.max(w, h));
@@ -1875,15 +2002,15 @@
        round 之后往返变成 70，59 支笔刷各偏 0.005~0.12px。f32 原样存得住，交给编码器取整。 */
     /* 【第251轮】上限从 3000 提到 5000：珠宝装饰套里有 4003 / 3952 / 3648 px 的大笔刷，
        3000 的上限把它们直接截断（写侧 f8 是 float32，本来就存得下）。与 buildMetadata 的 5000 对齐。 */
-    sizePx = Math.max(1, Math.min(5000, sizePx));
-    let spacingPct = opts.spacingOverride > 0 ? opts.spacingOverride : (brush.spacingPct === undefined ? 10 : brush.spacingPct);
+    sizePx = Math.max(1, Math.min(BRU_MAX_SIZE_PX, sizePx));
+    let spacingPct = opts.spacingOverride > 0 ? opts.spacingOverride : brush.spacingPct;
     /* 【第186轮】Procreate 的 spacing 最小可调值是 1%，存成 0 表示「自动间距」而不是
        「无限密」。以前一律钳到 BRU 下限 0.1%，画世界按 dab 逐个盖印，256px 笔尖
        每 0.25px 落一次，网格/网点/描边这类低 alpha 笔尖的间隙被相邻 dab 填满，
        整支笔刷糊成一坨（用户实测两张截图：先黑带、后被我错误归一再变淡块）。
        现在 0（或负值/非数）按 10% 自动间距处理；明确的小值仍保 0.1 下限。 */
-    if (!(spacingPct > 0)) spacingPct = 10;
-    spacingPct = Math.max(0.1, Math.min(1000, spacingPct));
+    if (!(spacingPct > 0)) spacingPct = BRU_AUTO_SPACING_PCT;
+    spacingPct = Math.max(BRU_MIN_SPACING_PCT, Math.min(1000, spacingPct));
     const usePressure = opts.pressure === undefined ? (pressureSizeOn(brush) || !!brush.pressureOpacity) : !!opts.pressure;
     const bruPressure = brush.source === 'procreate' && opts.pressure === undefined ? brush._bruPressure : null;
     const useOriginalMinOpacity = bruPressure && brush._rawNormalized &&
@@ -1922,6 +2049,26 @@
        证明画世界「混边」在白底上不出框——正常/正片叠底/颜色加深 + 亮度 1~40% 全无变化，变暗是整条变暗。
        混边现在只透传源自带的值。焦边改走双笔深色副笔，见 applyBurntOutline。 */
     const bruBorder = { on: !!brush.borderOn, blend: brush.borderBlend, brightness: brush.borderBrightness, strength: brush.borderStrength };
+    const color = bruProcreateColor(brush);
+    /* 画世界的「颜色压力」和「颜色动态」各有一个辅助颜色滑块。
+       原生 Procreate 压力副色交给 bruColorPressure，倾斜和滚轮仍近似为随机副色。
+       【第341轮（作者：Lead）】两边刻度不一样，这里必须折算：
+       · Procreate 5.4.15 的「描边辅助颜色」是 power-2.2 刻度 —— archive 0.5 界面显示 73%、
+         `jitterStrokeSecondary=0.0703` 显示 30%（本项目 iPad 实测）；
+       · 画世界的 f109 是线性百分比 —— MatePad 实测 BRU 存 0.2277 显示 23%、0.0703 显示 7%。
+       不折算的话缪斯之梦忍冬在 Procreate 是 30%、转到画世界只剩 7%，副色淡到几乎看不出
+       （字段写了、强度不到原生四分之一，用户仍会认为「双色丢了」）。
+       折算后两边读数一致，且 brushset 往返也回到原值（写侧按 `pow(.,2.2)` 折回，见 procreate.js）。
+       只折「描边驱动」这一路（`colorPerTip === false`）：它是唯一实测过 power-2.2 的滑块
+       （0.5→73%、0.0703→30%）。「图章辅助颜色」`jitterSecondary` 从未标定过非零值
+       （实测样本都是 0 → 界面「无」），按未标定处理，不折算。 */
+    const dualColorAmount = (function () {
+      const a = Number(color ? color.secondaryFallback : brush.secondaryColorAmount), b = Number(brush.colorJitterFgBg);
+      const x = isFinite(a) ? Math.max(0, Math.min(1, a)) : 0;
+      const y = isFinite(b) ? Math.max(0, Math.min(1, b)) : 0;
+      const v = Math.max(x, y);
+      return brush.source === 'procreate' && brush.colorPerTip === false ? Math.pow(v, 1 / 2.2) : v;
+    })();
     const meta = {
       name: brush.name || '',
       bruShapeInverted: !!brush.bruShapeInverted,
@@ -2075,13 +2222,17 @@
          （第296轮真机 C 组：亮度 51 / 对比度 100，笔迹变成均匀实心）。 */
       textureBrightness: (function () {
         if (hasAbsent(brush, 35)) return undefined;
+        if (mappedGrainTone) return Math.max(0, Math.min(100, 51 + mappedGrainTone.brightness));
         return match && match.custom && !brush._nativeTexFromBru ? Math.max(0, Math.min(100, 51 + (brush.textureBrightness || 0))) : bruTexBrightness(brush);
       })(),
       textureContrast: (function () {
         if (hasAbsent(brush, 33)) return undefined;
+        if (mappedGrainTone) return 100 + mappedGrainTone.contrast;
         return match && match.custom && !brush._nativeTexFromBru ? Math.max(0, Math.min(200, 100 + (brush.textureContrast || 0))) : bruTexContrast(brush);
       })(),
       textureDepth: effectiveTextureDepth,
+      grainDepthJitter: nativeGrainJitter || (brush.grainDepthJitter > 0 && (texMatchId || texAssetId))
+        ? brush.grainDepthJitter : undefined,
       taperOn: brush.taperOn,
       /* 【第279轮】锥度起笔/收笔长度（f75/f76）**不进写侧**：BRU→BRU 由 `_rawUnknown` 原样透传
          已经逐字节保留；改成语义写回会引入两个新问题——① 与 Procreate 的长度单位不同
@@ -2120,15 +2271,16 @@
       // 跨格式（Procreate→BRU）混色强度不再丢回默认值
       smudgeOn: brush.smudgeOn !== undefined ? brush.smudgeOn : (brush.dynamicsMix > 0 ? true : brush.smudgeOn),
       smudgeAmount: brush.smudgeAmount !== undefined ? brush.smudgeAmount : (brush.dynamicsMix !== undefined ? brush.dynamicsMix : brush.smudgeAmount),
-      colorDynamicsOn: brush.colorDynamicsOn,
+      colorDynamicsOn: (color ? color.enabled : brush.colorDynamicsOn) || dualColorAmount > 0.001,
       colorPerTip: brush.colorPerTip,
-      colorJitterHue: brush.colorJitterHue,
-      colorJitterSat: brush.colorJitterSat,
-      colorJitterVal: brush.colorJitterVal,
+      colorJitterHue: color ? color.hue : brush.colorJitterHue,
+      colorJitterSat: color ? color.saturation : brush.colorJitterSat,
+      colorJitterVal: color ? color.brightness : brush.colorJitterVal,
+      bruColorPressure: color && opts.pressure !== false ? color.pressure : undefined,
       /* 【第216轮】副色动态（Procreate jitterSecondary / 画世界「辅助颜色」f109）。
         来源是 Procreate 原生笔刷时 colorJitterFgBg 已在 procreate.js 解析出来，
         这里必须透传，否则转画世界时双色会丢。 */
-      colorJitterFgBg: brush.colorJitterFgBg,
+      colorJitterFgBg: dualColorAmount > 0.001 ? dualColorAmount : brush.colorJitterFgBg,
       bruUuid: brush.bruUuid,
       bruDualRefUuid: brush.bruDualRefUuid,
       dualSubName: brush.dualSubName,
@@ -2191,8 +2343,9 @@
         /* 【第232轮】保真导出（原生 BRU 改参数再导出）只重写 mapping 里登记过的字段。
            f84 纹理混合模式、f43 速度压感、f16 画笔颜色以前都没登记，改了等于没改。 */
         bruTextureBlendMode:[84],speedPressure:[43],bruColor:[16],bruProtoVer:[37],hollowColor:[82],bruLegacyDirection:[19],bruSquareTip:[41],
-        hasTexture:[28,123],texAssetId:[6],bruTexturePerTip:[99],textureInverted:[29],textureDepth:[123],textureScale:[24],textureBrightness:[35],textureContrast:[33],scatterOn:[56,57,58,59],
+        hasTexture:[28,123],texAssetId:[6],bruTexturePerTip:[99],textureInverted:[29],textureDepth:[123],grainDepthJitter:[125],textureScale:[24],textureBrightness:[35],textureContrast:[33],scatterOn:[56,57,58,59],
         scatterPct:[58],scatterCount:[59],scatterBothAxes:[57],taperOn:[74,77,78],taperSize:[77],taperOpacity:[78],wetEdgesOn:[100,101,129],
+        colorPerTip:[65],
         wetEdgesAmount:[101],wetEdgesDepth:[129],borderOn:[92],borderBlend:[95],borderBrightness:[93],borderStrength:[94],renderCount:[97],
         bruUuid:[120],bruDualRefUuid:[119,120,121,122],dualSubName:[121],bruDualEnabled:[119],dualBlendMode:[122],
         smudgeOn:[103,104],smudgeAmount:[104],smoothingStrength:[80],hollowPct:[44],antialiasLevel:[96],
@@ -2256,7 +2409,7 @@
       item.dualSubName = item.bruDualSubBrush.name;
     });
     const opts = ctx.opts;
-    const bytes = bru.writePack(items, { pkgId: opts.pkgId, fidelity: opts.fidelity, keepRawMeta: opts.keepRawMeta });
+    const bytes = bru.writePack(items, { pkgId: opts.pkgId, fidelity: opts.fidelity, keepRawMeta: opts.keepRawMeta, spacingOverride: opts.spacingOverride });
     return { bytes: bytes, count: items.length, meta: items };
   }
 
@@ -3209,8 +3362,31 @@
 
   // The BRU stamp's texture contributes to its coverage. The Procreate grain
   // layer cannot reproduce this compositing with an untextured round tip.
-  function procreateExportTip(brush, opts) {
+  function procreateExportTip(brush, opts, isSecondary) {
     if (opts.fidelity !== false && brush._rawArchive && !opts.forceRebuild) return brush;
+    if (brush.source === 'bru' && opts.fidelity !== false && !opts.noTextureBake) {
+      const carried = unchangedProcreateGrain(brush);
+      if (carried) {
+        let tip = brush.tip;
+        if (carried.shape.length) {
+          const shape = procreate.decodeShape({ data: function () { return carried.shape; } }, false);
+          if (shape) tip = shape;
+        }
+        /* 第340轮（Lead）：以前只在「没有 shape」或「tip 被换掉」时才挂 _carriedProcreateGrain，
+           于是 shape 与 tip 恰好相同时 Grain.png 不会被写回——缪斯之梦这种「无 Shape.png、只有 Grain」
+           的主笔正好命中最坏分支，转回来颗粒来源就空白。改为只要 chunk 在就挂上。 */
+          brush = Object.assign({}, brush, {
+            tip, bruShapeRgbOpacity: false, hasTexture: carried.params.grainDepth > 0,
+            textureDepth: carried.params.grainDepth, _carriedProcreateGrain: carried
+          });
+
+      }
+      const sub = brush.dualSubBrush;
+      if (!isSecondary && sub && sub._procreateGrainChunk) {
+        const restored = procreateExportTip(sub, opts, true);
+        if (restored._carriedProcreateGrain) brush = Object.assign({}, brush, { dualSubBrush: restored, dualTip: restored.tip });
+      }
+    }
     if (brush.source === 'bru' && (!brush.tip || brush._tipFromBuiltin === brush.oldTexId)) {
       const builtinRef = builtinTipKey(brush);
       if (builtinRef) brush = Object.assign({}, brush, { _bruBuiltinTipRef: builtinRef });
@@ -3387,7 +3563,7 @@
     const skippedUnknown = list.filter(function (b) { return b._rawUnknownSkipped; }).length;
     if (skippedUnknown) warnings.push(skippedUnknown + ' 支笔刷的未知字段总量超过 4KB，已跳过透传（这些字段不随 brushset 保留）');
     const noTex = list.filter(function (b) {
-      try { return b && b.hasTexture && !textureGray(b); } catch (e) { return false; }
+      try { return b && b.hasTexture && !b._carriedProcreateGrain && !textureGray(b); } catch (e) { return false; }
     });
     if (noTex.length) {
       const sample = noTex.slice(0, 3).map(function (b) { return String(b.name || '未命名'); }).join('、');
@@ -4261,24 +4437,29 @@ Write-Host 'restart MediBang Paint Pro'
 
   /* 用源笔刷的真实纹理（ABR 图案 / Procreate Grain）烘焙；没有真实像素时保持原样，
      不生成程序化噪声（伪造纹理会让笔刷图案偏离原笔刷）。 */
-  function bakeTextureIntoRGBA(rgba, w, h, brush, strength) {
+  function bakeTextureIntoRGBA(rgba, w, h, brush, strength, tone) {
     const rawStrength = strength === undefined ? 0.35 : Number(strength);
     // NaN/Infinity 经 Math.min/max 仍是 NaN，写入 Uint8Array 后会变成 0，
     // 导致整支笔尖透明；非有限输入按既有默认强度处理。
     const k = Number.isFinite(rawStrength) ? Math.max(0, Math.min(1, rawStrength)) : 0.35;
-    const gray = textureGray(brush);
-    const tex = gray ? {w:gray.w,h:gray.h,sample:function(x,y){return gray.gray[y*gray.w+x]/255;}} : null;
+    const tex = textureGray(brush);
     if (!tex) return rgba;
+    // Use the same midpoint adjustment as the stroke lab's grain preview.
+    const toneCurve = tone && (tone.brightness || tone.contrast)
+      ? Float64Array.from({ length: 256 }, function (_, i) {
+          return Math.max(0, Math.min(1, 0.5 + tone.brightness / 100 + (1 + tone.contrast / 100) * (i / 255 - 0.5)));
+        })
+      : null;
     /* Procreate 的「纹理缩放」与「深度最小值」以前没参与烘焙：
        - textureScale > 1 → 纹理更大，< 1 → 更细（坐标缩放 + 平铺）；
        - grainDepthMinimum → 纹理暗部不应完全透明（否则整条笔迹发黑）；
        未指定时保持旧行为（0.15 底部 + 不缩放），避免改变已有笔刷的观感。 */
     const scale = Math.max(0.02, Math.min(20, brush && brush.textureScale ? brush.textureScale : 1));
     const useScale = Math.abs(scale - 1) > 0.001;
-    /* Procreate 的「纹理旋转」以前也没参与烘焙（静态笔尖里纹理方向永远是正的）。
-       值 ≤1 当“圈数”，>1 当角度；旋转采样坐标即可。 */
+    /* 原生 Procreate 存弧度，采样向量要作反向旋转；其它来源沿用旧输入单位。 */
     const rotRaw = brush && brush.textureRotation ? Number(brush.textureRotation) : 0;
-    const rotRad = rotRaw ? (Math.abs(rotRaw) <= 1 ? rotRaw * Math.PI * 2 : rotRaw * Math.PI / 180) : 0;
+    const rotRad = brush && brush.textureRotationIsRadians ? -rotRaw
+      : (Math.abs(rotRaw) <= 1 ? rotRaw * Math.PI * 2 : rotRaw * Math.PI / 180);
     const useRot = Math.abs(rotRad) > 1e-4;
     const minDepth = brush && brush.grainDepthMinimum !== undefined && brush.grainDepthMinimum > 0
       ? Math.max(0, Math.min(1, brush.grainDepthMinimum)) : 0.15;
@@ -4305,7 +4486,8 @@ Write-Host 'restart MediBang Paint Pro'
           tx = Math.min(tex.w - 1, tx);
           ty = Math.min(tex.h - 1, ty);
         }
-        const v = tex.sample(tx, ty);
+        const gray = tex.gray[ty * tex.w + tx];
+        const v = toneCurve ? toneCurve[gray] : gray / 255;
         const factor = 1 - k + k * (minDepth + (1 - minDepth) * v);
         rgba[i * 4 + 3] = Math.max(0, Math.min(255, Math.round(a * factor)));
       }
@@ -4471,6 +4653,12 @@ Write-Host 'restart MediBang Paint Pro'
     return {tpl:'abr',udongman:'abr',udongman_sut:'sut',udongman_mtd:'mtd',gopaint:'gobrush',gopaint_set:'gobrush',gopaint_abr:'abr'}[target] || target;
   }
 
+  function formatSpacingPercent(value) {
+    const spacing = Number(value);
+    const rounded = spacing > 0 && spacing < 0.1 ? Number(spacing.toPrecision(3)) : Math.round(spacing * 10) / 10;
+    return rounded + '%';
+  }
+
   function conversionStatus(brush, target, key, supported, opts, rawCache) {
     opts = opts || {};
     if(opts.pressure===undefined && (opts.pressureMode==='off' || opts.pressureMode==='on')) {
@@ -4524,6 +4712,29 @@ Write-Host 'restart MediBang Paint Pro'
       if (key === 'dualOn') return '未完整写入（副笔参数已写入，副笔尖使用内置圆形）';
     }
     if (key === 'sizePx' && target === 'gobrush') return '近似（按300dpi真机标定换算，尺寸百分比取整；其他DPI和真实压感笔迹待复测）';
+    if (key === 'colorDynamicsOn' && target === 'bru' && brush.source === 'procreate' &&
+        brush._params && brush._params.dynamicsPressureSecondaryColor > 0.001) {
+      return opts.pressure === false ? '参数映射（按导出设置关闭压力副色）'
+        : '近似（副色强度写入颜色压力，源压力曲线未映射）';
+    }
+    if (key === 'spacingPct' && target === 'bru') {
+      const override = opts.spacingOverride > 0 ? opts.spacingOverride : undefined;
+      const changes = [];
+      const reportSpacing = (label, spacing) => {
+        const value = override === undefined ? spacing : override;
+        if (value === 0) changes.push(label + '自动间距按' + BRU_AUTO_SPACING_PCT + '%写出');
+        else if (value > 0 && value < BRU_MIN_SPACING_PCT) {
+          changes.push(label + '间距按当前BRU写出下限设为' + BRU_MIN_SPACING_PCT + '%');
+        }
+      };
+      reportSpacing('主笔', brush.spacingPct);
+      const nativeDual = opts.embedSubTip === true || opts.bruEmbed === true || opts.dualPair !== false;
+      if (nativeDual && brush.dualOn && brush.dualTip) {
+        const info = brush.dualBrush || {};
+        reportSpacing('副笔', info.spacing === undefined ? brush.spacingPct : info.spacing);
+      }
+      if (changes.length) return '近似（' + changes.join('，') + '）';
+    }
     if (brush.source === 'procreate' && target !== 'brush' && target !== 'brushset') {
       if (key === 'angle') {
         const native=brush._params||{}, rotation=Number(native.shapeRotation)||0;
@@ -4587,16 +4798,6 @@ Write-Host 'restart MediBang Paint Pro'
       if (!brush.angleJitterDeg && !unsupported) return '参数映射（无角度随机，旋转方式按已知控制源写入）';
       return '近似（PS角度随机百分比换算为BRU角度范围' + (unsupported ? '；源角度控制未映射，未强制跟随笔迹' : '；旋转方式按已知控制源映射') + '，实际笔迹待验证）';
     }
-    if (key === 'spacingPct' && target === 'bru') {
-      const override = opts.spacingOverride > 0 ? opts.spacingOverride : undefined;
-      const affected = [];
-      if ((override === undefined ? brush.spacingPct : override) < 0.1) affected.push('主笔间距');
-      const nativeDual = opts.embedSubTip === true || opts.bruEmbed === true || opts.dualPair !== false;
-      const info = brush.dualBrush || {};
-      const subSpacing = info.spacing === undefined ? (brush.spacingPct === undefined ? 10 : brush.spacingPct) : info.spacing;
-      if (nativeDual && brush.dualOn && brush.dualTip && (override === undefined ? subSpacing : override) < 0.1) affected.push('副笔间距');
-      if (affected.length) return '近似（' + affected.join('、') + '按当前BRU写出下限设为0.1%，低间距未原样保留）';
-    }
     if(opts.pressure===false && ['abr','brush','brushset','myb','kbundle','sai2','bru'].indexOf(target)>=0 &&
         (key==='pressureSize' || key==='pressureOpacity')) return '参数映射（按导出设置关闭压感）';
     if(supported && opts.fidelity!==false && !opts.forceRebuild &&
@@ -4614,6 +4815,10 @@ Write-Host 'restart MediBang Paint Pro'
     if ((target === 'brush' || target === 'brushset') && key === 'flowPct') return '丢失（流量尚无独立映射）';
     if ((target === 'brush' || target === 'brushset') && key === 'hardness') return '近似（由笔尖图像表现硬度）';
     if (key === 'dualOn') {
+      if (target === 'abr' && brush.source === 'bru' && brush.dualBlendMode === 'linearHeight' &&
+          (brush.dualTip || (sub && sub.bruProceduralTip))) {
+        return '近似（线性高度改为实色混合，描边笔触需在目标软件核对）';
+      }
       if (!brush.dualTip) return '未完整写入（缺少副笔图像）';
       if (target === 'abr' || target === 'brush' || target === 'brushset') return '原生双笔刷（待目标软件验证）';
       if (target === 'bru' && (opts.embedSubTip === true || opts.bruEmbed === true)) return '原生内嵌副笔尖（待目标软件验证）';
@@ -4686,7 +4891,7 @@ Write-Host 'restart MediBang Paint Pro'
     const NL = String.fromCharCode(10);
     const fields = [
       ['尺寸', 'sizePx', function (v) { return Math.round(v) + 'px'; }],
-      ['间距', 'spacingPct', function (v) { return (Math.round(v * 10) / 10) + '%'; }],
+      ['间距', 'spacingPct', formatSpacingPercent],
       ['角度', 'angle', function (v) { return Math.round(v) + '°'; }],
       ['圆度', 'roundness', function (v) { return Math.round(v) + '%'; }],
       ['水平翻转', 'flipX', function () { return '开'; }],
@@ -4805,7 +5010,7 @@ Write-Host 'restart MediBang Paint Pro'
   }
 
   const MANUAL_ADVICE = {
-    abr: '纹理：先在 PS 图案面板导入配套 .pat；双笔刷：本格式原样保留，无需补',
+    abr: '纹理：先在 PS 图案面板导入配套 .pat；双笔刷：导入后核对混合模式和笔触',
     bru: '散布：画世界刻度更小，可用「散布换算系数」微调；双笔刷：默认输出画世界 3.0 原生「单支内嵌副笔尖」，高级设置可切回「主笔+辅助条目」',
     brushset: '双笔刷写入 Sub01，倾斜/速度动态分别映射；请在 Procreate 验证笔触',
     brush: '双笔刷写入 Sub01，倾斜/速度动态分别映射；请在 Procreate 验证笔触',
@@ -4939,7 +5144,7 @@ Write-Host 'restart MediBang Paint Pro'
     if (!Array.isArray(targets)) targets = [targets]; // 防呆：传字符串时按字符迭代会生成逐字符假报告
     const fields = [
       ['尺寸', 'sizePx', function (v) { return Math.round(v) + 'px'; }],
-      ['间距', 'spacingPct', function (v) { return (Math.round(v * 10) / 10) + '%'; }],
+      ['间距', 'spacingPct', formatSpacingPercent],
       ['角度', 'angle', function (v) { return Math.round(v) + '°'; }],
       ['圆度', 'roundness', function (v) { return Math.round(v) + '%'; }],
       ['水平翻转', 'flipX', function () { return '开'; }],

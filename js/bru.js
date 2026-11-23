@@ -93,7 +93,7 @@
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
     28, 29, 31, 32, 33, 35, 36, 37, 41, 42, 43, 44, 47, 49, 50, 51, 56, 57, 58, 59, 60, 61, 62, 63, 64,
     65, 67, 74, 77, 78, 79, 80, 81, 82, 83, 84, 87, 90, 92, 93, 94, 95, 96, 97, 99, 100, 101, 103,
-    104, 109, 115, 117, 119, 120, 121, 122, 123, 129, 134, 135, 136, 138, 139, 158
+    104, 109, 115, 117, 119, 120, 121, 122, 123, 125, 129, 134, 135, 136, 138, 139, 158
   ]);
 
   // The engine distinguishes missing fields from explicit defaults on
@@ -255,6 +255,8 @@
       parts.push(u8arr(fVarint(33, Math.max(-200, Math.min(200, Math.round(Number(b.textureContrast))))))); // CONTRAST
     }
     if (b.textureDepth) parts.push(u8arr(fF32(123, Math.max(0, Math.min(1, b.textureDepth))))); // TEXTUREDEPTH
+    // Native texture depth jitter is a direct ratio (0.5 = 50%).
+    if (Number.isFinite(b.grainDepthJitter)) parts.push(u8arr(fF32(125, Math.max(0, Math.min(1, b.grainDepthJitter)))));
     if (sizePressOn) parts.push(u8arr(fVarint(36, 1)));         // SUPPORTPRESSURE
     if (transferOn) parts.push(u8arr(fVarint(47, 1)));          // TRANSFER
     if (b.sizeJitterPct) parts.push(u8arr(fF32(10, Math.min(1, b.sizeJitterPct / 100)))); // SIZE JITTER
@@ -296,7 +298,7 @@
        旧代码写 `min(1, flow*minFlow)`，当 flow<1 时会把最小值再乘一次流量，App 里显示的
        最小百分比就会偏小——这也是「流量压力最小值不对」的直接原因。 */
     if (!absent.has(51) && (!omitted.has(51) || minFlow !== 1)) parts.push(u8arr(fF32(51, minFlow))); // SMALLBRUSHFLOWPERCENT
-    if (!absent.has(65) && (!omitted.has(65) || b.colorPerTip === true)) parts.push(u8arr(fVarint(65, 1))); // ALLBRUSHRECT
+    if (b.colorPerTip !== false && !absent.has(65) && (!omitted.has(65) || b.colorPerTip === true)) parts.push(u8arr(fVarint(65, 1))); // ALLBRUSHRECT
     /* f67 = 流量平滑开关。标定证据：p193_s5(关闭) → s6(开启)，diff 只有 `f67: — → 1`，
        反向 s10→s11 之外再关回也是一样（不写即关闭）。面板默认关闭，所以默认不写。 */
     if (b.bruFlowSmooth) parts.push(u8arr(fVarint(67, 1)));      // FLOWSMOOTH
@@ -359,11 +361,23 @@
       if (b.colorJitterHue) parts.push(u8arr(fF32(62, b.colorJitterHue)));
       if (b.colorJitterSat) parts.push(u8arr(fF32(63, b.colorJitterSat)));
       if (b.colorJitterVal) parts.push(u8arr(fF32(64, b.colorJitterVal)));
-      if (fgBgJitter > 0) parts.push(u8arr(fF32(109, fgBgJitter)));  // COLORRANDC（辅助颜色）
+      /* 【第339轮】辅助颜色强度 < 0.1% 视为无：Procreate 解析出的 jitter 常有 5.1e-7 这类浮点噪声，
+         以前会写成 f109≈0 的「假副色」，整包 30 支都挂着一个 0 强度开关。 */
+      if (fgBgJitter > 0.001) parts.push(u8arr(fF32(109, fgBgJitter)));  // COLORRANDC（辅助颜色）
     } else if (b._bruF109 !== undefined && b._bruF109 > 0) {
       /* 【第232轮·field-matrix】源里 f61 关着但单写了 f109（迟早-真果冻力 f109=0.41）：
          原样写回强度，不写开关（源也没有）。 */
       parts.push(u8arr(fF32(109, b._bruF109)));
+    }
+    // New Procreate exports use native color pressure fields. BRU sources still
+    // retain these fields through their original metadata, including disabled settings.
+    if (b.bruColorPressure) {
+      const pressure = b.bruColorPressure;
+      parts.push(u8arr(fVarint(110, 1)));
+      if (pressure.hue) parts.push(u8arr(fF32(111, pressure.hue)));
+      if (pressure.saturation) parts.push(u8arr(fF32(112, pressure.saturation)));
+      if (pressure.brightness) parts.push(u8arr(fF32(113, pressure.brightness)));
+      if (pressure.secondary) parts.push(u8arr(fF32(114, pressure.secondary)));
     }
     parts.push(u8arr(fVarint(79, 1)));                          // TAPEREFFECT
     const smoothing = b.smoothingStrength === undefined ? 0.2 : Math.max(0, Math.min(1, b.smoothingStrength));
@@ -515,6 +529,26 @@
     return buildMetadata(Object.assign({}, brush, { pkgId: brush.pkgId || opts.pkgId, texId: texId }));
   }
 
+  function withDualSpacing(meta, spacingPct) {
+    if (!(spacingPct > 0)) return meta;
+    const fields = readFields(meta, 0, meta.length);
+    const link = fields.reverse().find(f => f.f === 121 && f.w === 2);
+    if (!link) return meta;
+    const sub = readFields(link.v, 0, link.v.length);
+    const last = sub[sub.length - 1];
+    if (!last || last.raw.byteOffset + last.raw.length !== link.v.byteOffset + link.v.length) return meta;
+    const value = Math.fround(Math.max(0.001, Math.min(10, spacingPct / 100)));
+    const spacing = sub.filter(f => f.f === 17);
+    if (spacing.length === 1 && spacing[0].w === 5 && spacing[0].v === value) return meta;
+    const field = { f: 17, w: 5, v: value };
+    if (spacing.length) {
+      sub.splice(sub.indexOf(spacing[0]), 1, field);
+      for (let i = 1; i < spacing.length; i++) sub.splice(sub.indexOf(spacing[i]), 1);
+    } else sub.push(field);
+    const start = link.raw.byteOffset - meta.byteOffset;
+    return util.concat([meta.subarray(0, start), u8arr(fBytes(121, encodeFields(sub))), meta.subarray(start + link.raw.length)]);
+  }
+
   /* 【第298轮】50B 索引头里副笔的四项字段（+0x1d 内置笔尖旗标、+0x21 内置纹理旗标、
      +0x25 副笔尖 PNG 长度、+0x29 副笔纹理 PNG 长度）必须与 f121 子消息的 f6/f7 及尾部 PNG 对应：
      - 之前把「副笔尖 + 副笔纹理」总长全塞进 +0x25、+0x29 置 0，App 导入时按 +0x25 把两张图拼接块
@@ -567,7 +601,7 @@
     const noImage = !!(brush.noShape || brush.bruBuiltinTipRef);
     const img = noImage ? new Uint8Array(0) : brush.png;
     if (!noImage && (!img || !img.length)) throw new Error('缺少笔尖图像数据');
-    const meta = metadataFor(brush, opts);
+    const meta = withDualSpacing(metadataFor(brush, opts), opts.spacingOverride);
     const embedded = brush.embeddedSubPng && brush.embeddedSubPng.length ? brush.embeddedSubPng : null;
     const sub = brush.bruDualSubBrush;
     const hasSecondary = !!(embedded || (sub && (sub.noShape || sub.bruBuiltinTipRef)));
@@ -637,7 +671,7 @@
       const noImage = !!(b.noShape || b.bruBuiltinTipRef);
       const pngBytes = noImage ? new Uint8Array(0) : b.png;
       if (!noImage && (!pngBytes || !pngBytes.length)) throw new Error('缺少笔尖图像数据: ' + (b.name || ''));
-      const meta = metadataFor(b, opts);
+      const meta = withDualSpacing(metadataFor(b, opts), opts.spacingOverride);
       const embedded = b.embeddedSubPng || new Uint8Array(0);
       const sub = b.bruDualSubBrush || b.dualSubBrush;
       const hasSecondary = !!(embedded.length || (sub && (sub.noShape || sub.bruBuiltinTipRef)));
@@ -897,6 +931,7 @@
          真机标定见 buildMetadata 里 f109 的注释。只在颜色动态打开时才算数：f109 单独存在
          时 App 不生效，所以关掉 f61 就当 0，避免把惰性字段当成真的副色动态。 */
       const colorFgBg = colorDynOn ? Math.max(0, Math.min(1, num(o[109], 0))) : 0;
+      const colorPressureSecondary = (o[110] || o[124]) ? Math.max(0, Math.min(1, num(o[114], 0))) : 0;
       const smoothingStrength = num(o[80], 0.2);                      // 平滑强度（f80）
       // 画世界Pro 3.0：f120=本笔刷uuid；f121 field2=包ID，field3及后续字段为副笔参数。
       let bruUuid = null, bruDualRef = null, bruLinkInfo = null, bruLinkTemplate = null;
@@ -1056,6 +1091,7 @@
         textureBrightness: texBrightness,
         textureContrast: texContrast,
         textureDepth: texDepth,
+        grainDepthJitter: Number.isFinite(o[125]) ? o[125] : undefined,
         grainStrength: texDepth > 0 ? Math.max(0.1, Math.min(0.8, texDepth)) : 0.35,
         wetEdgesOn: wetOn,
         wetEdgesAmount: (o[101] !== undefined || wetOn) ? Math.max(0, Math.min(1, 1 - wetStrengthRaw)) : 0,
@@ -1089,12 +1125,14 @@
         _bruTaperFields: bruTaperFields,
         taperOpacity: taperOpacity,
         colorDynamicsOn: colorDynOn,
+        colorPerTip: !!o[65],
         colorJitterHue: colorHue,
         colorJitterSat: colorSat,
         colorJitterVal: colorVal,
         /* 【第216轮】辅助颜色 → Procreate 的 Secondary Color（procreate.js 的 jitterSecondary）。
            只有 >0 时才回填，值为 0 的笔刷字段保持 undefined，避免影响既有逐字节输出。 */
         colorJitterFgBg: colorFgBg > 0 ? colorFgBg : undefined,
+        colorPressureSecondary: colorPressureSecondary || undefined,
         _rawMeta: rawMeta,
         _rawMaxWidth:num(o[12],500),
         /* 【第195轮】f12 同时回填公开字段，否则绕过 convert.makeBru（它用 _rawMaxWidth 兜底）

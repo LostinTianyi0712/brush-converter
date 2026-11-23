@@ -11,6 +11,32 @@
   const defaultsApi = isNode ? require('./procreateDefaults.js') : root.BC.proDefaults;
   /* 【第231轮】BRU 纹理原始字节的 base64 搬运（brushConvBruTex.texRaw）：bplist 里以 JSON 字符串
      存放，Node/浏览器两侧都能编解码。 */
+  /* 【第339轮】把一条 Procreate 动态曲线（ValkyrieMagnitudinalCurve）折算成 0..1 上的平均值。
+     缺省曲线是 `{0,0} → {1,1}`（线性），均值 0.5；点坐标是 `{x, y}` 字符串。
+     解析失败或点不足时返回 0.5（线性默认值）——绝不返回 0 把整支笔刷的副色抹掉。
+     副色（Secondary Color）可以由压力/倾斜/滚轮驱动，画世界只有一个静态辅助颜色强度，
+     靠这个均值把「压力从小到大都在混副色」折算成一个等效比例。 */
+  function curveAverage(curve) {
+    const raw = curve && curve.points && Array.isArray(curve.points['NS.objects']) ? curve.points['NS.objects'] : null;
+    if (!raw || raw.length < 2) return 0.5;
+    const pts = [];
+    for (let i = 0; i < raw.length; i++) {
+      const mm = /^\{\s*(-?[\d.eE+-]+)\s*,\s*(-?[\d.eE+-]+)\s*\}$/.exec(String(raw[i]));
+      if (!mm) return 0.5;
+      const x = Number(mm[1]), y = Number(mm[2]);
+      if (!isFinite(x) || !isFinite(y)) return 0.5;
+      pts.push([x, y]);
+    }
+    pts.sort(function (a, b) { return a[0] - b[0]; });
+    let area = 0;
+    for (let i = 1; i < pts.length; i++) {
+      const dx = pts[i][0] - pts[i - 1][0];
+      if (dx > 0) area += dx * (pts[i][1] + pts[i - 1][1]) / 2;
+    }
+    const span = pts[pts.length - 1][0] - pts[0][0];
+    if (!(span > 0)) return 0.5;
+    return Math.max(0, Math.min(1, area / span));
+  }
   function bytesToB64(bytes) {
     if (typeof Buffer !== 'undefined' && Buffer.from) return Buffer.from(bytes).toString('base64');
     let bin = '';
@@ -162,6 +188,20 @@
     } catch (e) { return null; }
   }
 
+  function previewTip(brush) {
+    const tip = brush.tip;
+    if (!tip || brush.shapeInverted || brush.bruShapeRgbOpacity !== true ||
+        brush._bruExtra?.rgbOpacityLightShape || brush._bruRgbOpacityDark === false ||
+        !brush._bruTipRaw || !brush._rawShape || !brush._bruTipShapeHash) return tip;
+    if (util.md5(brush._rawShape) !== brush._bruTipShapeHash) return tip;
+    try {
+      // Older bridge archives can retain the source BRU image alongside an inverted Shape.png.
+      const source = luminanceToTip(png.decode(brush._bruTipRaw), false);
+      if (source.w === tip.w && source.h === tip.h) return source;
+      return { w: tip.w, h: tip.h, rgba: png.resize(source.rgba, source.w, source.h, tip.w, tip.h) };
+    } catch (e) { return tip; }
+  }
+
   /* 从内置图库里按文件名找一张图（Shape 或 Grain 共用）：支持 .png/.jpg 同 stem、
      预先解码的 rgba（浏览器 canvas 解 progressive JPEG 后传入）与原始字节两种。 */
   function lookupLibraryImage(bundledPath, shapeResources) {
@@ -261,12 +301,21 @@
       if (image) {
         brush._grainRgba = { w: image.w, h: image.h, rgba: image.rgba };
         brush.grainFromLibrary = true;
+        brush.hasGrain = true;
+        brush.hasTexture = Number(brush.textureDepth) > 0;
         fixed++;
       }
     }
-    /* hasTexture 原本是解析时按「有 grain 图 && depth>0」算的，补挂之后必须按同一口径重算，
-       否则 makeBru 的纹理分支进不去，颗粒照样丢。 */
-    if (brush._grainRgba && brush._grainRgba.w > 0 && Number(brush.textureDepth) > 0) brush.hasTexture = true;
+    const sub = brush.dualOn && brush.dualSubBrush;
+    if (sub) {
+      const hadTip = !!sub.tip;
+      fixed += attachBundledAssets(sub, shapeResources);
+      // Replace the parser's temporary round tip only while it is unedited.
+      if (!hadTip && sub.tip && (!brush.dualTip || brush._rawDualTipState === util.brushFingerprint({ tip: brush.dualTip }))) {
+        brush.dualTip = sub.tip;
+        brush._rawDualTipState = util.brushFingerprint({ tip: sub.tip });
+      }
+    }
     return fixed;
   }
 
@@ -380,14 +429,30 @@
     const grainDepthJitter = nv('grainDepthJitter');
     const grainDepthMin = nv('grainDepthMinimum');
     const texScaleV = nv('textureScale', 1);
-    const texBrightV = nv('textureBrightness', 0.51);
-    const texContrastV = nv('textureContrast', 1);
+    // Procreate stores signed offsets. Both omitted settings are neutral (0).
+    const texBrightV = nv('textureBrightness');
+    const texContrastV = nv('textureContrast');
     const plotJitterV = nv('plotJitter');
     const smoothingV = nv('plotSmoothing');
     const hueDyn = Math.max(nv('dynamicsPressureHue'), nv('dynamicsJitterHue'), nv('dynamicsJitterStrokeHue'));
     const satDyn = Math.max(nv('dynamicsPressureSaturation'), nv('dynamicsJitterSaturation'), nv('dynamicsJitterStrokeSaturation'));
     const briDyn = Math.max(nv('dynamicsPressureBrightness'), nv('dynamicsJitterLightness'), nv('dynamicsJitterStrokeLightness'));
     const fgBgDyn = Math.max(nv('jitterSecondary'), nv('jitterStrokeSecondary'));
+    /* 【第339轮】副色（Procreate「Secondary Color」＝画世界「辅助颜色」）不止随机驱动。
+       Procreate 的 Color Dynamics 里 Secondary Color 有 5 个输入源：每笔尖随机
+       (jitterSecondary)、整笔随机 (jitterStrokeSecondary)、压力、倾斜、滚轮。
+       缪斯之梦整包的 🌗 双色笔刷与 ✨ 亮晶晶笔刷用的是**压力**驱动
+       （dynamicsPressureSecondaryColor = 1.0 / 0.99 / 0.69 / 0.50，jitter 只有 0~0.28），
+       旧解析只看 jitter，于是 colorDynamicsOn 算成 false，转画世界时既不写 f61 也不写 f109
+       —— 整包双色笔刷落地成单色（用户报的「丢失双色笔刷」就是这个）。
+       secondaryColorAmount 记录统一模型中的折算强度。压力按曲线在 0..1 上的均值积分，
+       倾斜和滚轮按半行程折算。BRU 写出从原档分别取得压力副色和其他驱动。 */
+    const secJitter = fgBgDyn;
+    const secPressure = nv('dynamicsPressureSecondaryColor') * curveAverage(params.dynamicsPressureSecondaryColorCurve);
+    const secTilt = nv('dynamicsTiltSecondaryColor') * 0.5;
+    const secRoll = nv('dynamicsRollSecondaryColor') * 0.5;
+    const secInputDyn = Math.max(secPressure, secTilt, secRoll);
+    const secondaryAmount = Math.max(secJitter, secInputDyn);
     const hasPerTipColor = nv('dynamicsJitterHue') > 0.001 || nv('dynamicsJitterSaturation') > 0.001 || nv('dynamicsJitterLightness') > 0.001 || nv('jitterSecondary') > 0.001;
     const hasStrokeColor = nv('dynamicsJitterStrokeHue') > 0.001 || nv('dynamicsJitterStrokeSaturation') > 0.001 || nv('dynamicsJitterStrokeLightness') > 0.001 || nv('jitterStrokeSecondary') > 0.001;
     const sizeJitV = nv('dynamicsJitterSize');
@@ -396,7 +461,10 @@
     const tiltSizeDyn = Math.max(0, Number(params.dynamicsTiltSize) || 0);
     const tiltOpacityDyn = Math.max(0, Number(params.dynamicsTiltOpacity) || 0);
     const tiltAngleDyn = Math.max(0, Number(params.dynamicsTiltAngle) || 0);
-    const tiltRoundnessDyn = Math.max(0, Number(params.dynamicsTiltShapeRoundness) || 0);
+    // Procreate 5.4.15 实测标定（第342轮）：dynamicsTiltShapeRoundness=1 为 UI 0%（关闭），0 为 -100%（压扁）。
+    // 统一模型 tiltRoundnessDyn 语义为「倾斜压扁强度 0..1」（0=关闭），故读侧取 1 - raw。
+    const tiltRoundnessDyn = params.dynamicsTiltShapeRoundness === undefined
+      ? 0 : Math.max(0, Math.min(1, 1 - Number(params.dynamicsTiltShapeRoundness)));
     const speedSizeDyn = Math.max(0, Number(params.dynamicsSpeedSize) || 0);
     const speedOpacityDyn = Math.max(0, Number(params.dynamicsSpeedOpacity) || 0);
     // Procreate 参数语义（与官方 Brush Studio 一致）：
@@ -497,8 +565,11 @@
       spacingJitterPct: Math.max(0, Math.min(200, nv('plotSpacingJitter') * 100)),
       falloffPct: Math.max(0, Math.min(100, nv('dynamicsFalloff') * 100)),
       smoothingStrength: smoothingV,
-      colorDynamicsOn: hueDyn > 0.001 || satDyn > 0.001 || briDyn > 0.001 || fgBgDyn > 0.001,
+      colorDynamicsOn: hueDyn > 0.001 || satDyn > 0.001 || briDyn > 0.001 || secondaryAmount > 0.001,
       colorJitterFgBg: fgBgDyn,
+      /* 【第339轮】副色的等效静态量（含压力/倾斜/滚轮驱动）：BRU 写出侧取它与 colorJitterFgBg 的大者。
+         colorJitterFgBg 保持「纯随机」语义，Procreate↔Procreate 往返不被污染。 */
+      secondaryColorAmount: secondaryAmount > 0.001 ? Math.min(1, secondaryAmount) : undefined,
       colorPerTip: hasStrokeColor && !hasPerTipColor ? false : (hasPerTipColor ? true : undefined),
       colorJitterHue: hueDyn,
       colorJitterSat: satDyn,
@@ -881,27 +952,8 @@
     return null;
   }
 
-  function shapePng(tip, maxSize, useRgbOpacity) {
+  function shapePng(tip, maxSize) {
     let w = tip.w, h = tip.h, rgba = tip.rgba;
-    // Convert coverage before resizing so RGB under transparent pixels
-    // cannot affect the downsampled mask.
-    let useDarkRgb = false;
-    if (useRgbOpacity) {
-      for (let i = 0; i < rgba.length; i += 4) {
-        if (rgba[i + 3] && Math.min(rgba[i], rgba[i + 1], rgba[i + 2]) < 250) {
-          useDarkRgb = true;
-          break;
-        }
-      }
-    }
-    if (useDarkRgb) {
-      const mask = new Uint8Array(rgba.length);
-      for (let i = 0; i < rgba.length; i += 4) {
-        const ink = 255 - Math.round((rgba[i] + rgba[i + 1] + rgba[i + 2]) / 3);
-        mask[i + 3] = Math.round(ink * rgba[i + 3] / 255);
-      }
-      rgba = mask;
-    }
     const maxSide = Math.max(w, h);
     const limit = Math.max(64, Math.min(2048, maxSize || 512));
     if (maxSide > limit) {
@@ -1031,6 +1083,29 @@
     }
   }
 
+  // Native scalar controls associated with a carried Grain.png. Validate them
+  // again on read since the containing BRU may have been supplied externally.
+  function grainArchiveScalars(params) {
+    const out = {};
+    if (!params || typeof params !== 'object') return out;
+    const ranges = {
+      grainDepth: [0, 1], grainDepthMinimum: [0, 1], grainDepthJitter: [0, 1],
+      textureScale: [0, 4], textureRotation: [-Math.PI * 2, Math.PI * 2],
+      textureContrast: [-1, 1], textureBrightness: [-1, 1], textureZoom: [0, 1],
+      textureMovement: [0, 1], textureApplication: [0, 1], grainBlendMode: [1, 28],
+      textureFilterMode: [0, 2], textureDepthTiltAngle: [0, 1]
+    };
+    for (const key of Object.keys(ranges)) {
+      const value = params[key];
+      const [min, max] = ranges[key];
+      if (Number.isFinite(value) && value >= min && value <= max) out[key] = value;
+    }
+    for (const key of ['textureInverted', 'textureOffsetJitter', 'textureFilter', 'textureDepthTilt']) {
+      if (typeof params[key] === 'boolean') out[key] = params[key];
+    }
+    return out;
+  }
+
   function normalizeRawShape(rawBytes, maxSize, inverted) {
     if (!rawBytes || !rawBytes.length) return null;
     const hdr = readPngHeader(rawBytes);
@@ -1047,6 +1122,7 @@
 
   /* Grain.png：优先用源笔刷真实纹理（Procreate Grain / ABR 图案），否则程序化噪声 */
   function grainPng(brush) {
+    if (brush._carriedProcreateGrain) return brush._carriedProcreateGrain.grain;
     if (brush._grainRgba && brush._grainRgba.w > 0) {
       const g = brush._grainRgba;
       return encodeNormalizedGrain(g.w, g.h, g.rgba);
@@ -1133,7 +1209,9 @@
      以前全部不读：强制重建 brushset 时被模板的直线覆盖，转别的格式时静默丢掉。
      这里只收「不是 (0,0)-(1,1) 直线」的曲线，键名保持原生字段名（写回时直接用），点按原生顺序保存
      （原生顺序是两端点在前、中间点在后；用的时候再按 x 排序）。 */
-  const PRESSURE_CURVE_RE = /^dynamicsPressure[A-Za-z]*Curve$|^dynamicsPressureCharge$|^dynamicsPressurePlotSpacingJitter$/;
+  /* 【第332轮】dynamicsPressureOverall（压力总曲线）不以 Curve 结尾，旧正则漏读：
+       实测「吹石-水溶铅笔」源是 3 点（0,0 / 1,1 / 0.494,0.531），往返后变 2 点直线。 */
+  const PRESSURE_CURVE_RE = /^dynamicsPressure[A-Za-z]*Curve$|^dynamicsPressureCharge$|^dynamicsPressurePlotSpacingJitter$|^dynamicsPressureOverall$/;
   function parseCurvePoint(s) {
     const m = /^\{\s*(-?[\d.eE+-]+)\s*,\s*(-?[\d.eE+-]+)\s*\}$/.exec(String(s));
     if (!m) return null;
@@ -1170,7 +1248,11 @@
     const fgBgDynOverride = (opts && opts.fgBgDyn !== undefined && opts.fgBgDyn !== null && isFinite(Number(opts.fgBgDyn)))
       ? Math.max(0, Math.min(1, Number(opts.fgBgDyn))) : 0;
     const fgBgDynValue = fgBgDynOverride > 0 ? fgBgDynOverride : Math.max(0, Math.min(1, brush.colorJitterFgBg || 0));
-    const params = Object.assign(D, {
+    /* 【第331轮】锥度参数是否随源写出：Procreate 源一律保留（开关关着也可能有值）；
+       BRU/ABR 源仍只在 taperOn 为真时写 —— 否则读侧看到非 0 参数会把 taperOn 反推成 true，
+       roundtrip_baseline 实测 183/203 支被误开（楠.bru）。 */
+    const keepTaperParams = !!(brush.taperOn || brush.source === 'procreate');
+    const modeledParams = {
       version: 2,
       plotSpacingVersion: 1,
       paintSize: sizeParams.paintSize,
@@ -1187,7 +1269,14 @@
       shapeAzimuth: directionParams.shapeAzimuth,
       shapeScatter: rotationArchiveParam(brush),
       // Native value represents 0..15 additional stamps, plus the base stamp.
-      shapeCount: (Math.max(1, Math.min(16, Math.round(brush.scatterCount || 1))) - 1) / 15,
+      // 第342轮真机实测：Procreate 5.4.15 对 3/15=0.2 等边界值做 float32 向下截断会少 1 个（显示 3 而非 4），
+      // 对中间档 2..15 补 +1e-5 即可避免向下截断且保持在 1e-4 精度内。
+      shapeCount: (function () {
+        const n = Math.max(1, Math.min(16, Math.round(brush.scatterCount || 1)));
+        if (n <= 1) return 0;
+        if (n >= 16) return 1;
+        return Math.min(1, (n - 1) / 15 + 1e-5);
+      })(),
       shapeCountJitter: Math.max(0, Math.min(1, (brush.countJitterPct || 0) / 100)),
       shapeFlipXJitter: !!brush.flipXJitter,
       shapeFlipYJitter: !!brush.flipYJitter,
@@ -1200,10 +1289,20 @@
       grainDepthJitter: Math.max(0, Math.min(1, brush.grainDepthJitter || 0)),
       // Procreate 自身纹理缩放范围是 0.01..4（IPA 内置 18 支 + 真实导出 1 支，最大值正好 4.000）
       textureScale: Math.max(0.01, Math.min(PROCREATE_TEXTURE_SCALE_MAX, brush.textureScale === undefined ? 1 : brush.textureScale)),
-      textureBrightness: Math.max(0, Math.min(1, (brush.textureBrightness === undefined ? 51
-        : brush.source === 'bru' && brush.textureBrightness < 0 ? 51 + brush.textureBrightness : brush.textureBrightness) / 100)),
-      textureContrast: Math.max(0, Math.min(1, (brush.textureContrast === undefined ? 100
-        : brush.source === 'bru' && brush.textureContrast < 0 ? 100 + brush.textureContrast : brush.textureContrast) / 100)),
+      /* Procreate 源的亮度与对比度是 [-1,1] 的偏移，缺省用档案模板的中性值。
+         BRU 的显式亮度与对比度继续按原有规则写入，BRU 往返用纹理快照恢复。 */
+      textureBrightness: (function () {
+        if (brush.textureBrightness === undefined) return D.textureBrightness;
+        const raw = (brush.source === 'bru' && brush.textureBrightness < 0) ? 51 + brush.textureBrightness : brush.textureBrightness;
+        const v = raw / 100;
+        return brush.source === 'procreate' ? Math.max(-1, Math.min(1, v)) : Math.max(0, Math.min(1, v));
+      })(),
+      textureContrast: (function () {
+        if (brush.textureContrast === undefined) return D.textureContrast;
+        const raw = (brush.source === 'bru' && brush.textureContrast < 0) ? 100 + brush.textureContrast : brush.textureContrast;
+        const v = raw / 100;
+        return brush.source === 'procreate' ? Math.max(-1, Math.min(1, v)) : Math.max(0, Math.min(1, v));
+      })(),
       textureRotation: brush.textureRotation || 0,
       // 新建 archive 的 Shape.png 写的是已烘焙像素（含源「反转」），不能再让 Procreate 反相一次
       shapeInverted: false,
@@ -1218,7 +1317,8 @@
       dynamicsTiltSize: Math.max(0, Math.min(1, brush.tiltSizeDyn === undefined ? Math.max((brush.tiltJitterPct || 0) / 100, brush.dynamicsControlSize === 3 ? 1 - (brush.minSizeRatio === undefined ? 0 : brush.minSizeRatio) : 0) : brush.tiltSizeDyn)),
       dynamicsTiltOpacity: Math.max(0, Math.min(1, brush.tiltOpacityDyn === undefined ? (brush.dynamicsControlOpacity === 3 ? 1 - (brush.minOpacityRatio === undefined ? 0 : brush.minOpacityRatio) : 0) : brush.tiltOpacityDyn)),
       dynamicsTiltAngle: Math.max(0, Math.min(1, Math.max(brush.tiltAngleDyn || 0, brush.dynamicsControlAngle === 3 ? (brush.angleJitterDeg || 0) / 180 : 0))),
-      dynamicsTiltShapeRoundness: Math.max(0, Math.min(1, Math.max(brush.tiltRoundnessDyn || 0, brush.dynamicsControlRoundness === 3 ? (brush.roundnessJitterPct || 0) / 100 : 0))),
+      // Procreate 5.4.15 实测标定（第342轮）：1=UI 0%（不压扁），0=UI -100%（触摸下压成 2px 细线）。
+      dynamicsTiltShapeRoundness: 1 - Math.max(0, Math.min(1, Math.max(brush.tiltRoundnessDyn || 0, brush.dynamicsControlRoundness === 3 ? (brush.roundnessJitterPct || 0) / 100 : 0))),
       dynamicsSpeedSize: Math.max(0, Math.min(1, brush.speedSizeDyn || 0)),
       dynamicsSpeedOpacity: Math.max(0, Math.min(1, brush.speedOpacityDyn || 0)),
       minOpacity: brush.pressureOpacity ? (brush.opacity === undefined ? 1 : Math.max(0, Math.min(1, brush.opacity))) * (brush.minOpacityRatio === undefined ? 0 : Math.max(0, Math.min(1, brush.minOpacityRatio))) : 0,
@@ -1229,10 +1329,14 @@
       textureApplication: brush.hasTexture && (brush.textureCanvasSpace || brush.source === 'bru' || brush.source === 'abr') ? 1 : D.textureApplication,
       grainBlendMode: (typeof brush.grainBlendMode === 'number' && isFinite(brush.grainBlendMode) && brush.grainBlendMode >= 1 && brush.grainBlendMode <= 28) ? Math.round(brush.grainBlendMode) : 1,
       textureInverted: !!brush.textureInverted,
-      taperSize: brush.taperOn ? Math.max(0, Math.min(1, brush.taperSize === undefined ? 0.5 : brush.taperSize)) : 0,
-      taperOpacity: brush.taperOn ? Math.max(0, Math.min(1, brush.taperOpacity === undefined ? 0.5 : brush.taperOpacity)) : 0,
-      taperStartLength: brush.taperOn ? Math.max(0, Math.min(1, brush.taperStartLength === undefined ? 0.2 : brush.taperStartLength)) : 0,
-      taperEndLength: brush.taperOn ? Math.max(0, Math.min(1, brush.taperEndLength === undefined ? 0.3 : brush.taperEndLength)) : 0,
+      /* 【第331轮】锥度四参数改为「源里有值就用源值」，只在源缺失时才看 taperOn 决定默认值。
+         旧写法以 taperOn 为前提，开关关着但参数有值的笔刷（实测「石英线」taperEndLength 0.103、
+         「上色三号」0.08）往返后被清零，用户再打开锥度时参数已经没了。
+         与 bru.js 第230轮对 f77/f78 的处理一致（「开关为真、或任一锥度参数存在就写出」）。 */
+      taperSize: Math.max(0, Math.min(1, brush.taperSize === undefined ? (brush.taperOn ? 0.5 : 0) : (keepTaperParams ? brush.taperSize : 0))),
+      taperOpacity: Math.max(0, Math.min(1, brush.taperOpacity === undefined ? (brush.taperOn ? 0.5 : 0) : (keepTaperParams ? brush.taperOpacity : 0))),
+      taperStartLength: Math.max(0, Math.min(1, brush.taperStartLength === undefined ? (brush.taperOn ? 0.2 : 0) : (keepTaperParams ? brush.taperStartLength : 0))),
+      taperEndLength: Math.max(0, Math.min(1, brush.taperEndLength === undefined ? (brush.taperOn ? 0.3 : 0) : (keepTaperParams ? brush.taperEndLength : 0))),
       wetEdgesAmount: brush.wetEdgesOn ? Math.max(0, Math.min(1, brush.wetEdgesAmount === undefined ? 0.4 : brush.wetEdgesAmount)) : 0,
       smudgeSize: brush.smudgeSize === undefined ? (brush.smudgeOn ? Math.max(0, Math.min(1, brush.smudgeAmount === undefined ? 0.3 : brush.smudgeAmount)) : 0) : brush.smudgeSize,
       smudgeOpacity: brush.smudgeOpacity === undefined ? (brush.smudgeOn ? Math.max(0, Math.min(1, brush.smudgeAmount === undefined ? 0.3 : brush.smudgeAmount)) : 0) : brush.smudgeOpacity,
@@ -1245,7 +1349,8 @@
       dynamicsJitterStrokeSaturation: brush.colorPerTip === false ? Math.max(0, Math.min(1, brush.colorJitterSat || 0)) : D.dynamicsJitterStrokeSaturation,
       dynamicsJitterStrokeLightness: brush.colorPerTip === false ? Math.max(0, Math.min(1, brush.colorJitterVal || 0)) : D.dynamicsJitterStrokeLightness,
       jitterSecondary: brush.colorPerTip === false ? D.jitterSecondary : fgBgDynValue,
-      jitterStrokeSecondary: brush.colorPerTip === false ? fgBgDynValue : D.jitterStrokeSecondary,
+      // Procreate 5.4.15 stores this stroke slider on a power-2.2 scale.
+      jitterStrokeSecondary: brush.colorPerTip === false ? Math.pow(fgBgDynValue, 2.2) : D.jitterStrokeSecondary,
       blendMode: (typeof brush.blendMode === 'number' && isFinite(brush.blendMode) && brush.blendMode >= 0 && brush.blendMode <= 30) ? Math.round(brush.blendMode) : 0,
       dualBlendMode: (function () {
         if (typeof brush.dualBlendMode === 'number' && isFinite(brush.dualBlendMode) && brush.dualBlendMode >= 0 && brush.dualBlendMode <= 30) return Math.round(brush.dualBlendMode);
@@ -1258,7 +1363,11 @@
       })(),
       importedFromABR: brush.source === 'abr',
       name: brush.name || 'brush'
-    });
+    };
+    if (brush.source === 'bru' && brush.colorPressureSecondary > 0 && opts.pressure !== false) {
+      modeledParams.dynamicsPressureSecondaryColor = brush.colorPressureSecondary;
+    }
+    const params = Object.assign(D, modeledParams);
     // Preserve already parsed native fields without inventing cross-engine
     // mappings. Leave template defaults intact when the source lacks a field.
     Object.keys(nativeFields).forEach(function(key){
@@ -1267,6 +1376,7 @@
       if(fgBgDynOverride > 0 && (key === 'jitterSecondary' || key === 'jitterStrokeSecondary')) return;
       params[nativeFields[key]]=brush[key];
     });
+    if (brush._carriedProcreateGrain) Object.assign(params, brush._carriedProcreateGrain.params);
     // 【第302轮（作者：Claude）R302-01】新字段跟着旧字段走，见 BLEND_TWINS
     syncBlendTwins(params, brush._procreateBlendExt);
     // 【第302轮（作者：Claude）R302-04】源里的自定义压感曲线写回（新建档案原本只有模板直线）
@@ -1281,6 +1391,32 @@
     }
     // 真实画笔的 creationDate 是 NSDate 秒；没有它就少一个 Procreate 自己会写的字段
     params.creationDate = { 'NS.time': Math.round((Date.now() / 1000 - PROCREATE_EPOCH) * 1000) / 1000 };
+    /* 【第330轮（作者：DSH Lead）】源档案标量透传。
+       写侧原来只覆盖 modeledParams 里建模的 71 个 archive 字段，其余一律落
+       procreateDefaults 的默认值 —— 实测 Procreate→BRU→Procreate 往返，113 个字段
+       发生 566 处变化，其中 71 个字段（392 处）纯粹是「没建模被默认值顶掉」。
+       这里把源里存在、我们没建模的**标量**原样带回去。对象/数组仍走默认值：
+       {points}/{NS.objects}/NSDate 这类结构能否被 writeKeyedArchive 正确编码未验证，不冒险。
+       BRU/ABR 源没有 _params，本段不执行，行为不变。 */
+    if (brush.source === 'procreate' && brush._params && typeof brush._params === 'object') {
+      const modeled = new Set(Object.keys(modeledParams));
+      Object.keys(nativeFields).forEach(function (k) { if (brush[k] !== undefined) modeled.add(nativeFields[k]); });
+      Object.keys(brush.procreatePressureCurves || {}).forEach(function (k) { modeled.add(k); });
+      Object.keys(brush._params).forEach(function (k) {
+        if (k === '__class' || modeled.has(k)) return;
+        if (PRESSURE_CURVE_RE.test(k) || /^brushConv/.test(k)) return;
+        const v = brush._params[k];
+        const t = typeof v;
+        if (t === 'number' || t === 'boolean' || t === 'string') { params[k] = v; return; }
+        /* 【第332轮】字节型也透传：color 是 16 字节，源全 0，旧逻辑落 D 的默认值（末 4 字节 3f80 = 1.0）。
+           bplist 用 {__data:[...]} 表示字节串，与 procreateDefaults 里 color 的写法一致。 */
+        if (v instanceof Uint8Array || (v && v.constructor && v.constructor.name === 'Uint8Array')) {
+          params[k] = { __data: Array.from(v) };
+        }
+      });
+      /* 【第332轮】源档案没有 paintPressure 就不写：D 里默认 1，旧逻辑给每支都标上「旧压感开」。 */
+      if (brush._params.paintPressure === undefined) delete params.paintPressure;
+    }
     return params;
   }
   function buildArchive(brush, opts, shapeBytes) {
@@ -1299,7 +1435,7 @@
        用一个只在本工具内部认的字段区分两者，原生 Procreate 档案没有它 → 行为不变。 */
     if (brush.source === 'bru' && brush.bruDualRefUuid) params.brushConvNativeDual = '1';
     /* 同理标记「这支笔刷的纹理来自 BRU 的独立纹理层」，转回时据此还原纹理层。 */
-    if (brush.source === 'bru' && (brush.hasTexture || brush._bruGrainInTip) && (brush._rawBruTexture || brush.texAssetId)) params.brushConvNativeTex = '1';
+    if (brush.source === 'bru' && !brush._carriedProcreateGrain && (brush.hasTexture || brush._bruGrainInTip) && (brush._rawBruTexture || brush.texAssetId)) params.brushConvNativeTex = '1';
     /* 纹理的 BRU 参数（缩放/亮度/对比度/反相/深度/混合）Procreate 侧没有对等存储位，
        不存下来转回 bru 时会被重置成默认值 —— 实测「还行」textureScale 1 → 0.0215
        （缩到 1/46、平铺密到看不见，肉眼看就是「不出墨」），brightness 51→100。 */
@@ -1410,11 +1546,7 @@
           const st = Array.isArray(brush.embeddedTips) ? brush.embeddedTips.find(function (t) { return t && !t.isSubGrain; }) : null;
           return st && st.raw && st.raw.length <= 262144 ? bytesToB64(st.raw) : undefined;
         })(),
-        rgbOpacityDark: brush.bruShapeRgbOpacity ? (function (t) {
-          if (!t || !t.rgba) return false;
-          for (let i = 0; i < t.rgba.length; i += 4) if (t.rgba[i + 3] > 0 && (t.rgba[i] < 255 || t.rgba[i + 1] < 255 || t.rgba[i + 2] < 255)) return true;
-          return false;
-        })(brush.tip) : undefined,
+        rgbOpacityLightShape: brush.bruShapeRgbOpacity ? true : undefined,
         tipRaw: (function (t, raw) {
           if (!raw || !raw.length || raw.length > 1048576 || !t || !t.rgba) return undefined;
           let hasRgb = false;
@@ -1443,7 +1575,7 @@
     /* 【第228轮】烘焙回退（`bruIndependentTexture` 对自定义纹理返回 null）之后 hasTexture 已变 false，
        原条件会让 BRU 的纹理参数整组丢失，读回时 brightness 只能取 Procreate 的 0.45 → 往返 -6 变 45。
        源是 BRU 且带任一纹理参数时就存，和设备侧是否还能保留独立纹理层无关。 */
-    if (brush.source === 'bru' && (brush.hasTexture || brush._bruGrainInTip || brush.textureBrightness !== undefined ||
+    if (brush.source === 'bru' && !brush._carriedProcreateGrain && (brush.hasTexture || brush._bruGrainInTip || brush.textureBrightness !== undefined ||
         brush.textureContrast !== undefined || brush.textureScale !== undefined || brush.textureDepth !== undefined)) {
       /* 【第231轮】纹理语义存档：
          · depth/hasTex 用烘焙前原值（_bruTexOrig），f123 往返才能回到源值；
@@ -1455,6 +1587,7 @@
         scale: brush.textureScale, bright: brush.textureBrightness, contrast: brush.textureContrast,
         inverted: !!brush.textureInverted,
         depth: (texOrig && Number.isFinite(texOrig.textureDepth)) ? texOrig.textureDepth : brush.textureDepth,
+        depthJitter: brush.grainDepthJitter,
         blend: brush.bruTextureBlendMode,
         perTip: !!brush.bruTexturePerTip,
         hasTex: !!(texOrig ? texOrig.hasTexture : brush.hasTexture),
@@ -1632,7 +1765,7 @@
     /* 【第231轮】_bruGrainInTip（逐笔尖纹理已烘进 Shape 的 BRU 源）也要写 Grain.png：
        Procreate 侧 archive 的纹理开关是关的不会重复施加，但 brushset 里必须留有纹理像素，
        BRU 往返才能还原独立纹理层（否则 楠.bru 26 支程序化笔尖的纹理在 brushset 里彻底丢失）。 */
-    const grain = !rawPath && (brush.hasTexture || brush._bruGrainInTip) && !opts.noTextureBake ? grainPng(brush) : null;
+    const grain = !rawPath && (brush.hasTexture || brush._bruGrainInTip || brush._carriedProcreateGrain) && !opts.noTextureBake ? grainPng(brush) : null;
     if (!rawPath && brush.hasTexture && !grain) brush = Object.assign({}, brush, {hasTexture:false, textureDepth:0});
     function subBrush(){const b=secondaryBrush(brush);
       if(opts.spacingOverride>0)b.spacingPct=opts.spacingOverride;
@@ -1691,8 +1824,11 @@
     }
     const tip = tipRGBA(brush, opts);
     if (!tip) throw new Error('该笔刷没有笔尖图像，无法写入 Procreate 格式');
-    const shape = shapePng(tip, opts.maxTipSize || 2048, brush.source === 'bru' && brush.bruShapeRgbOpacity);
-    const thumb = thumbPng(tip, { spacingPct: brush.spacingPct, opacity: brush.opacity });
+    // BRU RGB-to-alpha uses bright pixels as coverage, modulated by the source alpha.
+    const mask = brush.source === 'bru' && brush.bruShapeRgbOpacity
+      ? luminanceToTip({ width: tip.w, height: tip.h, rgba: tip.rgba }, false) : tip;
+    const shape = shapePng(mask, opts.maxTipSize || 2048);
+    const thumb = thumbPng(mask, { spacingPct: brush.spacingPct, opacity: brush.opacity });
     const archive = buildArchive(brush, opts, shape.png);
     const entries = [
       { name: 'Brush.archive', data: archive },
@@ -1781,7 +1917,9 @@
     return s;
   }
 
-  const api = { isProcreate, parse, parseAsync, writeBrush, writeBrushset, writeBrushsetAsync, buildArchive, shapePng, thumbPng, unchanged, secondaryBrush: secondaryBrush, attachBundledAssets };
+  const api = { isProcreate, parse, parseAsync, writeBrush, writeBrushset, writeBrushsetAsync, buildArchive, shapePng, thumbPng,
+    unchanged, secondaryBrush, attachBundledAssets, previewTip, nativeSizeRange, nativeSizeDiameter,
+    orientationDegrees, parseCurvePoint, curveAverage, tipFromDecodedImage, decodeShape, grainArchiveScalars };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { procreate: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

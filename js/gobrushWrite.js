@@ -758,8 +758,11 @@
     const realGrain = !!grain && EXTRA.grainMode !== 'tip';   // 第206轮：模板白图 / 笔尖当纹理不参与 grainScale 换算
     if (!grain) grain = {w:800,h:800,rgba:new Uint8Array(800 * 800 * 4).fill(255)};
     /* 【第206轮 R204-01（作者：Claude）】纹理「比例」grainScale 跟随源纹理缩放。
-       MatePad Pro 12.2 + 天生会画实测（第204轮 Codex）：同一张网点图 32/64/128 px 三种分辨率周期相同，
-       grainScale 5/25/50 时周期 7/180/720 px，即整张纹理平铺边长 ≈ 0.576 × grainScale²（画布像素，
+       MatePad Pro 12.2 + 天生会画实测（第204轮 Codex）：同一张网点图 32/64/128 px 三种分辨率周期相同。
+       【第338轮（作者：Lead，实测 WorkBuddy）】口径钉死：grainScale 5/25/50 → **平铺周期 14.39 / 360 / 1440 px**，
+       与 0.576 × grainScale² 精确吻合（最大偏差 0.01px，141/7/3 个暗段）。旧记录的「7 / 180 / 720」是**暗段宽**
+       （周期的一半，单周期方波量"相邻暗段起点间距"才是周期），不是周期；以 14.4 / 360 / 1440 为准。
+       整张纹理平铺边长 ≈ 0.576 × grainScale²（画布像素，
        与本文件尺寸换算同属 300dpi 近似标定）。源侧平铺边长 = 纹理像素宽 × textureScale（PS / 画世界口径，
        画世界官方小方块 64 px × 50% = 32 px，MuMu 实测周期 16 px 吻合）。反解 grainScale = √(边长 / 0.576)。
        优先级：调用方显式 opts.grainScale > 原生 .gobrush 自己的值 > 由源纹理换算；没有真实纹理

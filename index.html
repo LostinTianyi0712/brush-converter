@@ -17,6 +17,7 @@
 <body>
 <header class="topbar">
   <div class="brand">
+    <button type="button" id="workspaceMenu" class="btn ghost" aria-label="工作区侧边栏" aria-expanded="false" aria-controls="workspaceNav"><span class="menu-bars" aria-hidden="true"></span></button>
     <div class="logo"><img src="img/icon-192.png" alt=""></div>
     <div>
       <h1>笔刷转换器</h1>
@@ -36,7 +37,24 @@
   </div>
 </header>
 
+<div class="workspace-shell">
+  <nav id="workspaceNav" class="workspace-nav" aria-label="工作区" inert>
+    <div class="workspace-nav-inner">
+    <div class="workspace-nav-title" aria-hidden="true">工作区</div>
+    <button type="button" id="workspaceConvert" class="workspace-nav-item" aria-current="page" aria-controls="conversionWorkspace">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h15m-4-4 4 4-4 4M20 17H5m4-4-4 4 4 4"/></svg>
+      <span>笔刷转换</span>
+    </button>
+    <button type="button" id="workspaceMake" class="workspace-nav-item" aria-controls="studioWorkspace">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 14 7-7a2.1 2.1 0 0 0-3-3l-7 7m3 3-3-3m3 3a4 4 0 0 1-4 6H3c1.4-1 2-2.2 2-4a3.5 3.5 0 0 1 4-5"/></svg>
+      <span>素材制笔</span>
+    </button>
+    </div>
+  </nav>
+  <div id="workspaceScrim" aria-hidden="true"></div>
+  <div id="workspaceContent" class="workspace-main">
 <main>
+  <div id="conversionWorkspace">
   <section id="step1" class="step">
     <div class="step-head">
       <div class="step-title"><h2>导入笔刷</h2></div>
@@ -393,6 +411,76 @@
     <section id="files" class="files"></section>
     <section id="empty" class="empty">还没有加载文件</section>
   </section>
+  </div>
+
+  <section id="studioWorkspace" class="step" aria-labelledby="studioTitle" hidden>
+    <div class="step-head">
+      <div class="step-title"><h2 id="studioTitle">素材制笔</h2></div>
+    </div>
+    <div class="studio-grid">
+      <section class="studio-panel card" aria-label="素材与笔刷设置">
+        <div class="studio-format-control">
+          <label class="opt">目标格式<select id="studioFormat"></select></label>
+          <p id="studioFormatHint" class="hint"></p>
+        </div>
+        <div id="studioDrop" class="studio-drop">
+          <button type="button" id="studioPick" class="btn ghost">选择图片</button>
+          <input id="studioFile" type="file" accept=".png,.jpg,.jpeg,.webp" multiple hidden>
+          <p class="hint">可同时选择或拖入多张 PNG、JPG、WebP</p>
+        </div>
+        <label class="opt studio-queue" for="studioQueue"><span id="studioCount">笔刷列表 · 0 支</span>
+          <select id="studioQueue" size="4" disabled></select>
+        </label>
+        <button type="button" id="studioRemove" class="btn tiny ghost" disabled>移除当前笔刷</button>
+        <p id="studioStatus" class="hint studio-status" role="status">导入图片开始制作</p>
+        <fieldset id="studioSettings" class="studio-settings" disabled aria-label="当前笔刷参数">
+          <label class="opt">笔刷名称<input id="studioName" type="text" maxlength="120"></label>
+          <label class="opt">笔尖提取
+            <select id="studioMask">
+              <option value="auto">自动</option>
+              <option value="alpha">按透明度</option>
+              <option value="dark">提取深色</option>
+            </select>
+          </label>
+          <div id="studioParameterGroups" class="studio-parameter-groups"></div>
+          <button type="button" id="studioAdd" class="btn ghost" disabled>将当前笔刷加入转换列表</button>
+        </fieldset>
+      </section>
+      <section class="studio-panel card" aria-label="预览与试画">
+        <div class="studio-previews">
+          <figure>
+            <figcaption>笔尖预览</figcaption>
+            <div class="studio-tip"><canvas id="studioTip" width="1" height="1" aria-label="笔尖形状"></canvas></div>
+          </figure>
+          <figure>
+            <figcaption>笔迹预览</figcaption>
+            <canvas id="studioStroke" width="320" height="112" aria-label="笔刷连续笔迹"></canvas>
+          </figure>
+        </div>
+        <div class="studio-trial-head">
+          <h3>试画画布</h3>
+          <button type="button" id="studioClear" class="btn ghost" disabled>清空画布</button>
+        </div>
+        <canvas id="studioTrial" width="1200" height="480" aria-label="用鼠标、触控笔或手指试画"></canvas>
+        <p class="hint">在画布上拖动，预览笔刷的大致效果。</p>
+      </section>
+    </div>
+    <section class="studio-panel studio-export card" aria-label="制作与打包">
+      <label class="opt">笔刷包名称<input id="studioPackName" type="text" value="自制笔刷" maxlength="120"></label>
+      <label class="opt">笔尖最大边长
+        <select id="studioTipLimit">
+          <option value="256">256 px</option>
+          <option value="512">512 px</option>
+          <option value="1024">1024 px</option>
+          <option value="2048" selected>2048 px</option>
+        </select>
+      </label>
+      <div class="studio-export-actions">
+        <button type="button" id="studioExport" class="btn primary" disabled>制作并下载</button>
+        <button type="button" id="studioCancel" class="btn ghost" hidden>取消</button>
+      </div>
+    </section>
+  </section>
 
   <section id="step3" class="step">
     <div class="step-head">
@@ -415,7 +503,6 @@
     </section>
     <div id="precheck" class="outpath" style="display:none"></div>
   </section>
-
   <div id="progress" class="progress hidden"><div class="bar"></div><span class="ptext"></span></div>
 </main>
 
@@ -613,6 +700,8 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
     <span id="updateText" class="footer-update-text"></span>
   </div>
 </footer>
+  </div>
+</div>
 
 <div id="compareModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99;align-items:center;justify-content:center">
   <div style="width:min(1100px,94vw);height:min(86vh,900px);background:#fff;border-radius:12px;overflow:hidden;display:flex;flex-direction:column">
