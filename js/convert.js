@@ -586,6 +586,9 @@
           b._procreateGrainChunk = carried;
           b._procreateGrainState = procreateGrainState(b);
         }
+        /* 【第348轮（作者：Lead）】极简标记（源无 Shape / bundledShapePath），与 grain chunk 独立。 */
+        const mark = readProcreateMarkChunk(b._rawTipPng);
+        if (mark) b._noShapeMark = mark;
       });
       result.brushes = result.brushes.map(b => Object.assign({}, b, { source: 'bru' }));
       restoreHsjTips(result, opts);
@@ -1341,7 +1344,13 @@
     /* 【R293-02】源 depth = 1.00 的整组在真机上没有一组变好（5 组明确变差）→ 继续走烘焙 */
     if (Number(brush.textureDepth) >= GRAIN_LAYER_MAX_SRC_DEPTH) return false;
     const sp = Number(brush.spacingPct);
-    if (!(sp > 0 && sp <= GRAIN_LAYER_MAX_SPACING)) return false;
+    // 第293轮标定的 GRAIN_LAYER_MAX_SPACING=15 基于 Procreate 原生 plotSpacing×100 口径；
+    // 第343轮将 Procreate 读侧 spacingPct 乘了 √2 对齐物理点距，这里对原生 Procreate 笔刷按原口径折回判定，
+    // 防止 plotSpacing∈(0.106,0.15] 的颗粒笔（如缪斯之梦「金粉*密」0.1086→15.355%）被误踢回烘焙。
+    const spForGate = (brush._params && Number.isFinite(Number(brush._params.plotSpacing)))
+      ? sp / Math.SQRT2
+      : sp;
+    if (!(spForGate > 0 && spForGate <= GRAIN_LAYER_MAX_SPACING)) return false;
     if (opts && opts.spacingOverride > GRAIN_LAYER_MAX_SPACING) return false;
     if (brush.dualOn && brush.dualTip && !brush.bruDualRefUuid && opts &&
         (opts.dualBake === false || opts.noDualBake === true)) return false;
@@ -1450,6 +1459,12 @@
   const PC_GRAIN_CHUNK = 'bcPG';
   const PC_GRAIN_HEADER = 12;
   const PC_GRAIN_ASSET_MAX = 32 * 1024 * 1024;
+  /* 【第348轮（作者：Lead）】独立的极简标记 chunk：只存「源无 Shape.png」这类**事实**，
+     不存任何图像，体积几十字节。它不受 `opts.procreateGrainBridge` 影响——那个开关控制的是
+     grain 原图备份（缪斯之梦 74MB），而这一条只是让「精简版」也能在回写时知道源本来没有 Shape，
+     不至于凭空补一个合成硬圆把笔尖改硬。 */
+  const PC_MARK_CHUNK = 'bcMK';
+  const PC_MARK_MAX = 1024;
 
   function procreateGrainPng(bytes) {
     return bytes && bytes.length >= 45 && bytes.length <= PC_GRAIN_ASSET_MAX &&
@@ -1478,9 +1493,59 @@
         if (!procreateGrainPng(grain) || (shape.length && !procreateGrainPng(shape)) ||
             util.u32(bytes, payloadEnd) !== util.crc32(bytes, at + 4, payloadEnd)) return null;
         try {
-          const params = procreate.grainArchiveScalars(JSON.parse(util.utf8Decode(bytes.subarray(head + PC_GRAIN_HEADER, images))));
+          const rawJson = JSON.parse(util.utf8Decode(bytes.subarray(head + PC_GRAIN_HEADER, images)));
+          const params = procreate.grainArchiveScalars(rawJson);
           if (params.grainDepth === undefined) return null;
-          return { grain, shape, params, chunk: bytes.subarray(at, end) };
+          const noShape = rawJson && rawJson._noShape === true;
+          const bundledShapePath = rawJson && typeof rawJson._bundledShapePath === 'string' && rawJson._bundledShapePath ? rawJson._bundledShapePath : undefined;
+          return { grain, shape, params, noShape, bundledShapePath, chunk: bytes.subarray(at, end) };
+        } catch (e) { return null; }
+      }
+      at = end;
+    }
+    return null;
+  }
+
+  /* 【第348轮（作者：Lead）】`bcMK` 标记 chunk 的读写。
+     与 `bcPG` 分开：`bcPG` 背的是 grain 原图（大），`bcMK` 只背「源无 Shape」这个布尔事实（几十字节）。 */
+  function buildMarkChunk(noShape, bundledShapePath) {
+    if (!noShape && !bundledShapePath) return null;
+    const obj = {};
+    if (noShape) obj._noShape = true;
+    if (bundledShapePath) obj._bundledShapePath = bundledShapePath;
+    const payload = util.utf8Encode(JSON.stringify(obj));
+    if (payload.length > PC_MARK_MAX) return null;
+    const chunk = new Uint8Array(payload.length + 12);
+    const view = new DataView(chunk.buffer);
+    view.setUint32(0, payload.length);
+    chunk.set(util.utf8Encode(PC_MARK_CHUNK), 4);
+    chunk.set(payload, 8);
+    view.setUint32(chunk.length - 4, util.crc32(chunk, 4, chunk.length - 4));
+    return chunk;
+  }
+
+  /* 从一个 Procreate 源笔刷推断标记（只在源确实没有 Shape 时产出）。 */
+  function writeProcreateMarkChunk(brush) {
+    const noShape = !!(brush && !brush._rawShape && !brush.shapeFromLibrary && brush.tipSource === 'none');
+    const bundled = brush && typeof brush.bundledShapePath === 'string' && brush.bundledShapePath ? brush.bundledShapePath : undefined;
+    return buildMarkChunk(noShape, bundled);
+  }
+
+  function readProcreateMarkChunk(bytes) {
+    if (!bytes || !png.isPng(bytes)) return null;
+    for (let at = 8; at + 12 <= bytes.length;) {
+      const size = util.u32(bytes, at);
+      const end = at + size + 12;
+      if (end > bytes.length || util.ascii(bytes, at + 4, 4) === 'IEND') return null;
+      if (util.ascii(bytes, at + 4, 4) === PC_MARK_CHUNK) {
+        const payloadEnd = end - 4;
+        if (size > PC_MARK_MAX || util.u32(bytes, payloadEnd) !== util.crc32(bytes, at + 4, payloadEnd)) return null;
+        try {
+          const raw = JSON.parse(util.utf8Decode(bytes.subarray(at + 8, payloadEnd)));
+          return {
+            noShape: !!(raw && raw._noShape === true),
+            bundledShapePath: raw && typeof raw._bundledShapePath === 'string' && raw._bundledShapePath ? raw._bundledShapePath : undefined
+          };
         } catch (e) { return null; }
       }
       at = end;
@@ -1492,6 +1557,12 @@
     if (brush.source !== 'procreate' || brush._bruExtra || brush._bruTexParams || !procreateGrainPng(brush._rawGrain)) return null;
     const params = procreate.grainArchiveScalars(brush._params);
     params.grainDepth = brush.hasTexture ? (brush.textureDepth === undefined ? 0.6 : brush.textureDepth) : 0;
+    // 第347轮（缺陷清单 L824）：源 Procreate 笔刷原本无 Shape.png（如缪斯之梦主笔「无 Shape、只有 Grain」）时，
+    // 记录 _noShape 标记（及可选 bundledShapePath），经 BRU 往返回写 brushset 时不再凭空补合成硬圆 Shape.png。
+    if (!brush._rawShape && !brush.shapeFromLibrary && brush.tipSource === 'none') {
+      params._noShape = true;
+      if (brush.bundledShapePath) params._bundledShapePath = brush.bundledShapePath;
+    }
     const data = util.utf8Encode(JSON.stringify(params));
     let shape = new Uint8Array(0);
     if (unbakedTip) {
@@ -1995,6 +2066,15 @@
       const chunk = carried ? carried.chunk : writeProcreateGrainChunk(brush, unbakedTip);
       if (chunk) pngBytes = addProcreateGrainChunk(pngBytes, chunk);
     }
+    /* 【第348轮（作者：Lead）】标记 chunk 独立于 `procreateGrainBridge`：那个开关管的是 74MB 的 grain
+       原图备份，这个只背「源无 Shape」这个事实（几十字节），所以永远尝试写。
+       `canRestoreTipRaw` 时 pngBytes 已经是源字节（本身带标记），不重复插。 */
+    if (opts.fidelity !== false && !canRestoreTipRaw) {
+      const markChunk = brush.source === 'bru'
+        ? (brush._noShapeMark ? buildMarkChunk(brush._noShapeMark.noShape, brush._noShapeMark.bundledShapePath) : null)
+        : writeProcreateMarkChunk(brush);
+      if (markChunk) pngBytes = addProcreateGrainChunk(pngBytes, markChunk);
+    }
     const sizeScale = opts.sizeScale || 1;
     let sizePx = (brush.sizePx || 100) * sizeScale;
     if (!isFinite(sizePx) || sizePx <= 0) sizePx = Math.max(4, Math.max(w, h));
@@ -2149,7 +2229,12 @@
       bruPressureFlowInfluence: brush.bruPressureFlowInfluence,
       flowPct: brush.flowPct === undefined && bruPressure ? bruPressure.flow : brush.flowPct,
       minFlowRatio: brush.minFlowRatio === undefined && bruPressure ? bruPressure.minFlow : brush.minFlowRatio,
-      bruSmallFlow: bruPressure && brush.flowPct === undefined && brush.minFlowRatio === undefined ? bruPressure.smallFlow : undefined,
+      /* 【第350轮】回读 brushset 时 `flowPct` 现在总是给出来（取自 BRU 往返标记里的精确值），
+         所以不能再拿「flowPct 未定义」当「用户没改过流量」的依据，否则 `bruSmallFlow`（f51 的
+         小流量）在这条链路上一律丢。改成值比对：与标记一致（1e-6 内）就照旧还原。 */
+      bruSmallFlow: bruPressure && brush.minFlowRatio === undefined &&
+        (brush.flowPct === undefined || Math.abs(brush.flowPct - bruPressure.flow) <= 1e-6)
+        ? bruPressure.smallFlow : undefined,
       bruLegacyMinWidth: opts.pressure === undefined && pressureSizeOn(brush) &&
         (brush.source === 'bru' ? brush.bruLegacyMinWidth : !!(bruPressure && bruPressure.legacyMinWidth)),
       roundness: brush.roundness,
@@ -2267,10 +2352,9 @@
       borderStrength: bruBorder.strength,
       renderCount: brush.renderCount,
       speedPressure: !!brush.speedPressure,
-      // #37（WorkBuddy 第106轮）：Procreate 湿混「混合」(dynamicsMix) 在 smudge 字段缺失时兜底，
-      // 跨格式（Procreate→BRU）混色强度不再丢回默认值
-      smudgeOn: brush.smudgeOn !== undefined ? brush.smudgeOn : (brush.dynamicsMix > 0 ? true : brush.smudgeOn),
-      smudgeAmount: brush.smudgeAmount !== undefined ? brush.smudgeAmount : (brush.dynamicsMix !== undefined ? brush.dynamicsMix : brush.smudgeAmount),
+      // #37（第348轮修复死代码）：procreate.js 读侧固定 smudgeOn:false，原先 !== undefined 恒真导致 dynamicsMix 兜底从未触发
+      smudgeOn: brush.smudgeOn || (brush.source === 'procreate' && brush.dynamicsMix > 0) || (brush.smudgeOn !== undefined ? brush.smudgeOn : undefined),
+      smudgeAmount: (brush.smudgeAmount > 0 || brush.source !== 'procreate') ? brush.smudgeAmount : (brush.dynamicsMix > 0 ? brush.dynamicsMix : brush.smudgeAmount),
       colorDynamicsOn: (color ? color.enabled : brush.colorDynamicsOn) || dualColorAmount > 0.001,
       colorPerTip: brush.colorPerTip,
       colorJitterHue: color ? color.hue : brush.colorJitterHue,
@@ -2880,7 +2964,14 @@
       patternRef: patternRef,
       textureDepth: brush.textureDepth,
       textureScale: brush.textureScale,
-      textureBlendMode: brush.textureBlendMode,
+      textureBlendMode: (function () {
+        if (brush.textureBlendMode) return brush.textureBlendMode;
+        if (typeof brush.grainBlendMode === 'number' && isFinite(brush.grainBlendMode)) {
+          const pcToPs = { 0: 'Nrml', 1: 'Mltp', 2: 'Drkn', 3: 'CBrn', 4: 'LBrn', 5: 'Lghn', 6: 'ScrN', 7: 'HrdM', 8: 'Ovrl', 9: 'SftL', 10: 'HrdL', 11: 'Dfrn', 12: 'Excl', 13: 'H   ', 14: 'Strt', 15: 'Colr', 16: 'Lmns', 19: 'LnrL', 20: 'VlLt', 21: 'PnLt' };
+          return pcToPs[Math.round(brush.grainBlendMode)];
+        }
+        return undefined;
+      })(),
       textureEnabled: !!brush.hasTexture,
       // PatternRef 里的 .pat 已经烘入了“是否需要反转”（inversionBaked），所以只要引用了它，
       // InvT 就必须是 false；否则 PS 会把已反转的图案再反转一次，纹理回到未反转原貌。
@@ -3380,6 +3471,21 @@
             textureDepth: carried.params.grainDepth, _carriedProcreateGrain: carried
           });
 
+      } else {
+        /* 【第348轮（作者：Lead）】精简版（不含 grain chunk）但带了 `bcMK` 标记时：回写必须知道
+           「源本来就没有 Shape.png」，否则会凭空补一个合成硬圆、把笔尖改硬。
+           这里构一个「只有标记、没有 grain」的 carried —— grainDepth 记 0，所以也不会写 Grain.png
+           （精简版本来就不背 grain 原图，那是 74MB 的取舍）。 */
+        const mark = brush._noShapeMark;
+        if (mark && (mark.noShape || mark.bundledShapePath)) {
+          brush = Object.assign({}, brush, {
+            hasTexture: false, textureDepth: 0,
+            _carriedProcreateGrain: {
+              grain: null, shape: new Uint8Array(0), params: { grainDepth: 0 },
+              noShape: mark.noShape === true, bundledShapePath: mark.bundledShapePath, chunk: null
+            }
+          });
+        }
       }
       const sub = brush.dualSubBrush;
       if (!isSecondary && sub && sub._procreateGrainChunk) {

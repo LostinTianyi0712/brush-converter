@@ -1552,7 +1552,7 @@
         addDefault('useScatter', 'bool', _descBool(false));
         addDefault('TxtC', 'bool', _descBool(false));
         addDefault('interpretation', 'bool', _descBool(false));
-        addDefault('textureBlendMode', 'enum', _descEnum('BlnM', 'Ovrl'));
+        addDefault('textureBlendMode', 'enum', _descEnum('BlnM', blnmMode(it.textureBlendMode, 'Ovrl')));
         addDefault('textureDepth', 'UntF', _descUntF('#Prc', 100));
         addDefault('minimumDepth', 'UntF', _descUntF('#Prc', 0));
         addDefault('textureDepthDynamics', 'Objc', neutralVariation);

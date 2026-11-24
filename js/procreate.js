@@ -124,8 +124,16 @@
       128 * (range.low + (range.high - range.low) * range.slider * factor)));
     return Math.max(0, radius * 2);
   }
+  // Procreate 5.4.15 真机标定常数（第342轮，iPad 2048x1536 画布）：
+  //   1) 描边点距 = √2 × 直径 × plotSpacing（因 particleQuad 带 π/4 旋转基），
+  //      而画世界Pro(0.984) / PS ABR(1.0) / Krita(1.0) 均按 1.0 × 直径 × (spacingPct/100)；
+  //   2) 横向抖动 plotJitter 纯垂直笔迹方向，单侧最大幅度 ≈ (√2/2) × plotJitter × 直径，
+  //      与画世界Pro/PS/Krita 的 scatterPct（单侧幅度 = scatterPct/100 × 直径）换算系数为 100/√2 ≈ 70.71。
+  const PROCREATE_SPACING_SCALE = Math.SQRT2;
+  const PLOT_JITTER_PCT_PER_UNIT = 100 / Math.SQRT2;
+
   function sizeArchiveParams(brush) {
-    const spacing = Math.max(0, Math.min(10, (brush.spacingPct === undefined ? 10 : brush.spacingPct) / 100));
+    const spacing = Math.max(0, Math.min(10, (brush.spacingPct === undefined ? 10 : brush.spacingPct) / (100 * PROCREATE_SPACING_SCALE)));
     const limit = 1 + 15 * Math.min(1, spacing / 0.02);
     const size = typeof brush.sizePx === 'number' && isFinite(brush.sizePx) && brush.sizePx > 0 ? brush.sizePx : 100;
     const high = Math.min(limit, Math.max(0.2, size) / 256);
@@ -143,7 +151,7 @@
     const before = brush._rawNormalized;
     const aliasEdited = before && brush.procreateRotationScatterPct !== before.procreateRotationScatterPct && brush.angleJitterDeg === before.angleJitterDeg;
     const raw = aliasEdited || brush.angleJitterDeg === undefined
-      ? (brush.procreateRotationScatterPct || 0) / 50
+      ? (brush.procreateRotationScatterPct || 0) / 100
       : brush.angleJitterDeg / (brush.source === 'abr' ? 100 : 180);
     return Math.max(0, Math.min(2, raw));
   }
@@ -433,10 +441,15 @@
     const texBrightV = nv('textureBrightness');
     const texContrastV = nv('textureContrast');
     const plotJitterV = nv('plotJitter');
-    const smoothingV = nv('plotSmoothing');
+    // 第342轮标定：Procreate 有三套独立稳定器（StreamLine / 稳定化 / 运动过滤），取最大强度供跨格式平滑使用
+    const smoothingV = Math.max(nv('plotSmoothing'), nv('plotMovingAverageStabilization'), nv('plotFFTSmoothingAmount'));
     const hueDyn = Math.max(nv('dynamicsPressureHue'), nv('dynamicsJitterHue'), nv('dynamicsJitterStrokeHue'));
     const satDyn = Math.max(nv('dynamicsPressureSaturation'), nv('dynamicsJitterSaturation'), nv('dynamicsJitterStrokeSaturation'));
-    const briDyn = Math.max(nv('dynamicsPressureBrightness'), nv('dynamicsJitterLightness'), nv('dynamicsJitterStrokeLightness'));
+    const briDyn = Math.max(
+      nv('dynamicsPressureBrightness'),
+      nv('dynamicsJitterLightness'), nv('dynamicsJitterStrokeLightness'),
+      nv('dynamicsJitterDarkness'), nv('dynamicsJitterStrokeDarkness')
+    );
     const fgBgDyn = Math.max(nv('jitterSecondary'), nv('jitterStrokeSecondary'));
     /* 【第339轮】副色（Procreate「Secondary Color」＝画世界「辅助颜色」）不止随机驱动。
        Procreate 的 Color Dynamics 里 Secondary Color 有 5 个输入源：每笔尖随机
@@ -453,8 +466,8 @@
     const secRoll = nv('dynamicsRollSecondaryColor') * 0.5;
     const secInputDyn = Math.max(secPressure, secTilt, secRoll);
     const secondaryAmount = Math.max(secJitter, secInputDyn);
-    const hasPerTipColor = nv('dynamicsJitterHue') > 0.001 || nv('dynamicsJitterSaturation') > 0.001 || nv('dynamicsJitterLightness') > 0.001 || nv('jitterSecondary') > 0.001;
-    const hasStrokeColor = nv('dynamicsJitterStrokeHue') > 0.001 || nv('dynamicsJitterStrokeSaturation') > 0.001 || nv('dynamicsJitterStrokeLightness') > 0.001 || nv('jitterStrokeSecondary') > 0.001;
+    const hasPerTipColor = nv('dynamicsJitterHue') > 0.001 || nv('dynamicsJitterSaturation') > 0.001 || nv('dynamicsJitterLightness') > 0.001 || nv('dynamicsJitterDarkness') > 0.001 || nv('jitterSecondary') > 0.001;
+    const hasStrokeColor = nv('dynamicsJitterStrokeHue') > 0.001 || nv('dynamicsJitterStrokeSaturation') > 0.001 || nv('dynamicsJitterStrokeLightness') > 0.001 || nv('dynamicsJitterStrokeDarkness') > 0.001 || nv('jitterStrokeSecondary') > 0.001;
     const sizeJitV = nv('dynamicsJitterSize');
     const pressureRound = nv('dynamicsPressureShapeRoundness');
     const dualBlendMode = Number(params.dualBlendMode) || 0;
@@ -472,6 +485,7 @@
     //   过去把 shapeScatter 当位置散布会写出过大的 PS 散布（包浆笔刷 2 → 200%），必须分开映射。
     let brushSubRaw = null;
     const plotJitterRaw = Number(params.plotJitter) || 0;
+    const plotJitterLongRaw = Number(params.plotJitterLongitudinal) || 0;
     const shapeScatterRaw = Number(params.shapeScatter) || 0;
     const shapeCountRaw = Number(params.shapeCount) || 0;
     const countJitterRaw = Number(params.shapeCountJitter) || 0;
@@ -489,11 +503,16 @@
         brushSubRaw = { archive: subArcEntry.data(), shape: subShapeEntry ? subShapeEntry.data() : null };
       } catch (e) { /* ignore */ }
     }
-    // plotJitter 内部刻度约 0–10（样本最高 7.02 = 约 70%），换算成百分比
-    const scatterPct = Math.max(0, Math.min(1000, plotJitterRaw * 10));
-    const rotationScatterPct = Math.max(0, Math.min(100, shapeScatterRaw * 50));
+    // 第342轮真机标定：plotJitter 纯垂直笔迹方向，plotJitterLongitudinal 纯沿笔迹方向，
+    // 单侧最大幅度 ≈ (√2/2) × val × 直径，故统一模型 scatterPct = val × (100/√2)；
+    // shapeScatter 在 Procreate 5.4.15 UI 为线性 ×100%（0.5 → 50%，1.0 → 100%）。
+    const scatterPct = Math.max(0, Math.min(1000, Math.max(plotJitterRaw, plotJitterLongRaw) * PLOT_JITTER_PCT_PER_UNIT));
+    const rotationScatterPct = Math.max(0, Math.min(100, shapeScatterRaw * 100));
     // Native options count = trunc(float32(raw * 15)); plotting adds one stamp.
     const scatterCount = Math.max(1, Math.min(16, Math.floor(Math.fround(Math.fround(shapeCountRaw) * 15)) + 1));
+    /* 【第350轮】BRU 往返标记要在对象字面量之前读出来：`flowPct` 的取值依赖它，
+       原先写在字面量里只能靠 `params.brushConvBruPressure` 猜「有没有标记」。 */
+    const bruPressureData = readBruPressure(params);
     const brush = {
       name,
       tip,
@@ -509,7 +528,7 @@
       _grainRgba: grainRgba,
       sizePx,
       maxSizePx: Math.max(sizePx, Math.round(sizeRange.high * 256)),
-      spacingPct: Math.max(0, Math.min(1000, spacing * 100)),
+      spacingPct: Math.max(0, Math.min(1000, spacing * 100 * PROCREATE_SPACING_SCALE)),
       opacity,
       minSizeRatio,
       minOpacityRatio,
@@ -576,7 +595,7 @@
       colorJitterVal: briDyn,
       sizeJitterPct: sizeJitV * 100,
       opacityJitterPct: Math.max(0, Math.min(100, nv('dynamicsJitterOpacity') * 100)),
-      roundnessJitterPct: Math.max(0, Math.min(100, nv('jitterShapeRoundness') * 100)),
+      roundnessJitterPct: Math.max(0, Math.min(100, Math.max(nv('jitterShapeRoundness'), nv('jitterShapeRoundnessX')) * 100)),
       minRoundnessRatio: Math.max(0, Math.min(1, nv('dynamicsPressureShapeRoundnessMinimum', 0.25))),
       roundnessDynamics: pressureRound,
       flipXJitter: !!params.shapeFlipXJitter,
@@ -584,14 +603,27 @@
       wetEdgesAccumulation: wetAccum,
       burntEdgesAmount: nv('burntEdgesAmount'),
       grainBlendMode: params.grainBlendMode,
+      textureMovement: nv('textureMovement', 1),
+      textureOffsetJitter: params.textureOffsetJitter === undefined ? undefined : !!params.textureOffsetJitter,
       textureRotation: nv('textureRotation'),
       textureInverted: !!params.textureInverted,
       // 源笔刷的「反转」已烘焙进 tip 像素（见 luminanceToTip），跨格式输出直接用它
       shapeInverted: shapeInverted || undefined,
       dynamicsLoad: nv('dynamicsLoad'),
-      dynamicsGlazedFlow: nv('dynamicsGlazedFlow'),
+      dynamicsGlazedFlow: nv('dynamicsGlazedFlow', 1),
+      /* 【第350轮】`flowPct` 必须在回读时就给出来，不能因为有 BRU 往返标记就留空：
+         留空会让「BRU → brushset → 回读」的这支笔自己不知道流量，拿去再转 ABR/Krita
+         时流量默认成 1（`all_formats_cross165_test` 的 `bru -> brushset` 就是栽在这）。
+         有标记时优先用标记里的精确 double（与 `bruSmallFlow` 同源），否则退回档案自己的
+         `dynamicsGlazedFlow`。 */
+      flowPct: (function () {
+        if (bruPressureData && Number.isFinite(bruPressureData.flow)) return bruPressureData.flow;
+        return (params.dynamicsGlazedFlow !== undefined && nv('dynamicsGlazedFlow', 1) < 0.9999)
+          ? Math.max(0.01, Math.min(1, nv('dynamicsGlazedFlow', 1))) : undefined;
+      })(),
       dynamicsMix: nv('dynamicsMix'),
       dynamicsMixSoftening: nv('dynamicsMixSoftening'),
+      dynamicsWetnessJitter: nv('dynamicsWetnessJitter'),
       dynamicsJitterDarkness: nv('dynamicsJitterDarkness'),
       dynamicsJitterStrokeHue: nv('dynamicsJitterStrokeHue'),
       dynamicsJitterStrokeSaturation: nv('dynamicsJitterStrokeSaturation'),
@@ -603,7 +635,7 @@
       _procreateBlendExt: readBlendExt(params),
       procreatePressureCurves: readPressureCurves(params),
       _params: params,
-      _bruPressure: readBruPressure(params),
+      _bruPressure: bruPressureData,
       _nativeDualFromBru: params.brushConvNativeDual === '1',
       _nativeTexFromBru: params.brushConvNativeTex === '1',
       _bruTexParams: (function () { try { return params.brushConvBruTex ? JSON.parse(params.brushConvBruTex) : null; } catch (e) { return null; } })(),
@@ -614,7 +646,7 @@
       procreateJitterPct: scatterPct,
       scatterPct: scatterPct,
       scatterCount: scatterCount,
-      scatterBothAxes: true,
+      scatterBothAxes: plotJitterRaw > 0.001 && plotJitterLongRaw > 0.001,
       countJitterPct: countJitterRaw * 100,
       source: 'procreate'
     };
@@ -623,6 +655,10 @@
        textureInverted / textureDepth 会被存档里的旧值覆盖回去，f29/f123 全写错。 */
     if (brush._bruExtra) {
       const ex = brush._bruExtra;
+      if (Number.isFinite(ex.opacity) && Number.isFinite(ex.procreateMaxOpacity) &&
+          Math.abs(maxOpacity - ex.procreateMaxOpacity) <= 1e-4) {
+        brush.opacity = ex.opacity;
+      }
       if (Number.isFinite(ex.hardness)) brush.hardness = ex.hardness;
       if (Number.isFinite(ex.maxSizePx)) brush.maxSizePx = ex.maxSizePx;
       if (Number.isFinite(ex.scatterPct)) brush.scatterPct = ex.scatterPct;
@@ -1252,16 +1288,28 @@
        BRU/ABR 源仍只在 taperOn 为真时写 —— 否则读侧看到非 0 参数会把 taperOn 反推成 true，
        roundtrip_baseline 实测 183/203 支被误开（楠.bru）。 */
     const keepTaperParams = !!(brush.taperOn || brush.source === 'procreate');
+    // 第345轮真机实测（楠.bru）：画世界 f13 是线性可叠加不透明度，而 Procreate 默认浅釉
+    // (renderingMaxTransfer=true) 服从 α = maxOpacity^3.5 且整笔钳制，导致 op ≤ 0.15 时四舍五入为 0/255 完全不出墨。
+    // 对 BRU 源且 0 < opacity < 1 的笔刷，改用强烈混合·非钳制（renderingMaxTransfer=false, renderingRecursiveMixing=true，
+    // 第342轮实测单章 α ≈ maxOpacity^2.5 且支持重叠累积），并按 op^(1/2.5) 折算 maxOpacity；
+    // 源线性值同时记录在 brushConvBruExtra.opacity 供 BRU↔brushset 往返无损还原。
+    const rawOpacity = Math.max(0, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity));
+    const bruLowOp = brush.source === 'bru' && rawOpacity > 0 && rawOpacity < 1;
+    const outMaxOpacity = bruLowOp ? Math.pow(rawOpacity, 1 / 2.5) : rawOpacity;
     const modeledParams = {
       version: 2,
       plotSpacingVersion: 1,
       paintSize: sizeParams.paintSize,
       maxSize: sizeParams.maxSize,
       minSize: sizeParams.minSize,
-      maxOpacity: Math.max(0, Math.min(1, brush.opacity === undefined ? 1 : brush.opacity)),
+      maxOpacity: outMaxOpacity,
       paintOpacity: 1,
-      // Procreate 间距允许 >100%（印章笔样本 121%），不要钳到 100
-      plotSpacing: Math.max(0, Math.min(10, (brush.spacingPct === undefined ? 10 : brush.spacingPct) / 100)),
+      renderingMaxTransfer: bruLowOp ? false : D.renderingMaxTransfer,
+      renderingModulatedTransfer: bruLowOp ? false : D.renderingModulatedTransfer,
+      renderingRecursiveMixing: bruLowOp ? true : D.renderingRecursiveMixing,
+      // Procreate 间距允许 >100%（印章笔样本 121%），不要钳到 100；
+      // 第342轮实测点距 = √2 × D × plotSpacing，故写回时除以 √2 与跨格式 1.0×D 对齐。
+      plotSpacing: Math.max(0, Math.min(10, (brush.spacingPct === undefined ? 10 : brush.spacingPct) / (100 * PROCREATE_SPACING_SCALE))),
       // PS 圆度 0% 是合法值（扁线），不要抬到 5%
       shapeRoundness: roundnessArchiveParam(brush, {low:sizeParams.minSize, high:sizeParams.maxSize, slider:sizeParams.paintSize}),
       shapeAngle: ((brush.angle || 0) * Math.PI / 180),
@@ -1280,10 +1328,33 @@
       shapeCountJitter: Math.max(0, Math.min(1, (brush.countJitterPct || 0) / 100)),
       shapeFlipXJitter: !!brush.flipXJitter,
       shapeFlipYJitter: !!brush.flipYJitter,
-      plotJitter: Math.max(0, Math.min(10, (brush.scatterOn ? (brush.scatterPct || 0) : 0) / 10)),
+      plotJitter: (function () {
+        if (brush.source === 'procreate' && brush._params && brush._rawNormalized &&
+            brush.scatterOn === brush._rawNormalized.scatterOn &&
+            brush.scatterPct === brush._rawNormalized.scatterPct) {
+          return Math.max(0, Math.min(10, Number(brush._params.plotJitter) || 0));
+        }
+        return Math.max(0, Math.min(10, (brush.scatterOn ? (brush.scatterPct || 0) : 0) / PLOT_JITTER_PCT_PER_UNIT));
+      })(),
+      plotJitterLongitudinal: (function () {
+        if (brush.source === 'procreate' && brush._params && brush._rawNormalized &&
+            brush.scatterOn === brush._rawNormalized.scatterOn &&
+            brush.scatterPct === brush._rawNormalized.scatterPct &&
+            brush.scatterBothAxes === brush._rawNormalized.scatterBothAxes) {
+          return Math.max(0, Math.min(10, Number(brush._params.plotJitterLongitudinal) || 0));
+        }
+        return (brush.scatterOn && brush.scatterBothAxes)
+          ? Math.max(0, Math.min(10, (brush.scatterPct || 0) / PLOT_JITTER_PCT_PER_UNIT)) : 0;
+      })(),
       /* 【第251轮】与读回侧同步放宽到 2：BRU f18 允许 >100%，以前写进 archive 就被钳到 1。 */
       plotSpacingJitter: Math.max(0, Math.min(2, (brush.spacingJitterPct || 0) / 100)),
-      plotSmoothing: Math.max(0, Math.min(1, brush.smoothingStrength === undefined ? 0 : brush.smoothingStrength)),
+      plotSmoothing: (function () {
+        if (brush.source === 'procreate' && brush._params && brush._rawNormalized &&
+            brush.smoothingStrength === brush._rawNormalized.smoothingStrength) {
+          return Math.max(0, Math.min(1, Number(brush._params.plotSmoothing) || 0));
+        }
+        return Math.max(0, Math.min(1, brush.smoothingStrength === undefined ? 0 : brush.smoothingStrength));
+      })(),
       dynamicsFalloff: Math.max(0, Math.min(1, (brush.falloffPct || 0) / 100)),
       grainDepthMinimum: Math.max(0, Math.min(1, brush.grainDepthMinimum === undefined ? 0 : brush.grainDepthMinimum)),
       grainDepthJitter: Math.max(0, Math.min(1, brush.grainDepthJitter || 0)),
@@ -1312,7 +1383,13 @@
       dynamicsPressureOpacity: brush.pressureOpacity ? 1 : 0,
       dynamicsJitterSize: Math.max(0, Math.min(1, (brush.sizeJitterPct || 0) / 100)),
       dynamicsJitterOpacity: Math.max(0, Math.min(1, (brush.opacityJitterPct || 0) / 100)),
-      jitterShapeRoundness: Math.max(0, Math.min(1, (brush.roundnessJitterPct || 0) / 100)),
+      jitterShapeRoundness: (function () {
+        if (brush.source === 'procreate' && brush._params && brush._rawNormalized &&
+            brush.roundnessJitterPct === brush._rawNormalized.roundnessJitterPct) {
+          return Math.max(0, Math.min(1, Number(brush._params.jitterShapeRoundness) || 0));
+        }
+        return Math.max(0, Math.min(1, (brush.roundnessJitterPct || 0) / 100));
+      })(),
       dynamicsPressureShapeRoundnessMinimum: brush.minRoundnessRatio === undefined ? D.dynamicsPressureShapeRoundnessMinimum : Math.max(0, Math.min(1, brush.minRoundnessRatio)),
       dynamicsTiltSize: Math.max(0, Math.min(1, brush.tiltSizeDyn === undefined ? Math.max((brush.tiltJitterPct || 0) / 100, brush.dynamicsControlSize === 3 ? 1 - (brush.minSizeRatio === undefined ? 0 : brush.minSizeRatio) : 0) : brush.tiltSizeDyn)),
       dynamicsTiltOpacity: Math.max(0, Math.min(1, brush.tiltOpacityDyn === undefined ? (brush.dynamicsControlOpacity === 3 ? 1 - (brush.minOpacityRatio === undefined ? 0 : brush.minOpacityRatio) : 0) : brush.tiltOpacityDyn)),
@@ -1321,14 +1398,23 @@
       dynamicsTiltShapeRoundness: 1 - Math.max(0, Math.min(1, Math.max(brush.tiltRoundnessDyn || 0, brush.dynamicsControlRoundness === 3 ? (brush.roundnessJitterPct || 0) / 100 : 0))),
       dynamicsSpeedSize: Math.max(0, Math.min(1, brush.speedSizeDyn || 0)),
       dynamicsSpeedOpacity: Math.max(0, Math.min(1, brush.speedOpacityDyn || 0)),
-      minOpacity: brush.pressureOpacity ? (brush.opacity === undefined ? 1 : Math.max(0, Math.min(1, brush.opacity))) * (brush.minOpacityRatio === undefined ? 0 : Math.max(0, Math.min(1, brush.minOpacityRatio))) : 0,
+      minOpacity: brush.pressureOpacity ? outMaxOpacity * (brush.minOpacityRatio === undefined ? 0 : Math.max(0, Math.min(1, brush.minOpacityRatio))) : 0,
       grainDepth: brush.hasTexture ? Math.max(0, Math.min(1, brush.textureDepth === undefined ? (brush.grainStrength === undefined ? 0.6 : brush.grainStrength) : brush.textureDepth)) : 0,
       /* 【第198轮】画世界纹理层与 PS 纹理都按画布坐标采样，对应 Procreate 的「纹理化」颗粒
          （textureApplication=1；鱼鱼鱼/吹石样本里背景质感、杂色纹理、质感叠加这类全是 1）。
          默认的「移动」(0) 会让网点/方格纹理跟着每个笔尖挪，间距 8% 时相邻笔尖错位叠加，糊成一坨。 */
       textureApplication: brush.hasTexture && (brush.textureCanvasSpace || brush.source === 'bru' || brush.source === 'abr') ? 1 : D.textureApplication,
-      grainBlendMode: (typeof brush.grainBlendMode === 'number' && isFinite(brush.grainBlendMode) && brush.grainBlendMode >= 1 && brush.grainBlendMode <= 28) ? Math.round(brush.grainBlendMode) : 1,
+      grainBlendMode: (function () {
+        if (typeof brush.grainBlendMode === 'number' && isFinite(brush.grainBlendMode) && brush.grainBlendMode >= 0 && brush.grainBlendMode <= 28) return Math.round(brush.grainBlendMode);
+        if (typeof brush.textureBlendMode === 'string') {
+          const psMap = { Nrml: 0, Mltp: 1, Drkn: 2, CBrn: 3, LBrn: 4, Lghn: 5, ScrN: 6, HrdM: 7, Ovrl: 8, SftL: 9, HrdL: 10, Dfrn: 11, Excl: 12, 'H   ': 13, Strt: 14, Colr: 15, Lmns: 16, LnrL: 19, VlLt: 20, PnLt: 21 };
+          if (psMap[brush.textureBlendMode] !== undefined) return psMap[brush.textureBlendMode];
+        }
+        return 1;
+      })(),
       textureInverted: !!brush.textureInverted,
+      dynamicsGlazedFlow: (brush.dynamicsGlazedFlow === undefined && typeof brush.flowPct === 'number' && isFinite(brush.flowPct) && brush.flowPct > 0 && brush.flowPct < 1)
+        ? Math.max(0.01, Math.min(1, brush.flowPct)) : D.dynamicsGlazedFlow,
       /* 【第331轮】锥度四参数改为「源里有值就用源值」，只在源缺失时才看 taperOn 决定默认值。
          旧写法以 taperOn 为前提，开关关着但参数有值的笔刷（实测「石英线」taperEndLength 0.103、
          「上色三号」0.08）往返后被清零，用户再打开锥度时参数已经没了。
@@ -1342,6 +1428,7 @@
       smudgeOpacity: brush.smudgeOpacity === undefined ? (brush.smudgeOn ? Math.max(0, Math.min(1, brush.smudgeAmount === undefined ? 0.3 : brush.smudgeAmount)) : 0) : brush.smudgeOpacity,
       dynamicsSmudgeAccumulation: brush.procreateSmudgeAccumulation === undefined ? (brush.smudgeAmount === undefined ? 0.5 : brush.smudgeAmount) : brush.procreateSmudgeAccumulation,
       dynamicsMix: brush.dynamicsMix !== undefined ? Math.max(0, Math.min(1, Number(brush.dynamicsMix) || 0)) : (brush.smudgeOn && brush.source !== 'procreate' ? Math.max(0, Math.min(1, brush.smudgeAmount === undefined ? 0.3 : brush.smudgeAmount)) : D.dynamicsMix),
+      dynamicsWetAccumulation: brush.wetEdgesAccumulation !== undefined ? Math.max(0, Math.min(1, Number(brush.wetEdgesAccumulation) || 0)) : (brush.smudgeOn && brush.source !== 'procreate' ? Math.max(0, Math.min(1, brush.smudgeAmount === undefined ? 0.3 : brush.smudgeAmount)) : D.dynamicsWetAccumulation),
       dynamicsJitterHue: brush.colorPerTip === false ? 0 : Math.max(0, Math.min(1, brush.colorJitterHue || 0)),
       dynamicsJitterSaturation: brush.colorPerTip === false ? 0 : Math.max(0, Math.min(1, brush.colorJitterSat || 0)),
       dynamicsJitterLightness: brush.colorPerTip === false ? 0 : Math.max(0, Math.min(1, brush.colorJitterVal || 0)),
@@ -1376,7 +1463,10 @@
       if(fgBgDynOverride > 0 && (key === 'jitterSecondary' || key === 'jitterStrokeSecondary')) return;
       params[nativeFields[key]]=brush[key];
     });
-    if (brush._carriedProcreateGrain) Object.assign(params, brush._carriedProcreateGrain.params);
+    if (brush._carriedProcreateGrain) {
+      Object.assign(params, brush._carriedProcreateGrain.params);
+      if (brush._carriedProcreateGrain.bundledShapePath) params.bundledShapePath = brush._carriedProcreateGrain.bundledShapePath;
+    }
     // 【第302轮（作者：Claude）R302-01】新字段跟着旧字段走，见 BLEND_TWINS
     syncBlendTwins(params, brush._procreateBlendExt);
     // 【第302轮（作者：Claude）R302-04】源里的自定义压感曲线写回（新建档案原本只有模板直线）
@@ -1447,7 +1537,10 @@
        白占 archive 体积（每支几百字节到 1KB），删除。字段保真现在走两条路：
        逐字段 `brushConvBruExtra` + 白名单外的未知字段原样透传。 */
     if (brush.source === 'bru') {
+      const bruLowOpExtra = typeof brush.opacity === 'number' && isFinite(brush.opacity) && brush.opacity > 0 && brush.opacity < 1;
       params.brushConvBruExtra = JSON.stringify({
+        opacity: bruLowOpExtra ? brush.opacity : undefined,
+        procreateMaxOpacity: bruLowOpExtra ? params.maxOpacity : undefined,
         hardness: brush.hardness, maxSizePx: brush.maxSizePx,
         scatterPct: brush.scatterPct, scatterCount: brush.scatterCount,
         antialiasLevel: brush.antialiasLevel,
@@ -1651,7 +1744,8 @@
 
   const nativeFields={wetEdgesAccumulation:'dynamicsWetAccumulation',burntEdgesAmount:'burntEdgesAmount',
     dynamicsLoad:'dynamicsLoad',dynamicsGlazedFlow:'dynamicsGlazedFlow',dynamicsMix:'dynamicsMix',
-    dynamicsMixSoftening:'dynamicsMixSoftening',blendMode:'blendMode',
+    dynamicsMixSoftening:'dynamicsMixSoftening',dynamicsWetnessJitter:'dynamicsWetnessJitter',
+    textureMovement:'textureMovement',textureOffsetJitter:'textureOffsetJitter',blendMode:'blendMode',
     roundnessDynamics:'dynamicsPressureShapeRoundness',
     dynamicsJitterDarkness:'dynamicsJitterDarkness',
     dynamicsJitterStrokeHue:'dynamicsJitterStrokeHue',
@@ -1666,7 +1760,8 @@
       minSizeRatio:['minSize'],minOpacityRatio:['minOpacity'],angle:['shapeAngle'],roundness:['shapeRoundness'],
       dynamicsControlAngle:['shapeRotation','shapeAzimuth'],bruRotationMode:['shapeRotation','shapeAzimuth'],
       pressure:['dynamicsPressureSize'],pressureSize:['dynamicsPressureSize'],pressureOpacity:['dynamicsPressureOpacity'],
-      scatterOn:['plotJitter'],scatterPct:['plotJitter'],scatterCount:['shapeCount'],
+      scatterOn:['plotJitter','plotJitterLongitudinal'],scatterPct:['plotJitter','plotJitterLongitudinal'],
+      scatterBothAxes:['plotJitterLongitudinal'],scatterCount:['shapeCount'],
       angleJitterDeg:['shapeScatter'],procreateRotationScatterPct:['shapeScatter'],
       countJitterPct:['shapeCountJitter'],spacingJitterPct:['plotSpacingJitter'],falloffPct:['dynamicsFalloff'],
       flipXJitter:['shapeFlipXJitter'],flipYJitter:['shapeFlipYJitter'],smoothingStrength:['plotSmoothing'],
@@ -1825,16 +1920,26 @@
     const tip = tipRGBA(brush, opts);
     if (!tip) throw new Error('该笔刷没有笔尖图像，无法写入 Procreate 格式');
     // BRU RGB-to-alpha uses bright pixels as coverage, modulated by the source alpha.
-    const mask = brush.source === 'bru' && brush.bruShapeRgbOpacity
-      ? luminanceToTip({ width: tip.w, height: tip.h, rgba: tip.rgba }, false) : tip;
+    // 第345轮真机实测（楠.bru 波光01 / 噪点-36 等 4 支）：若源笔尖开启 f42 但 RGB 全为 0（纯黑+Alpha），
+    // luminanceToTip 会把整张 Shape.png 算成全 0 黑色导致 Procreate 完全不出墨；全空时回退直接用源 Alpha 通道。
+    let mask = tip;
+    if (brush.source === 'bru' && brush.bruShapeRgbOpacity) {
+      const lum = luminanceToTip({ width: tip.w, height: tip.h, rgba: tip.rgba }, false);
+      let hasInk = false;
+      for (let i = 3; i < lum.rgba.length; i += 4) {
+        if (lum.rgba[i] > 0) { hasInk = true; break; }
+      }
+      if (hasInk) mask = lum;
+    }
+    const omitCarriedShape = !!(brush._carriedProcreateGrain && brush._carriedProcreateGrain.noShape);
     const shape = shapePng(mask, opts.maxTipSize || 2048);
     const thumb = thumbPng(mask, { spacingPct: brush.spacingPct, opacity: brush.opacity });
-    const archive = buildArchive(brush, opts, shape.png);
+    const archive = buildArchive(brush, opts, omitCarriedShape ? null : shape.png);
     const entries = [
       { name: 'Brush.archive', data: archive },
-      { name: 'Shape.png', data: shape.png },
       { name: 'QuickLook/Thumbnail.png', data: thumb }
     ];
+    if (!omitCarriedShape) entries.splice(1, 0, { name: 'Shape.png', data: shape.png });
     if (grain) entries.push({ name: 'Grain.png', data: grain });
     if (brush.dualOn && brush.dualTip) {
       zip.read(writeBrush(subBrush(), opts)).forEach(function (e) {
