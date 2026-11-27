@@ -15,8 +15,14 @@
   // normal omits it (0); changing only to Hard Mix adds d0 07 08 (122 = 8).
   const DUAL_BLEND_NAMES = ['normal', 'multiply', 'darken', 'colorBurn', 'linearBurn',
     'lighten', 'colorDodge', 'overlay', 'hardMix', 'difference', 'subtract', 'divide', 'linearHeight'];
-  const PRO_DUAL_BLEND_NAMES = ['normal', 'darken', 'multiply', 'colorBurn', 'linearBurn',
-    'lighten', 'screen', 'hardMix', 'overlay', 'softLight', 'hardLight', 'difference'];
+  // 【第352轮】Procreate SilicaBlendMode 枚举（经真机双端实绘核实：6=Difference 空心、11=Overlay 叠加、19=Darken、1=Multiply）
+  const PRO_DUAL_BLEND_NAMES = [
+    'normal', 'multiply', 'screen', 'add', 'lighten', 'exclusion',
+    'difference', 'subtract', 'linearBurn', 'colorDodge', 'colorBurn', 'overlay',
+    'hardLight', 'color', 'luminosity', 'hue', 'saturation', 'softLight',
+    'darken', 'darken', 'lighten', 'colorDodge', 'overlay', 'overlay',
+    'overlay', 'hardMix', 'divide', 'normal', 'normal'
+  ];
   function dualBlendName(value) {
     return DUAL_BLEND_NAMES[value];
   }
@@ -337,9 +343,9 @@
         parts.push(u8arr(fF32(129, Math.max(0, Math.min(1, 1 - (b.wetEdgesDepth === undefined ? 0.4 : b.wetEdgesDepth))))));
       }
     }
-    // #37：混色（f103 开关 / f104 强度，反向存储）。smudge 字段优先；
-    // Procreate 源只有湿混「混合」(dynamicsMix) 时用它兜底，跨格式不再把混色丢回默认值。
-    const smudgeActive = b.smudgeOn !== undefined ? !!b.smudgeOn : (b.dynamicsMix !== undefined && b.dynamicsMix > 0);
+    // #37 & 【第352轮】混色（f103 开关 / f104 强度，反向存储）。smudge 字段优先；
+    // Procreate 仅重混色(dynamicsMix>=0.5)才兜底开混色模式，轻湿混(<0.5)不开以免白底0墨。
+    const smudgeActive = b.smudgeOn !== undefined ? !!b.smudgeOn : (b.dynamicsMix !== undefined && b.dynamicsMix >= 0.5);
     const smudgeAmt = b.smudgeAmount !== undefined ? b.smudgeAmount : (b.dynamicsMix !== undefined ? b.dynamicsMix : 0.3);
     if (smudgeActive) {
       parts.push(u8arr(fVarint(103, 1)));
@@ -1096,8 +1102,7 @@
         wetEdgesOn: wetOn,
         wetEdgesAmount: (o[101] !== undefined || wetOn) ? Math.max(0, Math.min(1, 1 - wetStrengthRaw)) : 0,
         _bruWetStrengthField: o[101] !== undefined,
-        /* 【第232轮·field-matrix】f129 源有字段就还原值（哪怕 f100 关着）——写侧「源有就写」靠它取值。
-           旧实现 wetOn=false 时置 0，f129 的源值（eye 0.92）在重建时被写成 1。 */
+        /* 【第232轮·field-matrix】f129 源有字段就还原值（哪怕 f100 关着）——写侧「源有就写」靠它取值。 */
         wetEdgesDepth: (o[129] !== undefined || wetOn) ? Math.max(0, Math.min(1, 1 - wetDepthRaw)) : 0,
         _bruWetDepthField: o[129] !== undefined,
         _bruHollowAlpha: Number.isFinite(o[81]) ? o[81] : undefined,

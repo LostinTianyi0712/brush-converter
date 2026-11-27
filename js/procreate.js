@@ -762,6 +762,10 @@
       if (tp.grainBuiltin === true) brush._grainFromBuiltin = true;
       if (typeof tp.grainBuiltinFp === 'string') brush._grainFromBuiltinFp = tp.grainBuiltinFp;
     }
+    // A restored Procreate dual can carry just the two Huashijie palette
+    // colours. Its native layers still use the ordinary Procreate converter.
+    if (Number.isInteger(params.brushConvBruColor)) brush.bruColor = params.brushConvBruColor;
+    if (Number.isInteger(params.brushConvBruHollowColor)) brush.hollowColor = params.brushConvBruHollowColor;
     brush._rawNormalized = {};
     Object.keys(brush).forEach(function(key){const v=brush[key];if(key[0]!=='_' && (v===null || ['number','boolean','string'].indexOf(typeof v)>=0))brush._rawNormalized[key]=v;});
     brush._rawTipState=util.brushFingerprint({tip:brush.tip}, initialPixelHashes);
@@ -1105,10 +1109,14 @@
     return png.encodeGray(side, side, gray);
   }
 
-  function normalizeRawGrain(rawBytes) {
+  function nativeGrayPng(header) {
+    return !!(header && header.bitDepth === 8 && header.colorType === 0 &&
+      header.width >= 1 && header.height >= 1 && header.width <= 2048 && header.height <= 2048);
+  }
+  function normalizeRawGrain(rawBytes, keepNativeAspect) {
     if (!rawBytes || !rawBytes.length) return null;
     const hdr = readPngHeader(rawBytes);
-    if (hdr && hdr.width === hdr.height && hdr.width >= 1 && hdr.width <= 2048 && hdr.bitDepth === 8 && hdr.colorType === 0) {
+    if (nativeGrayPng(hdr) && (keepNativeAspect || hdr.width === hdr.height)) {
       return new Uint8Array(rawBytes);
     }
     try {
@@ -1272,6 +1280,12 @@
   }
   function curvePointText(p) { return '{' + p[0].toFixed(6) + ', ' + p[1].toFixed(6) + '}'; }
 
+  // Procreate SilicaBlendMode codes, including the Photoshop aliases accepted by the writer.
+  const dualBlendCodes = Object.freeze({ nrml: 0, normal: 0, mltp: 1, multiply: 1, scrn: 2, screen: 2, add: 3,
+    lghn: 4, lighten: 4, excl: 5, exclusion: 5, dfrn: 6, difference: 6,
+    subtract: 7, linearburn: 8, lbrn: 8, cddg: 9, colordodge: 9, cbrn: 10, colorburn: 10,
+    ovrl: 11, overlay: 11, hrdl: 12, hardlight: 12, sftl: 17, softlight: 17,
+    drkn: 19, darken: 19, hmix: 25, hardmix: 25, divide: 26 });
   function archiveParams(brush, opts) {
     const D = defaultsApi.defaults();
     const sizeParams = sizeArchiveParams(brush);
@@ -1442,11 +1456,7 @@
       dualBlendMode: (function () {
         if (typeof brush.dualBlendMode === 'number' && isFinite(brush.dualBlendMode) && brush.dualBlendMode >= 0 && brush.dualBlendMode <= 30) return Math.round(brush.dualBlendMode);
         const nm = String(brush.dualBlendMode || (brush.dualBrush && brush.dualBrush.blend) || '').toLowerCase().replace(/[^a-z]/g, '');
-          const map = { nrml: 0, normal: 0, drkn: 1, darken: 1, mltp: 2, multiply: 2,
-            cbrn: 3, colorburn: 3, linearburn: 4, lghn: 5, lighten: 5, scrn: 6, screen: 6,
-            hmix: 7, hardmix: 7, ovrl: 8, overlay: 8, sftl: 9, softlight: 9,
-            hrdl: 10, hardlight: 10, dfrn: 11, difference: 11 };
-        return map[nm] || 0;
+        return dualBlendCodes[nm] || 0;
       })(),
       importedFromABR: brush.source === 'abr',
       name: brush.name || 'brush'
@@ -1506,6 +1516,21 @@
       });
       /* 【第332轮】源档案没有 paintPressure 就不写：D 里默认 1，旧逻辑给每支都标上「旧压感开」。 */
       if (brush._params.paintPressure === undefined) delete params.paintPressure;
+    }
+    if (brush.source === 'procreate' && brush._params) {
+      if (Number.isInteger(brush._params.brushConvBruColor)) params.brushConvBruColor = brush.bruColor;
+      if (Number.isInteger(brush._params.brushConvBruHollowColor)) params.brushConvBruHollowColor = brush.hollowColor;
+    }
+    if (brush._pcScalarRestore) {
+      const restore = brush._pcScalarRestore;
+      // Older native archives may have only the legacy selector. The rebuilt
+      // archive also has its modern twin, which must express the same choice.
+      for (const twin of BLEND_TWINS) {
+        const value = restore[twin.legacy[0]];
+        if (!Number.isFinite(value)) continue;
+        for (const key of twin.legacy.concat(twin.ext)) params[key] = restore[key] === undefined ? value : restore[key];
+      }
+      Object.assign(params, restore);
     }
     return params;
   }
@@ -1729,14 +1754,10 @@
 
   function unchanged(brush,opts) {
     opts=opts||{};
-    function imageKept(bytes,grain) {
-      if(!bytes)return true;
-      const h=readPngHeader(bytes);
-      return !!(h&&h.bitDepth===8&&h.colorType===0&&h.width>=1&&h.height>=1&&h.width<=2048&&h.height<=2048&&(!grain||h.width===h.height));
-    }
+    function imageKept(bytes) { return !bytes || nativeGrayPng(readPngHeader(bytes)); }
     return opts.fidelity!==false && !opts.forceRebuild && isValidNativeArchive(brush._rawArchive) &&
       !brush.resolvedShapePath && !brush.shapeFromLibrary && !brush.grainFromLibrary &&
-      imageKept(brush._rawShape,false) && imageKept(brush._rawGrain,true) &&
+      imageKept(brush._rawShape) && imageKept(brush._rawGrain) &&
       (!brush.dualSubBrush || unchanged(brush.dualSubBrush, opts)) &&
       brush._rawBrushState===util.brushFingerprint(brush) &&
       brush._rawGrainState===util.brushFingerprint({tip:brush._grainRgba});
@@ -1754,7 +1775,7 @@
     dynamicsJitterStrokeDarkness:'dynamicsJitterStrokeDarkness',
     jitterSecondary:'jitterSecondary',
     jitterStrokeSecondary:'jitterStrokeSecondary'};
-  function patchArchive(brush, opts, extraChanges) {
+  function patchArchive(brush, opts, extraChanges, preservedSizeRange) {
     const before=brush._rawNormalized||{},params=archiveParams(brush,opts),changes={};
     const mapping={sizePx:['paintSize'],spacingPct:['plotSpacing'],name:['name'],opacity:['maxOpacity','paintOpacity'],
       minSizeRatio:['minSize'],minOpacityRatio:['minOpacity'],angle:['shapeAngle'],roundness:['shapeRoundness'],
@@ -1782,14 +1803,28 @@
       colorPerTip:['dynamicsJitterHue','dynamicsJitterSaturation','dynamicsJitterLightness','dynamicsJitterStrokeHue','dynamicsJitterStrokeSaturation','dynamicsJitterStrokeLightness','jitterSecondary','jitterStrokeSecondary'],
       colorJitterHue:['dynamicsJitterHue','dynamicsJitterStrokeHue'],colorJitterSat:['dynamicsJitterSaturation','dynamicsJitterStrokeSaturation'],
       colorJitterVal:['dynamicsJitterLightness','dynamicsJitterStrokeLightness']};
+    if ('brushConvBruColor' in params) mapping.bruColor = ['brushConvBruColor'];
+    if ('brushConvBruHollowColor' in params) mapping.hollowColor = ['brushConvBruHollowColor'];
     Object.keys(nativeFields).forEach(key=>{mapping[key]=[nativeFields[key]];});
     Object.keys(mapping).forEach(function(key){if(brush[key]!==before[key])mapping[key].forEach(k=>{changes[k]=params[k];});});
     if(changes.shapeAngle!==undefined)changes.shapeAngle-=orientationDegrees(plist.unarchive(brush._rawArchive))*Math.PI/180;
     // Native slider and bounds are coupled. Never patch normalized slider units
     // with pixels / 400 while leaving bounds from the source archive behind.
-    if(changes.paintSize!==undefined || changes.minSize!==undefined){
+    if(changes.paintSize!==undefined || changes.minSize!==undefined || preservedSizeRange){
       Object.assign(changes,sizeArchiveParams(brush));
       changes.shapeRoundness=params.shapeRoundness;
+      if (preservedSizeRange) {
+        const source = nativeSizeRange(preservedSizeRange);
+        const maxSize = brush.maxSizePx === before.maxSizePx ? preservedSizeRange.maxSize : brush.maxSizePx / 256;
+        const high = nativeSizeRange(Object.assign({},preservedSizeRange,{maxSize})).high;
+        const active = Math.min(high, brush.sizePx / 256);
+        // The native pressure strength already contributes to the diameter at
+        // light pressure. Scale the original lower bound with the active size.
+        const low = Math.min(active, source.low * active / (nativeSizeDiameter(source,1) / 256));
+        const slider = high > low ? (active-low)/(high-low) : 1;
+        Object.assign(changes,{minSize:low,maxSize,paintSize:slider,
+          shapeRoundness:roundnessArchiveParam(brush,{low,high,slider})});
+      }
     } else if(changes.shapeRoundness!==undefined) {
       changes.shapeRoundness=roundnessArchiveParam(brush,nativeSizeRange(plist.unarchive(brush._rawArchive)));
     }
@@ -1812,11 +1847,13 @@
   function secondaryBrush(brush) {
     const sub = brush.dualSubBrush || {};
     const info = brush.dualBrush || {};
+    // For a BRU the parent aliases were captured from the original child.
+    // That snapshot still belongs to the parent after replacing its child.
+    const before = (brush.source === 'bru' && info._rawState) || sub._rawNormalized;
     // Parsed dualBrush aliases are snapshots of the secondary. Do not let an
     // unchanged snapshot erase a later edit of the actual secondary brush.
     // Explicitly changed aliases still take priority, as for imported ABR data.
     function value(alias,key,fallback) {
-      const before=sub._rawNormalized;
       if (before && sub[key] !== undefined && sub[key] !== before[key] && info[alias] === before[key]) return sub[key];
       return info[alias] === undefined ? (sub[key] === undefined ? fallback : sub[key]) : info[alias];
     }
@@ -1826,7 +1863,6 @@
       // 规则：显式改过的二次解析名 > 非空快照名 > 非空二次解析名 > 主刷名 + " 2"。
       const fromInfo = info.name;
       const fromSub = sub.name;
-      const before = sub._rawNormalized;
       const nonEmpty = function (v) { return v !== undefined && v !== null && String(v).trim() !== ''; };
       if (before && fromSub !== undefined && fromSub !== before.name && fromInfo === before.name && nonEmpty(fromSub)) return fromSub;
       if (nonEmpty(fromInfo)) return fromInfo;
@@ -1840,9 +1876,9 @@
       tip: sub._rawArchive && brush._rawDualTipState===util.brushFingerprint({tip:brush.dualTip}) ? sub.tip : brush.dualTip,
       sizePx: value('diameter','sizePx',brush.sizePx || 100),
       spacingPct: value('spacing','spacingPct',25),
-      scatterOn: info.useScatter === undefined ? (sub.scatterOn === undefined ? !!info.scatterOn : !!sub.scatterOn) : !!info.useScatter,
-      scatterCount: info.count === undefined ? (sub.scatterCount || info.scatterCount || 1) : info.count,
-      scatterBothAxes: info.bothAxes === undefined ? !!(sub.scatterBothAxes || info.scatterBothAxes) : !!info.bothAxes,
+      scatterOn: info.useScatter === undefined ? !!(sub.scatterOn ?? info.scatterOn) : !!value('useScatter','scatterOn'),
+      scatterCount: info.count === undefined ? (sub.scatterCount || info.scatterCount || 1) : value('count','scatterCount'),
+      scatterBothAxes: info.bothAxes === undefined ? !!(sub.scatterBothAxes || info.scatterBothAxes) : !!value('bothAxes','scatterBothAxes'),
       scatterPct: value('scatterPct','scatterPct',undefined),
       dualOn: false, dualTip: undefined, dualSubBrush: undefined,
       _rawArchive: sub._rawArchive || brush._rawSubArchive,
@@ -1863,6 +1899,9 @@
     const grain = !rawPath && (brush.hasTexture || brush._bruGrainInTip || brush._carriedProcreateGrain) && !opts.noTextureBake ? grainPng(brush) : null;
     if (!rawPath && brush.hasTexture && !grain) brush = Object.assign({}, brush, {hasTexture:false, textureDepth:0});
     function subBrush(){const b=secondaryBrush(brush);
+      const nativeSub=brush.dualSubBrush, info=brush.dualBrush || {};
+      if (nativeSub && (opts._keepLibraryReferences || nativeSub._dualBridgeOriginalName) && nativeSub._rawNormalized && nativeSub._rawNormalized.name === '' &&
+          nativeSub.name === '' && (!info.name || info.name === '')) b.name = '';
       if(opts.spacingOverride>0)b.spacingPct=opts.spacingOverride;
       if(opts.pressure!==undefined){b.pressureSize=!!opts.pressure;b.pressureOpacity=opts.pressure===false?false:!!b.pressureOpacity;b.pressure=b.pressureSize||b.pressureOpacity;}
       return b;}
@@ -1873,6 +1912,8 @@
       const sameTip=samePixels && !brush.flipX && !brush.flipY;
       const rawShape=brush._rawShape&&brush._rawShape.length?brush._rawShape:null;
       const keepRawShape=sameTip&&rawShape;
+      const preserveLibraryShape=!!(opts._keepLibraryReferences && sameTip && !rawShape && brush.shapeFromLibrary && brush.bundledShapePath && brush.bundledShapePath !== '$null' && !!brush.shapeInverted === !!(brush._rawNormalized||{}).shapeInverted);
+      const preserveLibraryGrain=!!(opts._keepLibraryReferences && !brush._rawGrain && brush.grainFromLibrary && brush.bundledGrainPath && brush.bundledGrainPath !== '$null' && brush._rawGrainState===util.brushFingerprint({tip:brush._grainRgba}) && ['textureDepth','textureScale','textureBrightness','textureContrast','textureInverted','textureRotation','hasTexture'].every(k=>brush[k] === (brush._rawNormalized||{})[k]));
       const normalizedShape=keepRawShape ? normalizeRawShape(brush._rawShape,opts.maxTipSize||2048,brush.shapeInverted) : null;
       // 重生成 Shape.png 时像素已烘焙反转，archive 必须关掉以免二次反相；
       // 像素没变、只切换标志时则尊重新值，并继续复用原 Shape.png。
@@ -1880,15 +1921,15 @@
       /* 【第280轮】`shapeFromLibrary`（像素来自素材库、没有 _rawShape 字节）也要按「重新生成 Shape」处理：
          tip 里的像素已经把源反转烘进去了，archive 必须把 shapeInverted 关掉，否则二次反相。
          以前这条路靠 `sourceShapePng` 现编一份 _rawShape 才走得到，跳过编解码优化后要显式补上。 */
-      if(!keepRawShape&&((!sameTip&&brush.tip)||(!rawShape&&(!brush.bundledShapePath||brush.shapeFromLibrary))))archiveChanges={shapeInverted:false};
+      if(!preserveLibraryShape&&!keepRawShape&&((!sameTip&&brush.tip)||(!rawShape&&(!brush.bundledShapePath||brush.shapeFromLibrary))))archiveChanges={shapeInverted:false};
       else if(keepRawShape&&!!brush.shapeInverted!==!!(brush._rawNormalized||{}).shapeInverted)
         archiveChanges={shapeInverted:!!brush.shapeInverted};
       if(normalizedShape && normalizedShape.inverted!==!!brush.shapeInverted)archiveChanges={shapeInverted:normalizedShape.inverted};
       const recoveredGrain = brush.grainFromLibrary && brush._grainRgba;
       if(brush._rawGrain&&brush._rawGrain.length===0&&!recoveredGrain)archiveChanges=Object.assign({},archiveChanges,{grainDepth:0});
-      entries.push({name:'Brush.archive',data:patchArchive(brush,opts,archiveChanges)});
+      entries.push({name:'Brush.archive',data:brush._nativeArchiveRestore || patchArchive(brush,opts,archiveChanges)});
       if(keepRawShape)entries.push({name:'Shape.png',data:normalizedShape.bytes});
-      else if((!sameTip && brush.tip) || (!rawShape && (!brush.bundledShapePath || brush.shapeFromLibrary))){
+      else if(!preserveLibraryShape && ((!sameTip && brush.tip) || (!rawShape && (!brush.bundledShapePath || brush.shapeFromLibrary)))){
         let rebuilt=tipRGBA(brush,opts);
         // The decoded pixels include the original inversion. If only scalar
         // edits changed it, apply that delta before freezing it into Shape.
@@ -1901,8 +1942,13 @@
         entries.push({name:'Shape.png',data:shapePng(rebuilt,opts.maxTipSize||2048).png});
       }
       const sameGrain=brush._rawGrainState===util.brushFingerprint({tip:brush._grainRgba});
-      if(sameGrain && !recoveredGrain && brush._rawGrain && brush._rawGrain.length)entries.push({name:'Grain.png',data:normalizeRawGrain(brush._rawGrain)});
-      else if(brush.hasTexture){const g=grainPng(brush);if(g)entries.push({name:'Grain.png',data:g});}
+      if(sameGrain && !recoveredGrain && brush._rawGrain && brush._rawGrain.length) {
+        // Native presets can contain rectangular grains (770 x 514 in Tin's
+        // secondary). Editing an unrelated control must not stretch those pixels.
+        const grainBytes = brush._dualBridgeOriginalGrain ? brush._rawGrain : normalizeRawGrain(brush._rawGrain, true);
+        entries.push({name:'Grain.png',data:grainBytes});
+      }
+      else if(brush.hasTexture && !preserveLibraryGrain){const g=grainPng(brush);if(g)entries.push({name:'Grain.png',data:g});}
       if(brush.dualOn && brush.dualTip)zip.read(writeBrush(subBrush(),opts)).forEach(e=>entries.push({name:'Sub01/'+e.name,data:e.data()}));
       /* 【第188轮】缩略图优先复用源包的，不再因为有笔尖就重画。
          实测源包主笔 Thumbnail 是 327×100 灰度+alpha(ct4)、副笔 1060×324 RGBA(ct6)；
@@ -1933,10 +1979,11 @@
     }
     const omitCarriedShape = !!(brush._carriedProcreateGrain && brush._carriedProcreateGrain.noShape);
     const shape = shapePng(mask, opts.maxTipSize || 2048);
-    const thumb = thumbPng(mask, { spacingPct: brush.spacingPct, opacity: brush.opacity });
+    const thumb = brush._nativeArchiveRestore && brush._nativeThumbnailRestore ? brush._nativeThumbnailRestore :
+      thumbPng(mask, { spacingPct: brush.spacingPct, opacity: brush.opacity });
     const archive = buildArchive(brush, opts, omitCarriedShape ? null : shape.png);
     const entries = [
-      { name: 'Brush.archive', data: archive },
+      { name: 'Brush.archive', data: brush._nativeArchiveRestore || archive },
       { name: 'QuickLook/Thumbnail.png', data: thumb }
     ];
     if (!omitCarriedShape) entries.splice(1, 0, { name: 'Shape.png', data: shape.png });
@@ -2023,7 +2070,7 @@
   }
 
   const api = { isProcreate, parse, parseAsync, writeBrush, writeBrushset, writeBrushsetAsync, buildArchive, shapePng, thumbPng,
-    unchanged, secondaryBrush, attachBundledAssets, previewTip, nativeSizeRange, nativeSizeDiameter,
+    unchanged, isValidNativeArchive, patchArchive, secondaryBrush, attachBundledAssets, previewTip, nativeSizeRange, nativeSizeDiameter, dualBlendCodes,
     orientationDegrees, parseCurvePoint, curveAverage, tipFromDecodedImage, decodeShape, grainArchiveScalars };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { procreate: api });
