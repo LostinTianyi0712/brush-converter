@@ -43,6 +43,83 @@
   m.GRAIN_LAYER_MAX_UI_DEPTH = 0.55;
   m.GRAIN_LAYER_HIRES_UI_DEPTH = 0.90;
   m.GRAIN_LAYER_MIN_SCALE = 0.1;
+  m.GRAIN_LAYER_TEXTURIZED_MIN_SCALE = 0.05;
+
+  /* ---------- 非饱和烘焙流量守恒标定常量（第387轮轴 C 实测） ----------
+     Procreate 纹理烘焙将笔尖 alpha 乘以平均衰减比 bakeAlphaRatio < 1；
+     非饱和间距(>=3%)且无独立颗粒层时，实测造成 +17.4~+35.5 L* 芯部变淡，
+     用 effFlow / max(0.667, bakeAlphaRatio)（安全上限 1.5x）对冲烘焙衰减。 */
+  m.GRAIN_BAKE_FLOW_MIN_SPACING = 3;
+  m.GRAIN_BAKE_FLOW_RATIO_FLOOR = 0.667;
+  m.GRAIN_BAKE_FLOW_MAX_SRC = 0.85;
+  m.GRAIN_BAKE_FLOW_RATIO_TRIGGER = 0.90;
+
+  /* ---------- 主笔画布混合模式 f69（已真机标定全 12 项：第384/389轮 MuMu 3.4.5 三底色带 0.4 RGB 精度实测） ---------- */
+  m.PROCREATE_CANVAS_BLEND_TO_BRU = {
+    1: 1,   // Multiply 正片叠底 (RMS 0.21)
+    2: 2,   // Screen 滤色 (RMS 0.3)
+    3: 3,   // Add / Linear Dodge 线性减淡·添加 (RMS 0.00)
+    4: 4,   // Darken 变暗 (RMS 0.00)
+    9: 5,   // Color Burn 颜色加深 (RMS 0.3)
+    10: 6,  // Color Dodge 颜色减淡 (RMS 0.3)
+    11: 7,  // Overlay 叠加 (RMS 0.3)
+    17: 8,  // Soft Light 柔光 (R384+R389 实测)
+    21: 9,  // Divide 划分 (RMS 0.4)
+    13: 10, // Color 颜色 (R389 实测)
+    14: 11, // Luminosity 明度 (R389 实测)
+    16: 12  // Saturation 饱和度 (R389 实测)
+  };
+  m.PROCREATE_CANVAS_BLEND_NAMES = {
+    1: '正片叠底', 2: '滤色', 3: '线性减淡（添加）', 4: '变暗', 5: '排除', 6: '差值',
+    7: '变亮', 8: '线性加深', 9: '颜色加深', 10: '颜色减淡', 11: '叠加', 12: '强光',
+    13: '颜色', 14: '明度', 15: '色相', 16: '饱和度', 17: '柔光', 18: '深色', 19: '浅色',
+    20: '减去', 21: '划分', 22: '线性光', 23: '亮光', 24: '点光', 25: '实色混合',
+    26: '更深的颜色', 27: '更浅的颜色'
+  };
+
+  function hasConsistentProcreateCanvasBlend(brush) {
+    if (!brush || brush.source !== 'procreate' || brush._bruExtra || brush._pcLinkedSecondary) return false;
+    const pc = brush._params;
+    const mode = Number(brush.blendMode);
+    if (!pc || !(mode > 0) || Number(pc.blendMode) !== mode) return false;
+    if (pc.extendedBlend !== undefined && Number(pc.extendedBlend) !== mode) return false;
+    if (pc.extendedBlend2 !== undefined && Number(pc.extendedBlend2) !== mode) return false;
+    return true;
+  }
+
+  m.mapCanvasBlendMode = function (brush) {
+    if (!hasConsistentProcreateCanvasBlend(brush)) return null;
+    const mapped = m.PROCREATE_CANVAS_BLEND_TO_BRU[Number(brush.blendMode)];
+    return mapped === undefined ? null : mapped;
+  };
+
+  m.canvasBlendUnmappedName = function (brush) {
+    if (!hasConsistentProcreateCanvasBlend(brush)) return null;
+    const mode = Number(brush.blendMode);
+    if (m.PROCREATE_CANVAS_BLEND_TO_BRU[mode] !== undefined) return null;
+    return m.PROCREATE_CANVAS_BLEND_NAMES[mode] || ('模式 ' + mode);
+  };
+
+  /* ---------- 烘焙强度 × flow 补偿能力配对（第400轮） ----------
+   * grainBake 是乘性衰减，flow 侧最多只能补 ×1/GRAIN_BAKE_FLOW_RATIO_FLOOR = ×1.5。
+   * 若烘焙把笔尖 alpha 压到 floor 以下，flow 无论怎么调都补不满（第400轮实跑：
+   * ✨流光纱3 烘焙 0.303 → 补满需 flow 1.966，超 BRU 上限 1.0，实际只到 45.4%）。
+   * 反过来：只要最终保留率 ≥ floor，compensateFlowPct 的 efFlow/ratio 就恰好等于守恒解。
+   * 所以这里把「烘焙至少保留多少 alpha」定成策略常量，交给烘焙侧执行。
+   * 只对会走 isUnsatGrainBake 的族群（Procreate 源、非 BRU 往返标记）生效；
+   * ABR / BRU / 其它来源返回 1（不阻尼），保证这些路径的笔尖逐字节不变。 */
+  m.bakeAlphaFloor = function (brush) {
+    if (!brush || brush.source !== 'procreate' || brush._bruExtra) return 1;
+    return m.GRAIN_BAKE_FLOW_RATIO_FLOOR;
+  };
+
+  m.grainLayerMinScale = function (brush) {
+    const isTexturized = !!(brush && brush._params && Number(brush._params.textureApplication) === 1);
+    if (isTexturized && !brush.dualOn && (brush.sizePx || 0) >= 16) {
+      return m.GRAIN_LAYER_TEXTURIZED_MIN_SCALE;
+    }
+    return m.GRAIN_LAYER_MIN_SCALE;
+  };
 
   /* ---------- 轴 1：scatter × cnt（第366轮 14 支实测标定） ----------
      画世界 Pro 3.4.5 实测 K_hsj(cnt) ≈ cnt^0.70（独立于 scatter 与 D）；
@@ -154,11 +231,12 @@
     return m.bruTexContrast(brush);
   };
 
-  /* ---------- 流量三项引擎补偿（第356/361/363轮） ----------
+  /* ---------- 流量四项引擎补偿（第356/361/363/387/388轮） ----------
      ① 高散布/双笔密亮片（flow × 0.65）
      ② 单笔多数量云雾涂抹流量守恒（flow / cnt，下限 0.08）
-     ③ 极低点距浅釉烘焙叠印补偿（min(flow, spacing × 0.2)，下限 0.05） */
-  m.compensateFlowPct = function (brush, spacingPct, sizePx, textureBaked, bruPressure) {
+     ③ 极低点距浅釉烘焙叠印补偿（min(flow, spacing × 0.2)，下限 0.05）
+     ④ 非饱和间距(>=3%)无独立颗粒层的纹理烘焙流量守恒（flow / max(0.667, bakeRatio)，上限 1.5x） */
+  m.compensateFlowPct = function (brush, spacingPct, sizePx, textureBaked, bruPressure, extra) {
     const baseFlow = brush.flowPct === undefined && bruPressure ? bruPressure.flow : brush.flowPct;
     const effFlow = baseFlow === undefined ? 1 : baseFlow;
     const cnt = Math.max(1, Math.round(Number(brush.scatterCount) || 1));
@@ -174,6 +252,16 @@
       !brush._params.renderingRecursiveMixing && Number(brush._params.textureApplication) === 0 &&
       textureBaked && spacingPct <= 0.5 && sizePx >= 30 && Number(brush.textureDepth) >= 0.99 && effFlow >= 0.5;
     if (isUltraDenseLightGlaze) return Math.max(0.05, Math.min(effFlow, Math.round(spacingPct * 200) / 1000));
+    const bakeRatio = extra && Number.isFinite(extra.bakeAlphaRatio) ? extra.bakeAlphaRatio : 1;
+    const hasTexLayer = !!(extra && extra.hasTexLayer);
+    const isUnsatGrainBake = brush.source === 'procreate' && !brush._bruExtra && !brush._pcLinkedSecondary &&
+      !!brush._params && textureBaked && !hasTexLayer &&
+      spacingPct >= m.GRAIN_BAKE_FLOW_MIN_SPACING &&
+      effFlow < m.GRAIN_BAKE_FLOW_MAX_SRC &&
+      bakeRatio > 0 && bakeRatio < m.GRAIN_BAKE_FLOW_RATIO_TRIGGER;
+    if (isUnsatGrainBake) {
+      return Math.min(1, Math.round((effFlow / Math.max(m.GRAIN_BAKE_FLOW_RATIO_FLOOR, bakeRatio)) * 1000) / 1000);
+    }
     return baseFlow;
   };
 

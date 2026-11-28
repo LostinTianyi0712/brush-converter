@@ -1362,7 +1362,12 @@
     const scale = hsjModel.computeTextureScale(brush, plain.w, opts);
     if (!(scale >= 0.01 && scale <= 20)) return null;
     if (brush.textureDepth >= 0.8 && regularDotGrain(plain)) return { custom:true, scale, plain };
-    if (scale >= GRAIN_LAYER_MIN_SCALE && grainLayerCandidate(brush, opts) && grainHasPattern(plain)) {
+    /* 【第399轮（作者：Lead）】第388轮给 texApp=1 的小笔径（sizePx>=16、非双笔）放宽到 0.05：
+       2048² 纸纹在 size=21 时 f24≈0.08，按老的 0.1 门槛会被判「不走独立层」而退烘焙。
+       门槛改由 model-hsjpro.grainLayerMinScale 决定（普通 0.1 / 纹理化小笔径 0.05），
+       GRAIN_LAYER_MIN_SCALE=0.1 的契约本身不破。 */
+    if (scale >= (hsjModel.grainLayerMinScale ? hsjModel.grainLayerMinScale(brush) : GRAIN_LAYER_MIN_SCALE) &&
+        grainLayerCandidate(brush, opts) && grainHasPattern(plain)) {
       // On Procreate 5.4.15 these fixed fabrics measure about 0.707 canvas px
       // per Grain pixel per scale unit. On multiply paper, changing pitch alone
       // moved the sampled wash from gray 133 to 181, so keep its calibrated scale.
@@ -2561,8 +2566,15 @@
           grainDepthMinimum: brush.grainDepthMinimum,
           textureRotation: brush.textureRotation,
           textureRotationIsRadians: !!grainTone
-        }, brush.textureDepth === undefined ? 0.35 : brush.textureDepth, grainTone);
+        }, brush.textureDepth === undefined ? 0.35 : brush.textureDepth, grainTone,
+          /* 【第400轮】只有 Procreate 源且纹理烘进笔尖时才限制烘焙强度；ABR 路径（L3599）不传，行为不变。 */
+          hsjModel.bakeAlphaFloor(brush));
         textureBaked = true;
+        /* 【第400轮】把阻尼信息挂到笔刷上，供测试与损失报告引用（不改任何输出字段）。
+           rawRatio = 阻尼前的原始保留率；damp = 衰减被等比减弱的比例；ratio = 最终保留率。 */
+        if (rgba.__bakeDampScale !== undefined && rgba.__bakeDampScale !== 1) {
+          brush._bakeDamped = { rawRatio: rgba.__bakeRawRatio, damp: rgba.__bakeDampScale, ratio: rgba.__bakeAlphaRatio };
+        }
       }
     }
     // Keep native BRU RGB and its inversion flag together. Cross-format masks
@@ -2817,7 +2829,11 @@
       bruFadeInOut: hsjModel.defaultFadeInOut(brush),
       bruPressureSizeInfluence: brush.bruPressureSizeInfluence,
       bruPressureFlowInfluence: brush.bruPressureFlowInfluence,
-      flowPct: hsjModel.compensateFlowPct(flowBrush, spacingPct, sizePx, textureBaked, bruPressure),
+      /* 【第399轮（作者：Lead）】接上第388轮烘焙流量守恒补偿：把烘焙后 alpha 保留率交给模型层，
+         它据此在稀疏点距区间上调 flowPct，抵消 grainBake 的乘性压淡。
+         hasTexLayer=true 表示纹理走了独立层、没烘进笔尖，不该补偿。 */
+      flowPct: hsjModel.compensateFlowPct(flowBrush, spacingPct, sizePx, textureBaked, bruPressure,
+        textureBaked ? { bakeAlphaRatio: rgba && rgba.__bakeAlphaRatio, hasTexLayer: !!texMatchId } : undefined),
       minFlowRatio: brush.minFlowRatio === undefined && bruPressure ? bruPressure.minFlow : brush.minFlowRatio,
       /* 【第350轮】回读 brushset 时 `flowPct` 现在总是给出来（取自 BRU 往返标记里的精确值），
          所以不能再拿「flowPct 未定义」当「用户没改过流量」的依据，否则 `bruSmallFlow`（f51 的
@@ -2994,16 +3010,20 @@
     // canvas blend (f69=8). Do not infer from grain, dual or burnt-edge modes.
     // Conflicting archive twins and BRU roundtrip fields retain their state.
     const pcCanvas = brush._params;
-    if (brush.source === 'procreate' && !brush._bruExtra && !brush._pcLinkedSecondary && pcCanvas &&
-        brush.blendMode === 17 && pcCanvas.blendMode === 17 &&
-        (pcCanvas.extendedBlend === undefined || pcCanvas.extendedBlend === 17) &&
-        (pcCanvas.extendedBlend2 === undefined || pcCanvas.extendedBlend2 === 17)) {
-      const unknown = meta._rawUnknown || [];
-      const bytes = util.concat(unknown);
-      const fields = pbScan(bytes, 0, bytes.length);
-      if ((!bytes.length || (fields.length && fields[fields.length - 1].end === bytes.length)) &&
-          !fields.some(function (field) { return field.f === 69; })) {
-        meta._rawUnknown = unknown.concat([rawVarintField(69, 8)]);
+    /* 【第399轮（作者：Lead）】第389轮把 f69 画布混合从「只认 17→8（晶冻柔光）」扩到
+       全 12 项实机标定映射（1/2/3/4/9/10/11/13/14/16/17/21 → f69=1..12），
+       归口 model-hsjpro.mapCanvasBlendMode（内部已做 archive 三值一致性拦截，不一致返回 null）。
+       未映射的模式不在此处理：由 canvasBlendReport 进损失报告，不静默降级。 */
+    if (brush.source === 'procreate' && !brush._bruExtra && !brush._pcLinkedSecondary && pcCanvas) {
+      const mapped69 = hsjModel.mapCanvasBlendMode(brush);
+      if (mapped69 !== null && mapped69 !== undefined) {
+        const unknown = meta._rawUnknown || [];
+        const bytes = util.concat(unknown);
+        const fields = pbScan(bytes, 0, bytes.length);
+        if ((!bytes.length || (fields.length && fields[fields.length - 1].end === bytes.length)) &&
+            !fields.some(function (field) { return field.f === 69; })) {
+          meta._rawUnknown = unknown.concat([rawVarintField(69, mapped69)]);
+        }
       }
     }
     const embeddedEdit = nativePressureSecondaryEdit(brush.dualSubBrush);
@@ -5538,7 +5558,7 @@ Write-Host 'restart MediBang Paint Pro'
 
   /* 用源笔刷的真实纹理（ABR 图案 / Procreate Grain）烘焙；没有真实像素时保持原样，
      不生成程序化噪声（伪造纹理会让笔刷图案偏离原笔刷）。 */
-  function bakeTextureIntoRGBA(rgba, w, h, brush, strength, tone) {
+  function bakeTextureIntoRGBA(rgba, w, h, brush, strength, tone, alphaFloor) {
     const rawStrength = strength === undefined ? 0.35 : Number(strength);
     // NaN/Infinity 经 Math.min/max 仍是 NaN，写入 Uint8Array 后会变成 0，
     // 导致整支笔尖透明；非有限输入按既有默认强度处理。
@@ -5565,8 +5585,47 @@ Write-Host 'restart MediBang Paint Pro'
     const minDepth = brush && brush.grainDepthMinimum !== undefined && brush.grainDepthMinimum > 0
       ? Math.max(0, Math.min(1, brush.grainDepthMinimum)) : 0.15;
     const invScale = useScale ? 1 / scale : 1;
+    /* 【第400轮（作者：Lead）】alphaFloor：烘焙至少要保留多少笔尖 alpha。
+       先空扫一遍拿实际保留率 ratio，再按 s=(1-floor)/(1-ratio) 等比减弱衰减后写盘，
+       使最终保留率精确落在 floor。floor=1（ABR / BRU / 非 Procreate 源）时跳过空扫、
+       写盘分支与旧版逐字节相同（不引入 1-x 的浮点误差）。 */
+    const __floor = Number.isFinite(alphaFloor) ? Math.max(0.05, Math.min(1, alphaFloor)) : 1;
     const cosR = useRot ? Math.cos(rotRad) : 1, sinR = useRot ? Math.sin(rotRad) : 0;
     const cx = (w - 1) / 2, cy = (h - 1) / 2;
+    let __sumBefore = 0, __sumRawAfter = 0;
+    if (__floor < 1) {
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const i = y * w + x;
+          const a = rgba[i * 4 + 3];
+          if (!a) continue;
+          let sx = x, sy = y;
+          if (useRot) {
+            const dx = x - cx, dy = y - cy;
+            sx = dx * cosR - dy * sinR + cx;
+            sy = dx * sinR + dy * cosR + cy;
+          }
+          let tx = Math.floor(sx * tex.w / Math.max(1, w) * invScale);
+          let ty = Math.floor(sy * tex.h / Math.max(1, h) * invScale);
+          if (useScale || useRot) {
+            tx = ((tx % tex.w) + tex.w) % tex.w;
+            ty = ((ty % tex.h) + tex.h) % tex.h;
+          } else {
+            tx = Math.min(tex.w - 1, tx);
+            ty = Math.min(tex.h - 1, ty);
+          }
+          const gray = tex.gray[ty * tex.w + tx];
+          const v = toneCurve ? toneCurve[gray] : gray / 255;
+          const factor = 1 - k + k * (minDepth + (1 - minDepth) * v);
+          __sumBefore += a;
+          __sumRawAfter += Math.max(0, Math.min(255, Math.round(a * factor)));
+        }
+      }
+    }
+    const __rawRatio = __sumBefore > 0 ? __sumRawAfter / __sumBefore : 1;
+    const __damp = (__floor < 1 && __rawRatio < __floor) ? (1 - __floor) / (1 - __rawRatio) : 1;
+    __sumBefore = 0;
+    let __sumAfter = 0;
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const i = y * w + x;
@@ -5590,9 +5649,18 @@ Write-Host 'restart MediBang Paint Pro'
         const gray = tex.gray[ty * tex.w + tx];
         const v = toneCurve ? toneCurve[gray] : gray / 255;
         const factor = 1 - k + k * (minDepth + (1 - minDepth) * v);
-        rgba[i * 4 + 3] = Math.max(0, Math.min(255, Math.round(a * factor)));
+        /* 【第399轮（作者：Lead）】累加烘焙前后 alpha 总量，供 compensateFlowPct 判断压淡幅度 */
+        /* 【第400轮】__damp===1 时直接用 factor，保证不改变既有路径的逐字节结果 */
+        const __f = __damp === 1 ? factor : 1 - __damp * (1 - factor);
+        const __newA = Math.max(0, Math.min(255, Math.round(a * __f)));
+        rgba[i * 4 + 3] = __newA;
+        __sumBefore += a;
+        __sumAfter += __newA;
       }
     }
+    rgba.__bakeAlphaRatio = __sumBefore > 0 ? __sumAfter / __sumBefore : 1;
+    rgba.__bakeRawRatio = __rawRatio;   /* 阻尼前的原始保留率（诊断用） */
+    rgba.__bakeDampScale = __damp;      /* 衰减被等比减弱的比例，1 = 未阻尼 */
     return rgba;
   }
 
@@ -6228,6 +6296,37 @@ Write-Host 'restart MediBang Paint Pro'
     dynamicsPressureCharge: '湿混载色', dynamicsPressureDilutionCurve: '湿混稀释', dynamicsPressureAttackCurve: '湿混起笔',
     dynamicsPressureGradeCurve: '湿混层次', dynamicsPressureBlurCurve: '湿混模糊'
   };
+  /* 【第385轮（作者：Lead，第399轮事故后重新落地）】Procreate 副笔混合在画世界 13 个混合模式里
+     没有对应项的有 9 个（screen/add/exclusion/hardLight/color/luminosity/hue/saturation/softLight）。
+     写出的值仍是 normal（保持既有行为不变），但报告必须说清楚，不能静默降级。
+     只做「如实告知」，不写近似映射：近似值没有实画依据。 */
+  const DUAL_BLEND_ZH = {
+    screen: '滤色', add: '线性减淡（添加）', exclusion: '排除', hardLight: '强光',
+    color: '颜色', luminosity: '明度', hue: '色相', saturation: '饱和度', softLight: '柔光'
+  };
+  function dualBlendReport(b, target) {
+    if (!b || target !== 'bru') return [];
+    if (b.source !== 'procreate' || !b.dualOn) return [];
+    const name = bru.dualBlendUnmappedName ? bru.dualBlendUnmappedName(b.procreateDualBlendMode) : null;
+    if (!name) return [];
+    return [{
+      kept: false,
+      text: '副笔混合「' + (DUAL_BLEND_ZH[name] || name) + '」（Procreate ' + Number(b.procreateDualBlendMode) + '）：画世界无对应模式，已按「正常」写入'
+    }];
+  }
+  /* 【第399轮（作者：Lead）】画布混合（f69）无对应项时必须进损失报告 —— 第389轮全 12 项标定后，
+     剩下的强光(12)/排除(5)/滤色(2)… 在画世界没有对应 f69，写侧按 normal 落库，
+     这里如实告知，不静默降级（与 dualBlendReport 同构）。 */
+  function canvasBlendReport(b, target) {
+    if (!b || target !== 'bru') return [];
+    if (b.source !== 'procreate') return [];
+    const name = hsjModel.canvasBlendUnmappedName ? hsjModel.canvasBlendUnmappedName(b) : null;
+    if (!name) return [];
+    return [{
+      kept: false,
+      text: '画布混合「' + name + '」（Procreate ' + Number(b.blendMode) + '）：画世界无对应模式，已按「正常」写出'
+    }];
+  }
   function pressureCurveReport(b, target) {
     const curves = b && b.procreatePressureCurves;
     if (!curves || typeof curves !== 'object') return [];
@@ -6344,6 +6443,12 @@ Write-Host 'restart MediBang Paint Pro'
         }
         /* 【第302轮（作者：Claude）R302-04】Procreate 自定义压感曲线：以前不读，这里逐条说清去向 */
         pressureCurveReport(b, target).forEach(function (e) {
+          if (e.kept) { has.push(e.text); keptTotal++; } else { lost.push(e.text); lostTotal++; }
+        });
+        dualBlendReport(b, target).forEach(function (e) {
+          if (e.kept) { has.push(e.text); keptTotal++; } else { lost.push(e.text); lostTotal++; }
+        });
+        canvasBlendReport(b, target).forEach(function (e) {
           if (e.kept) { has.push(e.text); keptTotal++; } else { lost.push(e.text); lostTotal++; }
         });
         lines.push('  ' + (i + 1) + '. ' + (b.name || '未命名'));

@@ -1,4 +1,4 @@
-﻿﻿/* 画世界Pro .bru container + Brush protobuf reader/writer */
+﻿﻿﻿/* 画世界Pro .bru container + Brush protobuf reader/writer */
 (function (root) {
   'use strict';
   const isNode = typeof module !== 'undefined' && module.exports && typeof process !== 'undefined';
@@ -34,6 +34,16 @@
     key = aliases[key] || key;
     const index = DUAL_BLEND_NAMES.findIndex(function (name) { return name.toLowerCase() === key; });
     return index >= 0 ? index : (typeof fallback === 'number' ? fallback : 0);
+  }
+  /* 【第385轮（作者：Lead）】Procreate 副笔混合码里，画世界的 13 个混合模式**没有对应项**的 9 个：
+     2 screen / 3 add / 5 exclusion / 12 hardLight / 13 color / 14 luminosity / 15 hue / 16 saturation / 17 softLight。
+     这些码经 dualBlendValue() 会静默落到 0（normal）——写出的值保持既有行为不变，但必须**能被告知**，
+     不能悄悄降级。这里只回答「这个名字有没有画世界对应」，不做近似映射：近似值没有实画依据，猜着写会骗用户。 */
+  const PRO_DUAL_BLEND_UNMAPPED = [2, 3, 5, 12, 13, 14, 15, 16, 17];
+  function dualBlendUnmappedName(code) {
+    const n = Number(code);
+    if (!Number.isInteger(n) || n < 0 || n >= PRO_DUAL_BLEND_NAMES.length) return null;
+    return PRO_DUAL_BLEND_UNMAPPED.indexOf(n) >= 0 ? PRO_DUAL_BLEND_NAMES[n] : null;
   }
 
   /* ---------- protobuf primitives ---------- */
@@ -887,7 +897,7 @@
       const rawMeta = embeddedMeta || bytes.subarray(metaStart, metaEnd);
       const fields = readFields(rawMeta, 0, rawMeta.length);
       const o = fieldsToObj(fields);
-      // 字段语义依据实机标定：D:\dsh项目\笔刷ru_标定\字段映射.md
+      // 字段语义依据实机标定：D:\dsh项目\笔刷\bru_标定\字段映射.md
       const num = (v, dflt) => (typeof v === 'number' && isFinite(v) ? v : dflt);
       const name = o[3] ? util.utf8Decode(o[3]) : '';
       const size = num(o[8], 100);
@@ -1344,7 +1354,7 @@
     return { version, totalSize, count: count || brushes.length, brushes, warnings };
   }
 
-  const api = { isBru, writeBrush, writePack, parseBru, buildMetadata, MAGIC, dualBlendValue };
+  const api = { isBru, writeBrush, writePack, parseBru, buildMetadata, MAGIC, dualBlendValue, dualBlendUnmappedName };
   if (isNode) module.exports = api;
   else root.BC = Object.assign(root.BC || {}, { bru: api });
 })(typeof globalThis !== 'undefined' ? globalThis : this);
